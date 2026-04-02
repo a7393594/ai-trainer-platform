@@ -1,0 +1,33 @@
+# Web Framework
+fastapi==0.115.0
+uvicorn[standard]==0.30.0
+python-multipart==0.0.9
+
+# LLM 統一介面（多模型切換）
+litellm>=1.49.0
+
+# RAG 框架（Phase 2 才需要，先註解）
+# llama-index==0.11.0
+# llama-index-vector-stores-qdrant==0.3.0
+# llama-index-embeddings-openai==0.2.0
+
+# 向量資料庫（Phase 2）
+# qdrant-client==1.11.0
+
+# Supabase（業務 DB）
+supabase>=2.9.0
+
+# LLM 監控
+langfuse>=2.51.0
+
+# 資料驗證
+pydantic>=2.9.0
+pydantic-settings>=2.5.0
+
+# 加密（API Key 加密用）
+cryptography>=43.0.0
+
+# 工具
+httpx>=0.27.0
+python-dotenv>=1.0.0
+tenacity>=8.0.0

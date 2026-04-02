@@ -1,0 +1,43 @@
+"""
+應用程式設定 — 從環境變數讀取所有設定
+"""
+from pydantic_settings import BaseSettings
+from typing import Optional
+
+
+class Settings(BaseSettings):
+    # Supabase
+    supabase_url: str
+    supabase_service_key: str
+
+    # Qdrant
+    qdrant_url: str = "http://localhost:6333"
+    qdrant_api_key: Optional[str] = None
+
+    # LLM API Keys
+    openai_api_key: Optional[str] = None
+    anthropic_api_key: Optional[str] = None
+    google_api_key: Optional[str] = None
+
+    # Embedding
+    embedding_model: str = "text-embedding-3-small"
+    embedding_provider: str = "openai"
+
+    # 加密
+    encryption_key: str = ""
+
+    # LangFuse
+    langfuse_public_key: Optional[str] = None
+    langfuse_secret_key: Optional[str] = None
+    langfuse_host: str = "https://cloud.langfuse.com"
+
+    # 環境
+    environment: str = "development"
+    log_level: str = "debug"
+
+    class Config:
+        env_file = ".env"
+        case_sensitive = False
+
+
+settings = Settings()
