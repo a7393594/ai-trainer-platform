@@ -5,9 +5,11 @@ import { ChatInterface, type ChatMode } from '@/components/chat/ChatInterface'
 import { SessionSidebar } from '@/components/chat/SessionSidebar'
 import { PromptSuggestionButton } from '@/components/chat/PromptSuggestion'
 import { getDemoContext } from '@/lib/ai-engine'
+import { useAuth } from '@/lib/auth-context'
 import type { DemoContext } from '@/types'
 
 export default function ChatPage() {
+  const { user } = useAuth()
   const [context, setContext] = useState<DemoContext | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [sessionId, setSessionId] = useState<string | undefined>()
@@ -16,10 +18,10 @@ export default function ChatPage() {
   const [mode, setMode] = useState<ChatMode>('freeform')
 
   useEffect(() => {
-    getDemoContext()
+    getDemoContext(user?.email || undefined)
       .then(setContext)
       .catch((err) => setError(err.message))
-  }, [])
+  }, [user])
 
   const handleNewSession = () => {
     setSessionId(undefined)

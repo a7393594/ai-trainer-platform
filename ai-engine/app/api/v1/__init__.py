@@ -31,15 +31,29 @@ prompt_optimizer = PromptOptimizer()
 # ============================================
 
 @router.get("/demo/context", response_model=DemoContext)
-async def get_demo_context():
-    """取得 demo 環境的 tenant/user/project IDs"""
-    user = crud.get_user_by_email("demo@ai-trainer.dev")
+async def get_demo_context(email: str = Query(default=None)):
+    """取得用戶的 context（支援 auth email 或 fallback demo）"""
+    lookup_email = email or "demo@ai-trainer.dev"
+    user = crud.get_user_by_email(lookup_email)
+
+    if not user and email:
+        # Auto-provision: create ait_user for new auth user
+        # Use demo tenant for now
+        demo = crud.get_user_by_email("demo@ai-trainer.dev")
+        if demo:
+            user = crud.create_user(
+                tenant_id=demo["tenant_id"],
+                email=email,
+                role="trainer",
+                display_name=email.split("@")[0],
+            )
+
     if not user:
-        raise HTTPException(status_code=404, detail="Demo user 不存在，請先執行 seed")
+        raise HTTPException(status_code=404, detail="User not found. Run seed first.")
 
     projects = crud.list_projects(user["tenant_id"])
     if not projects:
-        raise HTTPException(status_code=404, detail="Demo project 不存在")
+        raise HTTPException(status_code=404, detail="No projects found")
 
     return DemoContext(
         tenant_id=user["tenant_id"],

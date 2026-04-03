@@ -112,8 +112,9 @@ export async function submitFeedback(req: FeedbackRequest): Promise<void> {
 // ============================================
 
 /** 取得 demo 環境的 IDs */
-export async function getDemoContext(): Promise<DemoContext> {
-  return request<DemoContext>('/api/v1/demo/context')
+export async function getDemoContext(email?: string): Promise<DemoContext> {
+  const params = email ? `?email=${encodeURIComponent(email)}` : ''
+  return request<DemoContext>(`/api/v1/demo/context${params}`)
 }
 
 // ============================================
