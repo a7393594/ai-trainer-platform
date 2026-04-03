@@ -2,8 +2,10 @@ services:
   - type: web
     name: ai-trainer-engine
     runtime: docker
-    dockerfilePath: ai-engine/Dockerfile
-    dockerContext: ai-engine
+    rootDir: ai-engine
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    plan: free
     envVars:
       - key: SUPABASE_URL
         sync: false
