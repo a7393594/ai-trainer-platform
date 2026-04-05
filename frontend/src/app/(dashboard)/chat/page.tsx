@@ -70,7 +70,7 @@ export default function ChatPage() {
   }
 
   return (
-    <div className="h-full flex">
+    <div className="h-full flex overflow-hidden">
       {/* Session Sidebar */}
       <SessionSidebar
         projectId={context.project_id}
@@ -80,7 +80,7 @@ export default function ChatPage() {
       />
 
       {/* Main Area */}
-      <div className="flex-1 flex flex-col">
+      <div className="flex-1 flex flex-col min-w-0 min-h-0">
         {/* Header */}
         <header className="flex items-center justify-between border-b border-zinc-800 bg-zinc-900 px-4 py-3">
           <div>
@@ -113,7 +113,7 @@ export default function ChatPage() {
         </header>
 
         {/* Chat */}
-        <div className="flex-1">
+        <div className="flex-1 min-h-0">
           <ChatInterface
             key={sessionKey}
             projectId={context.project_id}

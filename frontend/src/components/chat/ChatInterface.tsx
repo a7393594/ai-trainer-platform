@@ -233,7 +233,7 @@ export function ChatInterface({
   }
 
   return (
-    <div className="flex h-full flex-col bg-zinc-900">
+    <div className="flex h-full flex-col bg-zinc-900 min-h-0">
       {/* Onboarding 進度條 */}
       {onboardingProgress && (
         <OnboardingProgress current={onboardingProgress.current} total={onboardingProgress.total} />
