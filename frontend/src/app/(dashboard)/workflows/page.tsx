@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import { getDemoContext } from '@/lib/ai-engine'
+import { useI18n } from '@/lib/i18n'
 
 const AI = process.env.NEXT_PUBLIC_AI_ENGINE_URL || 'http://localhost:8000'
 
@@ -13,6 +14,7 @@ export default function WorkflowsPage() {
   const [trigger, setTrigger] = useState('')
   const [steps, setSteps] = useState('[\n  {\n    "id": "step_1",\n    "action": "show_widget",\n    "widget": { "type": "confirm", "question": "Continue?" }\n  }\n]')
   const [loading, setLoading] = useState(true)
+  const { t } = useI18n()
 
   useEffect(() => {
     getDemoContext().then((ctx) => {
@@ -52,10 +54,10 @@ export default function WorkflowsPage() {
       <div className="max-w-4xl mx-auto">
         <div className="flex items-center justify-between mb-6">
           <div>
-            <h1 className="text-lg font-medium text-zinc-200">Workflows</h1>
-            <p className="text-xs text-zinc-500">Create multi-step automated processes</p>
+            <h1 className="text-lg font-medium text-zinc-200">{t('workflows.title')}</h1>
+            <p className="text-xs text-zinc-500">{t('workflows.desc')}</p>
           </div>
-          <button onClick={() => setShowCreate(true)} className="rounded bg-blue-600 px-4 py-2 text-sm text-white hover:bg-blue-500">Create Workflow</button>
+          <button onClick={() => setShowCreate(true)} className="rounded bg-blue-600 px-4 py-2 text-sm text-white hover:bg-blue-500">{t('workflows.create')}</button>
         </div>
 
         {showCreate && (
@@ -87,7 +89,7 @@ export default function WorkflowsPage() {
               </div>
             )
           })}
-          {workflows.length === 0 && <p className="text-sm text-zinc-500 text-center py-12">No workflows yet. Create one to automate multi-step processes.</p>}
+          {workflows.length === 0 && <p className="text-sm text-zinc-500 text-center py-12">{t('workflows.empty')}</p>}
         </div>
       </div>
     </div>

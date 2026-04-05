@@ -1,5 +1,6 @@
 import type { Metadata, Viewport } from 'next'
 import { AuthProvider } from '@/lib/auth-context'
+import { I18nProvider } from '@/lib/i18n'
 import './globals.css'
 
 export const metadata: Metadata = {
@@ -27,7 +28,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <link rel="apple-touch-icon" href="/icon-192.png" />
       </head>
       <body className="bg-zinc-900 text-zinc-100 antialiased">
-        <AuthProvider>{children}</AuthProvider>
+        <I18nProvider><AuthProvider>{children}</AuthProvider></I18nProvider>
       </body>
     </html>
   )

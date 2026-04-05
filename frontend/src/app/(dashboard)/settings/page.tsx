@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import { getDemoContext } from '@/lib/ai-engine'
+import { useI18n } from '@/lib/i18n'
 
 const AI = process.env.NEXT_PUBLIC_AI_ENGINE_URL || 'http://localhost:8000'
 
@@ -10,6 +11,7 @@ export default function SettingsPage() {
   const [models, setModels] = useState<any[]>([])
   const [ftStats, setFtStats] = useState<any>(null)
   const [loading, setLoading] = useState(true)
+  const { t } = useI18n()
 
   useEffect(() => {
     getDemoContext().then(async (ctx) => {
@@ -44,15 +46,15 @@ export default function SettingsPage() {
     <div className="h-full bg-zinc-900 p-6">
       <div className="max-w-3xl mx-auto space-y-6">
         <div>
-          <h1 className="text-lg font-medium text-zinc-200 mb-1">Settings</h1>
-          <p className="text-xs text-zinc-500">Project configuration and management</p>
+          <h1 className="text-lg font-medium text-zinc-200 mb-1">{t('settings.title')}</h1>
+          <p className="text-xs text-zinc-500">{t('settings.desc')}</p>
         </div>
 
         {/* Project Info */}
         <section className="rounded-lg border border-zinc-700 bg-zinc-800/50 p-4">
-          <h2 className="text-sm font-medium text-zinc-200 mb-3">Project Info</h2>
+          <h2 className="text-sm font-medium text-zinc-200 mb-3">{t('settings.projectInfo')}</h2>
           <div className="grid grid-cols-2 gap-3 text-sm">
-            <div><span className="text-zinc-400">Name:</span> <span className="text-zinc-200 ml-2">{context?.project_name}</span></div>
+            <div><span className="text-zinc-400">{t('settings.name')}:</span> <span className="text-zinc-200 ml-2">{context?.project_name}</span></div>
             <div><span className="text-zinc-400">Project ID:</span> <span className="text-zinc-500 ml-2 font-mono text-xs">{context?.project_id?.slice(0, 12)}...</span></div>
             <div><span className="text-zinc-400">Tenant ID:</span> <span className="text-zinc-500 ml-2 font-mono text-xs">{context?.tenant_id?.slice(0, 12)}...</span></div>
             <div><span className="text-zinc-400">Domain:</span> <span className="text-zinc-200 ml-2">Poker</span></div>
@@ -61,7 +63,7 @@ export default function SettingsPage() {
 
         {/* LLM Models */}
         <section className="rounded-lg border border-zinc-700 bg-zinc-800/50 p-4">
-          <h2 className="text-sm font-medium text-zinc-200 mb-3">Available LLM Models</h2>
+          <h2 className="text-sm font-medium text-zinc-200 mb-3">{t('settings.llmModels')}</h2>
           <div className="space-y-1">
             {models.map((m) => (
               <div key={m.id} className="flex items-center justify-between py-1.5 px-2 rounded hover:bg-zinc-700/50">
@@ -74,46 +76,46 @@ export default function SettingsPage() {
 
         {/* API Keys */}
         <section className="rounded-lg border border-zinc-700 bg-zinc-800/50 p-4">
-          <h2 className="text-sm font-medium text-zinc-200 mb-3">API Keys</h2>
+          <h2 className="text-sm font-medium text-zinc-200 mb-3">{t('settings.apiKeys')}</h2>
           <div className="space-y-2">
             <div className="flex items-center justify-between py-1.5">
               <span className="text-sm text-zinc-300">Anthropic</span>
-              <span className="rounded bg-green-500/20 px-2 py-0.5 text-[10px] text-green-400">Connected</span>
+              <span className="rounded bg-green-500/20 px-2 py-0.5 text-[10px] text-green-400">{t('settings.connected')}</span>
             </div>
             <div className="flex items-center justify-between py-1.5">
               <span className="text-sm text-zinc-300">Google (Gemini)</span>
-              <span className="rounded bg-green-500/20 px-2 py-0.5 text-[10px] text-green-400">Connected</span>
+              <span className="rounded bg-green-500/20 px-2 py-0.5 text-[10px] text-green-400">{t('settings.connected')}</span>
             </div>
             <div className="flex items-center justify-between py-1.5">
               <span className="text-sm text-zinc-300">OpenAI</span>
-              <span className="rounded bg-zinc-700 px-2 py-0.5 text-[10px] text-zinc-400">Not configured</span>
+              <span className="rounded bg-zinc-700 px-2 py-0.5 text-[10px] text-zinc-400">{t('settings.notConfigured')}</span>
             </div>
           </div>
         </section>
 
         {/* Fine-tune */}
         <section className="rounded-lg border border-zinc-700 bg-zinc-800/50 p-4">
-          <h2 className="text-sm font-medium text-zinc-200 mb-3">Fine-tune Data</h2>
+          <h2 className="text-sm font-medium text-zinc-200 mb-3">{t('settings.finetune')}</h2>
           {ftStats ? (
             <div className="space-y-3">
               <div className="grid grid-cols-3 gap-3">
                 <div className="rounded bg-zinc-900 p-3 text-center">
                   <p className="text-2xl font-bold text-zinc-200">{ftStats.total_training_pairs}</p>
-                  <p className="text-xs text-zinc-500">Training Pairs</p>
+                  <p className="text-xs text-zinc-500">{t('settings.trainingPairs')}</p>
                 </div>
                 <div className="rounded bg-zinc-900 p-3 text-center">
                   <p className="text-2xl font-bold text-zinc-200">{ftStats.feedback_stats?.total || 0}</p>
-                  <p className="text-xs text-zinc-500">Total Feedbacks</p>
+                  <p className="text-xs text-zinc-500">{t('settings.totalFeedbacks')}</p>
                 </div>
                 <div className="rounded bg-zinc-900 p-3 text-center">
                   <p className={`text-2xl font-bold ${ftStats.ready_for_training ? 'text-green-400' : 'text-yellow-400'}`}>
-                    {ftStats.ready_for_training ? 'Ready' : 'Need More'}
+                    {ftStats.ready_for_training ? t('settings.ready') : t('settings.needMore')}
                   </p>
                   <p className="text-xs text-zinc-500">Status (min {ftStats.min_recommended})</p>
                 </div>
               </div>
               <button onClick={handleExport} className="rounded bg-blue-600 px-4 py-2 text-sm text-white hover:bg-blue-500">
-                Export Training Data (JSONL)
+                {t('settings.export')}
               </button>
             </div>
           ) : (

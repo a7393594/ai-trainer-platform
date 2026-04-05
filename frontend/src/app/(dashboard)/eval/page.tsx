@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import { getDemoContext } from '@/lib/ai-engine'
+import { useI18n } from '@/lib/i18n'
 
 const AI = process.env.NEXT_PUBLIC_AI_ENGINE_URL || 'http://localhost:8000'
 
@@ -18,6 +19,7 @@ export default function EvalPage() {
   const [expandedRun, setExpandedRun] = useState<string | null>(null)
   const [runDetails, setRunDetails] = useState<any>(null)
   const [loading, setLoading] = useState(true)
+  const { t } = useI18n()
 
   useEffect(() => {
     getDemoContext().then((ctx) => {
@@ -73,14 +75,14 @@ export default function EvalPage() {
   return (
     <div className="h-full bg-zinc-900 p-6">
       <div className="max-w-4xl mx-auto">
-        <h1 className="text-lg font-medium text-zinc-200 mb-1">Eval Engine</h1>
-        <p className="text-xs text-zinc-500 mb-4">Test cases and automated evaluation</p>
+        <h1 className="text-lg font-medium text-zinc-200 mb-1">{t('eval.title')}</h1>
+        <p className="text-xs text-zinc-500 mb-4">{t('eval.desc')}</p>
 
         {/* Tabs */}
         <div className="flex gap-1 mb-4">
-          {(['cases', 'runs'] as const).map((t) => (
-            <button key={t} onClick={() => setTab(t)} className={`px-4 py-1.5 rounded text-xs ${tab === t ? 'bg-blue-600 text-white' : 'bg-zinc-800 text-zinc-400 hover:text-zinc-200'}`}>
-              {t === 'cases' ? 'Test Cases' : 'Run History'}
+          {(['cases', 'runs'] as const).map((tb) => (
+            <button key={tb} onClick={() => setTab(tb)} className={`px-4 py-1.5 rounded text-xs ${tab === tb ? 'bg-blue-600 text-white' : 'bg-zinc-800 text-zinc-400 hover:text-zinc-200'}`}>
+              {tb === 'cases' ? t('eval.testCases') : t('eval.runHistory')}
             </button>
           ))}
         </div>
@@ -88,7 +90,7 @@ export default function EvalPage() {
         {tab === 'cases' && (
           <>
             <div className="flex justify-end mb-3">
-              <button onClick={() => setShowAdd(true)} className="rounded bg-blue-600 px-3 py-1.5 text-xs text-white hover:bg-blue-500">+ Add Test Case</button>
+              <button onClick={() => setShowAdd(true)} className="rounded bg-blue-600 px-3 py-1.5 text-xs text-white hover:bg-blue-500">{t('eval.addCase')}</button>
             </div>
             {showAdd && (
               <div className="mb-4 rounded-lg border border-zinc-700 bg-zinc-800 p-4 space-y-3">
@@ -118,7 +120,7 @@ export default function EvalPage() {
                   </div>
                 </div>
               ))}
-              {cases.length === 0 && <p className="text-sm text-zinc-500 text-center py-12">No test cases. Add some to start evaluating.</p>}
+              {cases.length === 0 && <p className="text-sm text-zinc-500 text-center py-12">{t('eval.emptyCase')}</p>}
             </div>
           </>
         )}
@@ -127,7 +129,7 @@ export default function EvalPage() {
           <>
             <div className="flex justify-end mb-3">
               <button onClick={handleRunEval} disabled={running || cases.length === 0} className="rounded bg-green-600 px-4 py-1.5 text-xs text-white hover:bg-green-500 disabled:opacity-50">
-                {running ? 'Running...' : 'Run Evaluation'}
+                {running ? t('eval.running') : t('eval.runEval')}
               </button>
             </div>
             <div className="space-y-2">
@@ -159,7 +161,7 @@ export default function EvalPage() {
                   )}
                 </div>
               ))}
-              {runs.length === 0 && <p className="text-sm text-zinc-500 text-center py-12">No evaluation runs yet.</p>}
+              {runs.length === 0 && <p className="text-sm text-zinc-500 text-center py-12">{t('eval.emptyRun')}</p>}
             </div>
           </>
         )}

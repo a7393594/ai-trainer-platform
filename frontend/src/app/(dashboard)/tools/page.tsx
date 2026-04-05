@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import { getDemoContext } from '@/lib/ai-engine'
+import { useI18n } from '@/lib/i18n'
 
 const AI = process.env.NEXT_PUBLIC_AI_ENGINE_URL || 'http://localhost:8000'
 const TOOL_TYPES = ['api_call', 'db_query', 'webhook', 'internal_fn', 'mcp_server']
@@ -22,6 +23,7 @@ export default function ToolsPage() {
   const [toolType, setToolType] = useState('api_call')
   const [config, setConfig] = useState('{\n  "method": "GET",\n  "url": "https://api.example.com/data"\n}')
   const [loading, setLoading] = useState(true)
+  const { t } = useI18n()
 
   useEffect(() => {
     getDemoContext().then((ctx) => {
@@ -67,10 +69,10 @@ export default function ToolsPage() {
       <div className="max-w-4xl mx-auto">
         <div className="flex items-center justify-between mb-6">
           <div>
-            <h1 className="text-lg font-medium text-zinc-200">Tool Registry</h1>
-            <p className="text-xs text-zinc-500">Register and manage external tools for your AI agent</p>
+            <h1 className="text-lg font-medium text-zinc-200">{t('tools.title')}</h1>
+            <p className="text-xs text-zinc-500">{t('tools.desc')}</p>
           </div>
-          <button onClick={() => setShowAdd(true)} className="rounded bg-blue-600 px-4 py-2 text-sm text-white hover:bg-blue-500">Register Tool</button>
+          <button onClick={() => setShowAdd(true)} className="rounded bg-blue-600 px-4 py-2 text-sm text-white hover:bg-blue-500">{t('tools.register')}</button>
         </div>
 
         {showAdd && (
@@ -104,7 +106,7 @@ export default function ToolsPage() {
               </div>
             </div>
           ))}
-          {tools.length === 0 && <p className="text-sm text-zinc-500 text-center py-12">No tools registered. Add one to extend your AI's capabilities.</p>}
+          {tools.length === 0 && <p className="text-sm text-zinc-500 text-center py-12">{t('tools.empty')}</p>}
         </div>
       </div>
     </div>

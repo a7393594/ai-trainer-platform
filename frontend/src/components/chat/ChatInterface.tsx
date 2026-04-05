@@ -11,6 +11,7 @@ import {
   sendMessage, sendMessageStream, sendWidgetResponse, submitFeedback,
   startOnboarding, answerOnboarding, getSessionMessages,
 } from '@/lib/ai-engine'
+import { useI18n } from '@/lib/i18n'
 import { WidgetRenderer } from '@/components/widgets/WidgetRenderer'
 import { FeedbackBar } from '@/components/chat/FeedbackBar'
 import { OnboardingProgress } from '@/components/chat/OnboardingProgress'
@@ -45,6 +46,7 @@ export function ChatInterface({
   const [sessionId, setSessionId] = useState(initialSessionId)
   const [onboardingProgress, setOnboardingProgress] = useState<{ current: number; total: number } | null>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
+  const { t } = useI18n()
 
   // 自動滾到底
   useEffect(() => {
@@ -244,8 +246,8 @@ export function ChatInterface({
         {messages.length === 0 && !loading && (
           <div className="flex items-center justify-center h-full">
             <div className="text-center">
-              <p className="text-zinc-500 text-sm">Start a conversation to train your AI</p>
-              <p className="text-zinc-600 text-xs mt-1">Type a message below or select guided mode</p>
+              <p className="text-zinc-500 text-sm">{t('chat.empty')}</p>
+              <p className="text-zinc-600 text-xs mt-1">{t('chat.emptyHint')}</p>
             </div>
           </div>
         )}
@@ -297,7 +299,7 @@ export function ChatInterface({
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={(e) => e.key === 'Enter' && !e.shiftKey && handleSend()}
-            placeholder={onboardingProgress ? 'Use the widget above to answer...' : 'Type a message...'}
+            placeholder={onboardingProgress ? t('chat.placeholderOnboard') : t('chat.placeholder')}
             disabled={loading || !!onboardingProgress}
             className="flex-1 rounded-lg border border-zinc-600 bg-zinc-700 px-4 py-2.5 text-sm text-zinc-200 outline-none focus:border-blue-500 placeholder:text-zinc-500 disabled:opacity-50"
           />
@@ -306,7 +308,7 @@ export function ChatInterface({
             disabled={loading || !input.trim() || !!onboardingProgress}
             className="rounded-lg bg-blue-600 px-5 py-2.5 text-sm font-medium text-white hover:bg-blue-500 disabled:opacity-50 transition-colors"
           >
-            Send
+            {t('chat.send')}
           </button>
         </div>
       </div>

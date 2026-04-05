@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import { getDemoContext } from '@/lib/ai-engine'
+import { useI18n } from '@/lib/i18n'
 
 const AI = process.env.NEXT_PUBLIC_AI_ENGINE_URL || 'http://localhost:8000'
 
@@ -13,6 +14,7 @@ export default function KnowledgePage() {
   const [content, setContent] = useState('')
   const [uploading, setUploading] = useState(false)
   const [loading, setLoading] = useState(true)
+  const { t } = useI18n()
 
   useEffect(() => {
     getDemoContext().then((ctx) => {
@@ -61,20 +63,20 @@ export default function KnowledgePage() {
       <div className="max-w-4xl mx-auto">
         <div className="flex items-center justify-between mb-6">
           <div>
-            <h1 className="text-lg font-medium text-zinc-200">Knowledge Base</h1>
-            <p className="text-xs text-zinc-500">Upload documents for RAG-powered responses</p>
+            <h1 className="text-lg font-medium text-zinc-200">{t('knowledge.title')}</h1>
+            <p className="text-xs text-zinc-500">{t('knowledge.desc')}</p>
           </div>
-          <button onClick={() => setShowUpload(true)} className="rounded bg-blue-600 px-4 py-2 text-sm text-white hover:bg-blue-500">Upload Document</button>
+          <button onClick={() => setShowUpload(true)} className="rounded bg-blue-600 px-4 py-2 text-sm text-white hover:bg-blue-500">{t('knowledge.upload')}</button>
         </div>
 
         {showUpload && (
           <div className="mb-6 rounded-lg border border-zinc-700 bg-zinc-800 p-4">
-            <h3 className="text-sm font-medium text-zinc-200 mb-3">Upload Document</h3>
-            <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Document title" className="w-full mb-3 rounded border border-zinc-600 bg-zinc-700 px-3 py-2 text-sm text-zinc-200 outline-none focus:border-blue-500" />
-            <textarea value={content} onChange={(e) => setContent(e.target.value)} placeholder="Paste document content here..." rows={8} className="w-full mb-3 rounded border border-zinc-600 bg-zinc-700 px-3 py-2 text-sm text-zinc-200 outline-none focus:border-blue-500" />
+            <h3 className="text-sm font-medium text-zinc-200 mb-3">{t('knowledge.upload')}</h3>
+            <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder={t('knowledge.docTitle')} className="w-full mb-3 rounded border border-zinc-600 bg-zinc-700 px-3 py-2 text-sm text-zinc-200 outline-none focus:border-blue-500" />
+            <textarea value={content} onChange={(e) => setContent(e.target.value)} placeholder={t('knowledge.content')} rows={8} className="w-full mb-3 rounded border border-zinc-600 bg-zinc-700 px-3 py-2 text-sm text-zinc-200 outline-none focus:border-blue-500" />
             <div className="flex gap-2 justify-end">
-              <button onClick={() => setShowUpload(false)} className="rounded border border-zinc-600 px-3 py-1.5 text-xs text-zinc-300 hover:bg-zinc-700">Cancel</button>
-              <button onClick={handleUpload} disabled={uploading || !title.trim() || !content.trim()} className="rounded bg-blue-600 px-4 py-1.5 text-xs text-white hover:bg-blue-500 disabled:opacity-50">{uploading ? 'Uploading...' : 'Upload'}</button>
+              <button onClick={() => setShowUpload(false)} className="rounded border border-zinc-600 px-3 py-1.5 text-xs text-zinc-300 hover:bg-zinc-700">{t('common.cancel')}</button>
+              <button onClick={handleUpload} disabled={uploading || !title.trim() || !content.trim()} className="rounded bg-blue-600 px-4 py-1.5 text-xs text-white hover:bg-blue-500 disabled:opacity-50">{uploading ? t('knowledge.uploading') : t('knowledge.upload')}</button>
             </div>
           </div>
         )}
@@ -90,10 +92,10 @@ export default function KnowledgePage() {
                   <span className="text-[10px] text-zinc-500">{new Date(doc.created_at).toLocaleDateString()}</span>
                 </div>
               </div>
-              <button onClick={() => handleDelete(doc.id)} className="text-xs text-red-400 hover:text-red-300">Delete</button>
+              <button onClick={() => handleDelete(doc.id)} className="text-xs text-red-400 hover:text-red-300">{t('knowledge.delete')}</button>
             </div>
           ))}
-          {docs.length === 0 && <p className="text-sm text-zinc-500 text-center py-12">No documents yet. Upload one to get started.</p>}
+          {docs.length === 0 && <p className="text-sm text-zinc-500 text-center py-12">{t('knowledge.empty')}</p>}
         </div>
       </div>
     </div>

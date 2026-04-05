@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import { getDemoContext, listPromptVersions, activatePromptVersion } from '@/lib/ai-engine'
+import { useI18n } from '@/lib/i18n'
 
 interface PromptVersion {
   id: string
@@ -17,6 +18,7 @@ export default function PromptsPage() {
   const [projectId, setProjectId] = useState<string | null>(null)
   const [expandedId, setExpandedId] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
+  const { t } = useI18n()
 
   useEffect(() => {
     getDemoContext()
@@ -54,8 +56,8 @@ export default function PromptsPage() {
   return (
     <div className="h-full bg-zinc-900 p-6">
       <div className="max-w-4xl mx-auto">
-        <h1 className="text-lg font-medium text-zinc-200 mb-1">Prompt Studio</h1>
-        <p className="text-xs text-zinc-500 mb-6">System Prompt version control</p>
+        <h1 className="text-lg font-medium text-zinc-200 mb-1">{t('prompts.title')}</h1>
+        <p className="text-xs text-zinc-500 mb-6">{t('prompts.desc')}</p>
 
         <div className="space-y-2">
           {versions.map((v) => (
@@ -73,7 +75,7 @@ export default function PromptsPage() {
                   <span className="text-sm font-mono text-zinc-300">v{v.version}</span>
                   {v.is_active && (
                     <span className="rounded bg-green-500/20 px-2 py-0.5 text-[10px] text-green-400">
-                      Active
+                      {t('prompts.active')}
                     </span>
                   )}
                   {v.change_notes && (
@@ -98,7 +100,7 @@ export default function PromptsPage() {
                       onClick={() => handleActivate(v.id)}
                       className="mt-3 rounded bg-blue-600 px-4 py-1.5 text-xs text-white hover:bg-blue-500"
                     >
-                      Set as Active
+                      {t('prompts.setActive')}
                     </button>
                   )}
                 </div>
@@ -109,7 +111,7 @@ export default function PromptsPage() {
 
         {versions.length === 0 && (
           <p className="text-sm text-zinc-500 text-center py-12">
-            No prompt versions yet. Start an onboarding session to generate the first one.
+            {t('prompts.empty')}
           </p>
         )}
       </div>

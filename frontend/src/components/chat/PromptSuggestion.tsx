@@ -7,6 +7,7 @@ import {
   applySuggestion,
   rejectSuggestion,
 } from '@/lib/ai-engine'
+import { useI18n } from '@/lib/i18n'
 
 interface PromptSuggestionProps {
   projectId: string
@@ -31,6 +32,7 @@ interface Suggestion {
 export function PromptSuggestionButton({ projectId }: PromptSuggestionProps) {
   const [open, setOpen] = useState(false)
   const [count, setCount] = useState(0)
+  const { t } = useI18n()
 
   useEffect(() => {
     listSuggestions(projectId)
@@ -44,7 +46,7 @@ export function PromptSuggestionButton({ projectId }: PromptSuggestionProps) {
         onClick={() => setOpen(true)}
         className="relative rounded border border-zinc-700 bg-zinc-800 px-3 py-1.5 text-xs text-zinc-300 hover:bg-zinc-700 transition-colors"
       >
-        Prompt 優化
+        {t('chat.promptOpt')}
         {count > 0 && (
           <span className="absolute -top-1 -right-1 flex h-4 w-4 items-center justify-center rounded-full bg-red-500 text-[10px] text-white">
             {count}
@@ -74,6 +76,7 @@ function SuggestionPanel({
   const [suggestions, setSuggestions] = useState<Suggestion[]>([])
   const [loading, setLoading] = useState(false)
   const [generating, setGenerating] = useState(false)
+  const { t } = useI18n()
 
   const load = async () => {
     setLoading(true)
@@ -120,7 +123,7 @@ function SuggestionPanel({
     <div className="fixed inset-y-0 right-0 z-50 w-96 bg-zinc-900 border-l border-zinc-700 shadow-2xl flex flex-col">
       {/* Header */}
       <div className="flex items-center justify-between border-b border-zinc-700 px-4 py-3">
-        <h3 className="text-sm font-medium text-zinc-200">Prompt 優化建議</h3>
+        <h3 className="text-sm font-medium text-zinc-200">{t('suggestion.title')}</h3>
         <button onClick={onClose} className="text-zinc-500 hover:text-zinc-300 text-lg">&times;</button>
       </div>
 
@@ -131,20 +134,20 @@ function SuggestionPanel({
           disabled={generating}
           className="w-full rounded bg-blue-600 px-3 py-2 text-sm text-white hover:bg-blue-500 disabled:opacity-50 transition-colors"
         >
-          {generating ? 'Analyzing...' : 'Generate Suggestions'}
+          {generating ? t('suggestion.analyzing') : t('suggestion.generate')}
         </button>
       </div>
 
       {/* List */}
       <div className="flex-1 overflow-y-auto px-4 py-3 space-y-4">
-        {loading && <p className="text-xs text-zinc-500">Loading...</p>}
+        {loading && <p className="text-xs text-zinc-500">{t('suggestion.loading')}</p>}
         {!loading && suggestions.length === 0 && (
-          <p className="text-xs text-zinc-500">No pending suggestions. Click generate to analyze feedback.</p>
+          <p className="text-xs text-zinc-500">{t('suggestion.empty')}</p>
         )}
         {suggestions.map((s) => (
           <div key={s.id} className="rounded-lg border border-zinc-700 bg-zinc-800/50 p-3">
             <p className="text-xs text-zinc-400 mb-2">
-              Based on {s.based_on_feedback_count} feedbacks
+              {t('suggestion.basedOn', { count: s.based_on_feedback_count })}
             </p>
             <div className="space-y-2">
               {s.changes.map((c, i) => (
@@ -170,13 +173,13 @@ function SuggestionPanel({
                 onClick={() => handleApply(s.id)}
                 className="flex-1 rounded bg-blue-600 px-2 py-1.5 text-xs text-white hover:bg-blue-500"
               >
-                Apply
+                {t('suggestion.apply')}
               </button>
               <button
                 onClick={() => handleReject(s.id)}
                 className="flex-1 rounded border border-zinc-600 px-2 py-1.5 text-xs text-zinc-300 hover:bg-zinc-700"
               >
-                Dismiss
+                {t('suggestion.dismiss')}
               </button>
             </div>
           </div>
