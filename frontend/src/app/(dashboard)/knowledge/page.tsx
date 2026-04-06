@@ -45,31 +45,48 @@ export default function KnowledgePage() {
   const handleUpload = async () => {
     if (!title.trim() || !content.trim()) return
     setUploading(true)
-    await fetch(`${AI}/api/v1/knowledge/upload`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ project_id: projectId, title, content, source_type: 'upload' }),
-    })
-    setTitle('')
-    setContent('')
-    setShowUpload(false)
+    try {
+      await fetch(`${AI}/api/v1/knowledge/upload`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ project_id: projectId, title, content, source_type: 'upload' }),
+      })
+      setTitle('')
+      setContent('')
+      setShowUpload(false)
+    } catch {}
     setUploading(false)
     loadDocs(projectId)
   }
 
   const handleDelete = async (docId: string) => {
-    await fetch(`${AI}/api/v1/knowledge/${docId}`, { method: 'DELETE' })
+    if (!confirm(t('knowledge.delete') + '?')) return
+    try {
+      await fetch(`${AI}/api/v1/knowledge/${docId}`, { method: 'DELETE' })
+    } catch {}
     if (selectedDoc?.document?.id === docId) setSelectedDoc(null)
     loadDocs(projectId)
   }
 
   const handleView = async (docId: string) => {
-    const r = await fetch(`${AI}/api/v1/knowledge/doc/${docId}`)
-    const data: DocDetail = await r.json()
-    setSelectedDoc(data)
+    // Use doc from already-loaded list (includes raw_content)
+    const doc = docs.find((d) => d.id === docId)
+    if (!doc) return
+
+    // Try to load chunks (may fail if endpoint not deployed yet)
+    let chunks: any[] = []
+    try {
+      const r = await fetch(`${AI}/api/v1/knowledge/doc/${docId}`)
+      if (r.ok) {
+        const data = await r.json()
+        chunks = data.chunks || []
+      }
+    } catch {}
+
+    setSelectedDoc({ document: doc, chunks })
     setEditMode(false)
-    setEditTitle(data.document.title)
-    setEditContent(data.document.raw_content || '')
+    setEditTitle(doc.title)
+    setEditContent(doc.raw_content || '')
   }
 
   const handleStartEdit = () => {
@@ -79,16 +96,35 @@ export default function KnowledgePage() {
   const handleSave = async () => {
     if (!selectedDoc) return
     setSaving(true)
-    await fetch(`${AI}/api/v1/knowledge/doc/${selectedDoc.document.id}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ title: editTitle, content: editContent }),
-    })
+    try {
+      const r = await fetch(`${AI}/api/v1/knowledge/doc/${selectedDoc.document.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title: editTitle, content: editContent }),
+      })
+      if (!r.ok) {
+        // Fallback: just reload list (endpoint may not exist on old backend)
+        await loadDocs(projectId)
+        setSelectedDoc(null)
+        setSaving(false)
+        setEditMode(false)
+        return
+      }
+    } catch {
+      await loadDocs(projectId)
+      setSelectedDoc(null)
+      setSaving(false)
+      setEditMode(false)
+      return
+    }
     setSaving(false)
     setEditMode(false)
-    // Reload doc detail + list
-    await handleView(selectedDoc.document.id)
-    loadDocs(projectId)
+    await loadDocs(projectId)
+    // Re-view to refresh
+    const updated = docs.find((d) => d.id === selectedDoc.document.id)
+    if (updated) {
+      setSelectedDoc({ document: { ...updated, title: editTitle, raw_content: editContent }, chunks: selectedDoc.chunks })
+    }
   }
 
   const handleClose = () => {
