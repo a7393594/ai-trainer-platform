@@ -102,6 +102,14 @@ const translations: Record<Locale, Record<string, string>> = {
     'knowledge.delete': '刪除',
     'knowledge.empty': '尚無文件。上傳一個開始使用。',
     'knowledge.chunks': '區塊',
+    'knowledge.view': '查看',
+    'knowledge.edit': '編輯',
+    'knowledge.save': '儲存',
+    'knowledge.editTitle': '編輯文件',
+    'knowledge.viewContent': '文件內容',
+    'knowledge.chunkList': '切塊列表',
+    'knowledge.saving': '儲存中...',
+    'knowledge.close': '關閉',
 
     // ====== Prompts ======
     'prompts.title': '提示詞工作室',
@@ -283,6 +291,14 @@ const translations: Record<Locale, Record<string, string>> = {
     'knowledge.delete': 'Delete',
     'knowledge.empty': 'No documents yet. Upload one to get started.',
     'knowledge.chunks': 'chunks',
+    'knowledge.view': 'View',
+    'knowledge.edit': 'Edit',
+    'knowledge.save': 'Save',
+    'knowledge.editTitle': 'Edit Document',
+    'knowledge.viewContent': 'Document Content',
+    'knowledge.chunkList': 'Chunks',
+    'knowledge.saving': 'Saving...',
+    'knowledge.close': 'Close',
 
     // ====== Prompts ======
     'prompts.title': 'Prompt Studio',

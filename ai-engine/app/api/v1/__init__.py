@@ -325,6 +325,49 @@ async def list_knowledge(project_id: str):
     return {"documents": docs}
 
 
+@router.get("/knowledge/doc/{doc_id}")
+async def get_knowledge_doc(doc_id: str):
+    """取得單一文件詳情（含內容 + 切塊）"""
+    from app.db.supabase import get_supabase
+    doc = get_supabase().table("ait_knowledge_docs").select("*").eq("id", doc_id).execute()
+    if not doc.data:
+        raise HTTPException(status_code=404, detail="Document not found")
+    chunks = get_supabase().table("ait_knowledge_chunks").select("content, chunk_index").eq("doc_id", doc_id).order("chunk_index").execute()
+    return {"document": doc.data[0], "chunks": chunks.data}
+
+
+@router.put("/knowledge/doc/{doc_id}")
+async def update_knowledge_doc(doc_id: str, data: dict):
+    """更新文件標題或內容"""
+    from app.db.supabase import get_supabase
+    from app.core.rag.pipeline import rag_pipeline
+
+    doc = get_supabase().table("ait_knowledge_docs").select("*").eq("id", doc_id).execute()
+    if not doc.data:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    updates: dict = {}
+    if "title" in data:
+        updates["title"] = data["title"]
+    if "content" in data:
+        updates["raw_content"] = data["content"]
+
+    if updates:
+        get_supabase().table("ait_knowledge_docs").update(updates).eq("id", doc_id).execute()
+
+    # If content changed, re-chunk
+    if "content" in data and data["content"]:
+        # Delete old chunks
+        get_supabase().table("ait_knowledge_chunks").delete().eq("doc_id", doc_id).execute()
+        # Re-chunk
+        chunks = rag_pipeline.chunk_text(data["content"])
+        for i, chunk_text in enumerate(chunks):
+            crud.create_knowledge_chunk(doc_id, chunk_text, i)
+        crud.update_doc_status(doc_id, "ready", len(chunks))
+
+    return {"status": "updated"}
+
+
 @router.delete("/knowledge/{doc_id}")
 async def delete_knowledge(doc_id: str):
     """刪除知識文件"""
