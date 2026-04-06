@@ -60,7 +60,7 @@ export default function KnowledgePage() {
   }
 
   const handleDelete = async (docId: string) => {
-    if (!confirm(t('knowledge.delete') + '?')) return
+    // No native confirm — delete directly (can add custom modal later)
     try {
       await fetch(`${AI}/api/v1/knowledge/${docId}`, { method: 'DELETE' })
     } catch {}
