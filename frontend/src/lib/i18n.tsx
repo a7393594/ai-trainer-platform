@@ -205,6 +205,10 @@ const translations: Record<Locale, Record<string, string>> = {
     'integrations.allOrigins': '所有來源',
     'integrations.done': '完成',
     'integrations.close': '關閉',
+    'integrations.primaryProject': '主要 AI 模型',
+    'integrations.additionalProjects': '額外授權的 AI 模型',
+    'integrations.additionalProjectsHint': '勾選後，此 token 可在 embed 介面切換使用這些 project',
+    'integrations.accessibleProjects': '可存取 project',
 
     // ====== Prompt Suggestion ======
     'suggestion.title': 'Prompt 優化建議',
@@ -424,6 +428,10 @@ const translations: Record<Locale, Record<string, string>> = {
     'integrations.allOrigins': 'All origins',
     'integrations.done': 'Done',
     'integrations.close': 'Close',
+    'integrations.primaryProject': 'Primary AI model',
+    'integrations.additionalProjects': 'Additional authorized AI models',
+    'integrations.additionalProjectsHint': 'Checked projects can be switched to inside the embed UI',
+    'integrations.accessibleProjects': 'Accessible projects',
 
     // ====== Prompt Suggestion ======
     'suggestion.title': 'Prompt Optimization',

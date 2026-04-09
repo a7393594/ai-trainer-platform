@@ -15,6 +15,10 @@ const LANG_PRESETS: Record<string, Partial<EmbedLabels>> = {
     placeholder: '輸入訊息...',
     send: '送出',
     error: '錯誤',
+    newChat: '+ 新對話',
+    history: '歷史對話',
+    projects: 'AI 模型',
+    noSessions: '尚無對話',
   },
   'zh': {
     empty: '开始对话',
@@ -22,6 +26,10 @@ const LANG_PRESETS: Record<string, Partial<EmbedLabels>> = {
     placeholder: '输入消息...',
     send: '发送',
     error: '错误',
+    newChat: '+ 新对话',
+    history: '历史对话',
+    projects: 'AI 模型',
+    noSessions: '尚无对话',
   },
   'en': {
     empty: 'Start a conversation',
@@ -29,6 +37,10 @@ const LANG_PRESETS: Record<string, Partial<EmbedLabels>> = {
     placeholder: 'Type a message...',
     send: 'Send',
     error: 'Error',
+    newChat: '+ New chat',
+    history: 'History',
+    projects: 'AI models',
+    noSessions: 'No previous chats',
   },
 }
 

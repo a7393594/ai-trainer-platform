@@ -135,6 +135,19 @@ def list_projects(tenant_id: str) -> list[dict]:
     return result.data
 
 
+def list_projects_by_ids(project_ids: list[str]) -> list[dict]:
+    """Batch fetch projects by id (for embed token multi-project support)."""
+    if not project_ids:
+        return []
+    result = (
+        get_supabase().table(T_PROJECTS)
+        .select("id,tenant_id,name,description,created_at")
+        .in_("id", project_ids)
+        .execute()
+    )
+    return result.data
+
+
 # ============================================
 # Training Session
 # ============================================
@@ -157,15 +170,21 @@ def get_session(session_id: str) -> Optional[dict]:
     return result.data[0] if result.data else None
 
 
-def list_sessions(project_id: str) -> list[dict]:
-    result = (
+def list_sessions(
+    project_id: str,
+    user_id: Optional[str] = None,
+    limit: int = 100,
+) -> list[dict]:
+    query = (
         get_supabase().table(T_SESSIONS)
         .select("*")
         .eq("project_id", project_id)
         .order("started_at", desc=True)
-        .execute()
+        .limit(limit)
     )
-    return result.data
+    if user_id:
+        query = query.eq("user_id", user_id)
+    return query.execute().data
 
 
 def end_session(session_id: str) -> dict:

@@ -9,6 +9,21 @@ export interface EmbedChatRequest {
   message: string
   session_id?: string
   external_user_id?: string
+  project_id?: string
+}
+
+export interface EmbedProject {
+  id: string
+  name: string
+  description: string | null
+  is_primary: boolean
+}
+
+export interface EmbedSession {
+  id: string
+  session_type: string | null
+  started_at: string
+  ended_at: string | null
 }
 
 export interface EmbedStreamCallbacks {
@@ -90,10 +105,67 @@ export async function sendEmbedMessage(
 export async function getEmbedSessionHistory(
   sessionId: string,
   token: string,
-): Promise<{ session_id: string; messages: any[] }> {
+): Promise<{ session_id: string; project_id?: string; messages: any[] }> {
   const res = await fetch(`${AI_ENGINE_URL}/embed/session/${sessionId}/history`, {
     headers: { 'X-Embed-Token': token },
   })
   if (!res.ok) throw new Error(`Failed: ${res.status}`)
+  return res.json()
+}
+
+/**
+ * List projects this embed token can access. Ordered with primary first.
+ */
+export async function listEmbedProjects(token: string): Promise<EmbedProject[]> {
+  const res = await fetch(`${AI_ENGINE_URL}/embed/projects`, {
+    headers: { 'X-Embed-Token': token },
+  })
+  if (!res.ok) throw new Error(`Failed to list projects: ${res.status}`)
+  const data = await res.json()
+  return data.projects || []
+}
+
+/**
+ * List sessions for a project filtered by external user.
+ */
+export async function listEmbedSessions(
+  token: string,
+  projectId: string,
+  externalUserId: string,
+  limit = 50,
+): Promise<EmbedSession[]> {
+  const url = new URL(`${AI_ENGINE_URL}/embed/sessions`)
+  url.searchParams.set('project_id', projectId)
+  url.searchParams.set('external_user_id', externalUserId)
+  url.searchParams.set('limit', String(limit))
+  const res = await fetch(url.toString(), {
+    headers: { 'X-Embed-Token': token },
+  })
+  if (!res.ok) throw new Error(`Failed to list sessions: ${res.status}`)
+  const data = await res.json()
+  return data.sessions || []
+}
+
+/**
+ * Create a new session explicitly.
+ */
+export async function createEmbedSession(
+  token: string,
+  projectId: string,
+  externalUserId: string,
+): Promise<{ session_id: string; project_id: string; started_at: string }> {
+  const res = await fetch(`${AI_ENGINE_URL}/embed/sessions`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Embed-Token': token,
+    },
+    body: JSON.stringify({
+      project_id: projectId,
+      external_user_id: externalUserId,
+      session_type: 'freeform',
+    }),
+  })
+  if (!res.ok) throw new Error(`Failed to create session: ${res.status}`)
   return res.json()
 }

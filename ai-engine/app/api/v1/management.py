@@ -22,6 +22,7 @@ class CreateEmbedTokenRequest(BaseModel):
     allowed_origins: list[str] = Field(default_factory=list)
     scopes: list[str] = Field(default_factory=lambda: ["chat", "widget"])
     expires_at: Optional[str] = None  # ISO format
+    additional_project_ids: list[str] = Field(default_factory=list)
 
 
 class CreateEmbedTokenResponse(BaseModel):
@@ -30,6 +31,7 @@ class CreateEmbedTokenResponse(BaseModel):
     token_prefix: str
     name: str
     project_id: str
+    additional_project_ids: list[str]
     allowed_origins: list[str]
     scopes: list[str]
     created_at: str
@@ -39,17 +41,33 @@ class CreateEmbedTokenResponse(BaseModel):
 @router.post("/embed-tokens", response_model=CreateEmbedTokenResponse)
 async def create_embed_token(req: CreateEmbedTokenRequest):
     """Create a new embed token. Returns plaintext token ONCE."""
-    # Look up project to get tenant_id
+    # Look up primary project to get tenant_id
     project = crud.get_project(req.project_id)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
+    tenant_id = project["tenant_id"]
+
+    # Validate additional projects all belong to the same tenant
+    clean_additional: list[str] = []
+    for pid in req.additional_project_ids:
+        if pid == req.project_id:
+            continue  # dedupe primary
+        p = crud.get_project(pid)
+        if not p:
+            raise HTTPException(status_code=404, detail=f"Additional project {pid} not found")
+        if p["tenant_id"] != tenant_id:
+            raise HTTPException(
+                status_code=403,
+                detail=f"Project {pid} belongs to a different tenant",
+            )
+        clean_additional.append(pid)
 
     # Generate + hash
     plain_token, token_hash, display_prefix = generate_token()
 
     # Insert
     row = crud_auth.create_embed_token(
-        tenant_id=project["tenant_id"],
+        tenant_id=tenant_id,
         project_id=req.project_id,
         name=req.name,
         token_hash=token_hash,
@@ -57,6 +75,7 @@ async def create_embed_token(req: CreateEmbedTokenRequest):
         allowed_origins=req.allowed_origins,
         scopes=req.scopes,
         expires_at=req.expires_at,
+        additional_project_ids=clean_additional,
     )
 
     return CreateEmbedTokenResponse(
@@ -65,6 +84,7 @@ async def create_embed_token(req: CreateEmbedTokenRequest):
         token_prefix=display_prefix,
         name=row["name"],
         project_id=row["project_id"],
+        additional_project_ids=row.get("additional_project_ids") or [],
         allowed_origins=row.get("allowed_origins") or [],
         scopes=row.get("scopes") or [],
         created_at=row["created_at"],
@@ -108,3 +128,30 @@ async def revoke_embed_token(token_id: str):
 
     crud_auth.revoke_embed_token(token_id)
     return {"status": "revoked", "id": token_id}
+
+
+@router.get("/tenant-projects")
+async def list_tenant_projects(tenant_id: Optional[str] = None):
+    """List all projects for a tenant. Used by dashboard Integrations page
+    to populate the multi-project picker when creating an embed token.
+
+    MVP: if tenant_id is not provided, fall back to demo tenant.
+    """
+    if not tenant_id:
+        demo = crud.get_user_by_email("demo@ai-trainer.dev")
+        if not demo:
+            raise HTTPException(status_code=404, detail="No tenant context")
+        tenant_id = demo["tenant_id"]
+
+    projects = crud.list_projects(tenant_id)
+    return {
+        "tenant_id": tenant_id,
+        "projects": [
+            {
+                "id": p["id"],
+                "name": p.get("name"),
+                "description": p.get("description"),
+            }
+            for p in projects
+        ],
+    }

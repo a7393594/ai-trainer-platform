@@ -10,6 +10,7 @@ interface EmbedToken {
   id: string
   tenant_id: string
   project_id: string
+  additional_project_ids?: string[]
   token_prefix: string
   name: string
   allowed_origins: string[]
@@ -26,9 +27,16 @@ interface CreatedTokenResponse {
   token_prefix: string
   name: string
   project_id: string
+  additional_project_ids: string[]
   allowed_origins: string[]
   scopes: string[]
   created_at: string
+}
+
+interface TenantProject {
+  id: string
+  name: string
+  description: string | null
 }
 
 const FRONTEND_URL =
@@ -39,6 +47,8 @@ export default function IntegrationsPage() {
   const [tokens, setTokens] = useState<EmbedToken[]>([])
   const [projectId, setProjectId] = useState<string>('')
   const [projectName, setProjectName] = useState<string>('')
+  const [tenantId, setTenantId] = useState<string>('')
+  const [tenantProjects, setTenantProjects] = useState<TenantProject[]>([])
   const [loading, setLoading] = useState(true)
 
   // Create form state
@@ -48,6 +58,8 @@ export default function IntegrationsPage() {
   const [scopeChat, setScopeChat] = useState(true)
   const [scopeWidget, setScopeWidget] = useState(true)
   const [scopeHistory, setScopeHistory] = useState(false)
+  const [selectedAdditional, setSelectedAdditional] = useState<Set<string>>(new Set())
+  const [primaryPickId, setPrimaryPickId] = useState<string>('')
   const [creating, setCreating] = useState(false)
 
   // Post-creation modal
@@ -56,9 +68,19 @@ export default function IntegrationsPage() {
 
   useEffect(() => {
     getDemoContext()
-      .then((ctx) => {
+      .then(async (ctx) => {
         setProjectId(ctx.project_id)
         setProjectName(ctx.project_name)
+        setTenantId(ctx.tenant_id)
+        setPrimaryPickId(ctx.project_id)
+        // load tenant projects for multi-project picker
+        try {
+          const r = await fetch(`${AI}/api/v1/tenant-projects?tenant_id=${ctx.tenant_id}`)
+          if (r.ok) {
+            const d = await r.json()
+            setTenantProjects(d.projects || [])
+          }
+        } catch {}
         return loadTokens(ctx.project_id)
       })
       .catch(() => setLoading(false))
@@ -74,7 +96,8 @@ export default function IntegrationsPage() {
   }
 
   const handleCreate = async () => {
-    if (!name.trim() || !projectId) return
+    const effectivePrimary = primaryPickId || projectId
+    if (!name.trim() || !effectivePrimary) return
     setCreating(true)
     try {
       const scopes: string[] = []
@@ -87,14 +110,18 @@ export default function IntegrationsPage() {
         .map((o) => o.trim())
         .filter(Boolean)
 
+      // exclude primary from additional to prevent duplicates server-side too
+      const additional = Array.from(selectedAdditional).filter((id) => id !== effectivePrimary)
+
       const r = await fetch(`${AI}/api/v1/embed-tokens`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          project_id: projectId,
+          project_id: effectivePrimary,
           name: name.trim(),
           allowed_origins: allowedOrigins,
           scopes,
+          additional_project_ids: additional,
         }),
       })
       if (!r.ok) throw new Error(await r.text())
@@ -103,11 +130,21 @@ export default function IntegrationsPage() {
       setShowCreate(false)
       setName('')
       setOrigins('')
+      setSelectedAdditional(new Set())
       await loadTokens(projectId)
     } catch (e) {
       alert('Failed to create token: ' + (e as Error).message)
     }
     setCreating(false)
+  }
+
+  const toggleAdditional = (id: string) => {
+    setSelectedAdditional((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
   }
 
   const handleRevoke = async (tokenId: string) => {
@@ -202,6 +239,41 @@ export default function IntegrationsPage() {
               </label>
             </div>
 
+            {tenantProjects.length > 1 && (
+              <>
+                <label className="block text-xs text-zinc-400 mb-1">{t('integrations.primaryProject')}</label>
+                <select
+                  value={primaryPickId}
+                  onChange={(e) => setPrimaryPickId(e.target.value)}
+                  className="w-full mb-4 rounded border border-zinc-600 bg-zinc-700 px-3 py-2 text-sm text-zinc-200 outline-none focus:border-blue-500"
+                >
+                  {tenantProjects.map((p) => (
+                    <option key={p.id} value={p.id}>{p.name}</option>
+                  ))}
+                </select>
+
+                <label className="block text-xs text-zinc-400 mb-1">{t('integrations.additionalProjects')}</label>
+                <p className="text-[10px] text-zinc-500 mb-2">{t('integrations.additionalProjectsHint')}</p>
+                <div className="mb-4 max-h-40 overflow-y-auto rounded border border-zinc-700 bg-zinc-900/60 p-2 space-y-1">
+                  {tenantProjects
+                    .filter((p) => p.id !== primaryPickId)
+                    .map((p) => (
+                      <label key={p.id} className="flex items-center gap-2 text-xs text-zinc-300 px-1 py-0.5 hover:bg-zinc-800 rounded">
+                        <input
+                          type="checkbox"
+                          checked={selectedAdditional.has(p.id)}
+                          onChange={() => toggleAdditional(p.id)}
+                        />
+                        <span className="truncate">{p.name}</span>
+                      </label>
+                    ))}
+                  {tenantProjects.filter((p) => p.id !== primaryPickId).length === 0 && (
+                    <p className="text-[10px] text-zinc-600 px-1">—</p>
+                  )}
+                </div>
+              </>
+            )}
+
             <div className="flex gap-2 justify-end">
               <button
                 onClick={() => setShowCreate(false)}
@@ -232,7 +304,7 @@ export default function IntegrationsPage() {
                       {tok.token_prefix}
                     </code>
                   </div>
-                  <div className="flex items-center gap-4 mt-2 text-[11px] text-zinc-500">
+                  <div className="flex flex-wrap items-center gap-x-4 gap-y-1 mt-2 text-[11px] text-zinc-500">
                     <span>
                       {t('integrations.origins')}:{' '}
                       {tok.allowed_origins.length === 0
@@ -243,6 +315,9 @@ export default function IntegrationsPage() {
                       {t('integrations.lastUsed')}: {formatDate(tok.last_used_at)}
                     </span>
                     <span>{tok.scopes.join(', ')}</span>
+                    <span>
+                      {t('integrations.accessibleProjects')}: {1 + (tok.additional_project_ids?.length || 0)}
+                    </span>
                   </div>
                 </div>
                 <button

@@ -17,12 +17,16 @@ from app.db import crud_auth
 @dataclass
 class AuthContext:
     tenant_id: str
-    project_id: str
+    project_id: str  # primary project (backward compat)
     credential_type: str  # 'embed' | 'api_key'
     credential_id: str
     scopes: list[str] = field(default_factory=list)
     origin: Optional[str] = None
     ip: Optional[str] = None
+    allowed_project_ids: list[str] = field(default_factory=list)  # [project_id] + additional
+
+    def can_access_project(self, pid: str) -> bool:
+        return pid in self.allowed_project_ids
 
 
 def _origin_host(origin: str) -> Optional[str]:
@@ -135,14 +139,20 @@ def require_embed_auth(scope: str):
         except Exception:
             pass
 
+        primary_pid = row["project_id"]
+        additional = row.get("additional_project_ids") or []
+        # primary first, then unique additions
+        allowed = [primary_pid] + [p for p in additional if p and p != primary_pid]
+
         return AuthContext(
             tenant_id=row["tenant_id"],
-            project_id=row["project_id"],
+            project_id=primary_pid,
             credential_type="embed",
             credential_id=row["id"],
             scopes=scopes,
             origin=origin,
             ip=request.client.host if request.client else None,
+            allowed_project_ids=allowed,
         )
 
     return _dep

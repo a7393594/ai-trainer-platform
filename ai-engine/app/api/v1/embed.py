@@ -2,30 +2,116 @@
 Embed API — for iframe/JS-SDK integrations.
 
 Authentication: X-Embed-Token header (or ?token= query param)
-All endpoints enforce project_id from the token, never from the request body.
+All endpoints enforce project_id must be in ctx.allowed_project_ids.
 """
 import json
 import asyncio
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from app.core.auth.context import AuthContext, require_embed_auth
 from app.core.orchestrator.agent import AgentOrchestrator
 from app.core.llm_router.router import stream_chat_completion
-from app.models.schemas import ChatRequest, ChatResponse, Role, ChatMessage
+from app.models.schemas import ChatRequest, ChatResponse
 from app.db import crud
 
 router = APIRouter()
 orchestrator = AgentOrchestrator()
 
 
+def _resolve_target_project(ctx: AuthContext, req_project_id: str | None) -> str:
+    """Resolve target project_id — fallback to primary, enforce allowlist."""
+    target = req_project_id or ctx.project_id
+    if not ctx.can_access_project(target):
+        raise HTTPException(
+            status_code=403,
+            detail=f"Token does not grant access to project {target}",
+        )
+    return target
+
+
 class EmbedChatRequest(BaseModel):
-    """Request body for /embed/chat. Note: project_id is NOT here — comes from token."""
+    """Request body for /embed/chat.
+
+    project_id is optional — when omitted, falls back to the token's primary project.
+    When provided, must be within the token's allowed_project_ids.
+    """
     message: str = Field(..., max_length=10000)
     session_id: str | None = None
-    external_user_id: str | None = None  # optional: host system's user id
+    external_user_id: str | None = None
+    project_id: str | None = None
+
+
+class EmbedCreateSessionRequest(BaseModel):
+    project_id: str | None = None
+    external_user_id: str | None = None
+    session_type: str = "freeform"
+
+
+@router.get("/projects")
+async def embed_list_projects(
+    ctx: AuthContext = Depends(require_embed_auth(scope="chat")),
+):
+    """List projects this token can access."""
+    rows = crud.list_projects_by_ids(ctx.allowed_project_ids)
+    # Preserve allowed_project_ids ordering (primary first)
+    by_id = {r["id"]: r for r in rows}
+    ordered = [by_id[p] for p in ctx.allowed_project_ids if p in by_id]
+    return {
+        "projects": [
+            {
+                "id": p["id"],
+                "name": p.get("name"),
+                "description": p.get("description"),
+                "is_primary": p["id"] == ctx.project_id,
+            }
+            for p in ordered
+        ]
+    }
+
+
+@router.get("/sessions")
+async def embed_list_sessions(
+    project_id: str | None = Query(default=None),
+    external_user_id: str | None = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=200),
+    ctx: AuthContext = Depends(require_embed_auth(scope="chat")),
+):
+    """List sessions for the given project filtered by external user."""
+    target_pid = _resolve_target_project(ctx, project_id)
+    user = crud.get_or_create_external_user(ctx.tenant_id, external_user_id)
+    sessions = crud.list_sessions(target_pid, user_id=user["id"], limit=limit)
+    return {
+        "project_id": target_pid,
+        "external_user_id": external_user_id,
+        "sessions": [
+            {
+                "id": s["id"],
+                "session_type": s.get("session_type"),
+                "started_at": s.get("started_at"),
+                "ended_at": s.get("ended_at"),
+            }
+            for s in sessions
+        ],
+    }
+
+
+@router.post("/sessions")
+async def embed_create_session(
+    req: EmbedCreateSessionRequest,
+    ctx: AuthContext = Depends(require_embed_auth(scope="chat")),
+):
+    """Explicitly create a new session (alternative to sending a message with session_id=None)."""
+    target_pid = _resolve_target_project(ctx, req.project_id)
+    user = crud.get_or_create_external_user(ctx.tenant_id, req.external_user_id)
+    session = crud.create_session(target_pid, user["id"], req.session_type)
+    return {
+        "session_id": session["id"],
+        "project_id": target_pid,
+        "started_at": session.get("started_at"),
+    }
 
 
 @router.post("/chat", response_model=ChatResponse)
@@ -35,11 +121,11 @@ async def embed_chat(
 ):
     """Non-streaming chat endpoint for embed integrations."""
     try:
-        # Map external user to internal ait_users
+        target_pid = _resolve_target_project(ctx, req.project_id)
         user = crud.get_or_create_external_user(ctx.tenant_id, req.external_user_id)
 
         internal_req = ChatRequest(
-            project_id=ctx.project_id,  # forced from token
+            project_id=target_pid,
             session_id=req.session_id,
             user_id=user["id"],
             message=req.message,
@@ -57,13 +143,19 @@ async def embed_chat_stream(
     ctx: AuthContext = Depends(require_embed_auth(scope="chat")),
 ):
     """Streaming chat endpoint (SSE)."""
+    target_pid = _resolve_target_project(ctx, req.project_id)
     user = crud.get_or_create_external_user(ctx.tenant_id, req.external_user_id)
     user_id = user["id"]
 
     # Get or create session
     session_id = req.session_id
-    if not session_id:
-        session = crud.create_session(ctx.project_id, user_id, "freeform")
+    if session_id:
+        # Validate session belongs to target project
+        existing = crud.get_session(session_id)
+        if not existing or existing.get("project_id") != target_pid:
+            raise HTTPException(status_code=404, detail="Session not found for this project")
+    else:
+        session = crud.create_session(target_pid, user_id, "freeform")
         session_id = session["id"]
 
     # Store user message
@@ -71,7 +163,7 @@ async def embed_chat_stream(
 
     # Build LLM messages
     messages = []
-    prompt = crud.get_active_prompt(ctx.project_id)
+    prompt = crud.get_active_prompt(target_pid)
     if prompt:
         messages.append({"role": "system", "content": prompt["content"]})
 
@@ -83,7 +175,7 @@ async def embed_chat_stream(
 
     async def generate():
         full = ""
-        yield f"data: {json.dumps({'session_id': session_id})}\n\n"
+        yield f"data: {json.dumps({'session_id': session_id, 'project_id': target_pid})}\n\n"
         try:
             async for chunk in stream_chat_completion(
                 messages=messages,
@@ -105,14 +197,15 @@ async def embed_session_history(
     session_id: str,
     ctx: AuthContext = Depends(require_embed_auth(scope="chat")),
 ):
-    """Get message history for a session. Must belong to the token's project."""
+    """Get message history for a session. Must belong to one of the token's allowed projects."""
     session = crud.get_session(session_id)
-    if not session or session.get("project_id") != ctx.project_id:
+    if not session or not ctx.can_access_project(session.get("project_id") or ""):
         raise HTTPException(status_code=404, detail="Session not found")
 
     messages = crud.list_messages(session_id)
     return {
         "session_id": session_id,
+        "project_id": session.get("project_id"),
         "messages": [
             {"id": m["id"], "role": m["role"], "content": m["content"], "created_at": m["created_at"]}
             for m in messages

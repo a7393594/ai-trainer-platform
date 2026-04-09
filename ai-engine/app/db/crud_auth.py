@@ -19,6 +19,7 @@ def create_embed_token(
     scopes: Optional[list[str]] = None,
     expires_at: Optional[str] = None,
     created_by: Optional[str] = None,
+    additional_project_ids: Optional[list[str]] = None,
 ) -> dict:
     """Insert a new embed token. Caller must have already generated + hashed."""
     data: dict = {
@@ -29,6 +30,7 @@ def create_embed_token(
         "token_prefix": token_prefix,
         "allowed_origins": allowed_origins or [],
         "scopes": scopes or ["chat", "widget"],
+        "additional_project_ids": additional_project_ids or [],
     }
     if expires_at:
         data["expires_at"] = expires_at
@@ -62,7 +64,7 @@ def list_embed_tokens(
     query = (
         get_supabase()
         .table(T_EMBED_TOKENS)
-        .select("id,tenant_id,project_id,token_prefix,name,allowed_origins,scopes,expires_at,revoked_at,last_used_at,created_by,created_at")
+        .select("id,tenant_id,project_id,additional_project_ids,token_prefix,name,allowed_origins,scopes,expires_at,revoked_at,last_used_at,created_by,created_at")
         .eq("tenant_id", tenant_id)
         .order("created_at", desc=True)
     )
@@ -78,7 +80,7 @@ def get_embed_token(token_id: str) -> Optional[dict]:
     result = (
         get_supabase()
         .table(T_EMBED_TOKENS)
-        .select("id,tenant_id,project_id,token_prefix,name,allowed_origins,scopes,expires_at,revoked_at,last_used_at,created_by,created_at")
+        .select("id,tenant_id,project_id,additional_project_ids,token_prefix,name,allowed_origins,scopes,expires_at,revoked_at,last_used_at,created_by,created_at")
         .eq("id", token_id)
         .limit(1)
         .execute()
