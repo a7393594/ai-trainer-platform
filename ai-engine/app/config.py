@@ -35,6 +35,9 @@ class Settings(BaseSettings):
     environment: str = "development"
     log_level: str = "debug"
 
+    # CORS — comma-separated list for internal /api/v1 routes
+    cors_allowed_origins: str = "http://localhost:3000,http://localhost:3003,https://frontend-gray-three-14.vercel.app"
+
     class Config:
         env_file = ".env"
         case_sensitive = False

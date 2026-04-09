@@ -68,6 +68,35 @@ def get_user_by_email(email: str) -> Optional[dict]:
     return result.data[0] if result.data else None
 
 
+def get_or_create_external_user(
+    tenant_id: str,
+    external_id: Optional[str] = None,
+) -> dict:
+    """
+    Get or create a guest user for external (embed/API) requests.
+
+    If external_id is provided, create a deterministic email like
+    `external_<id>@embed.local` so repeat visitors map to the same user.
+    Otherwise create an anonymous guest with a random external_id.
+    """
+    if not external_id:
+        import secrets
+        external_id = f"anon_{secrets.token_urlsafe(8)}"
+
+    email = f"external_{external_id}@embed.local"
+    existing = get_user_by_email(email)
+    if existing and existing.get("tenant_id") == tenant_id:
+        return existing
+
+    # Create new guest user
+    return create_user(
+        tenant_id=tenant_id,
+        email=email,
+        role="viewer",
+        display_name=f"Guest {external_id[:12]}",
+    )
+
+
 # ============================================
 # Project
 # ============================================
