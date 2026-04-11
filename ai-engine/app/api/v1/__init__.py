@@ -502,6 +502,47 @@ async def get_eval_run_details(run_id: str):
 
 
 # ============================================
+# 評估分析
+# ============================================
+
+@router.get("/eval/analytics/trend/{project_id}")
+async def get_eval_trend(project_id: str, limit: int = 20):
+    """分數趨勢"""
+    trend = crud.get_eval_score_trend(project_id, limit)
+    return {"trend": trend}
+
+
+@router.get("/eval/analytics/categories/{project_id}/{run_id}")
+async def get_eval_categories(project_id: str, run_id: str):
+    """分類表現"""
+    categories = crud.get_category_analytics(project_id, run_id)
+    return {"categories": categories}
+
+
+@router.get("/eval/analytics/regression/{project_id}/{run_id}")
+async def get_eval_regression(project_id: str, run_id: str):
+    """回歸比對"""
+    from app.core.eval.engine import eval_engine
+    return eval_engine.compare_runs(project_id, run_id)
+
+
+@router.get("/eval/analytics/compare-versions/{project_id}")
+async def compare_prompt_versions(project_id: str, version_ids: str = ""):
+    """版本比較（version_ids 以逗號分隔）"""
+    ids = [v.strip() for v in version_ids.split(",") if v.strip()]
+    if not ids:
+        return {"versions": []}
+    versions = crud.get_prompt_version_comparison(project_id, ids)
+    return {"versions": versions}
+
+
+@router.get("/eval/analytics/phase-status/{project_id}")
+async def get_eval_phase_status(project_id: str):
+    """階段狀態"""
+    return crud.get_phase_status(project_id)
+
+
+# ============================================
 # Fine-tune
 # ============================================
 

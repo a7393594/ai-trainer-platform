@@ -167,6 +167,43 @@ class EvalRunResult(BaseModel):
     details: list[dict[str, Any]] = []
 
 
+class EvalTrendPoint(BaseModel):
+    run_id: str
+    total_score: float
+    passed_count: int
+    failed_count: int
+    run_at: str
+    prompt_version_id: Optional[str] = None
+    model_used: Optional[str] = None
+
+
+class CategoryAnalytics(BaseModel):
+    category: str
+    avg_score: float
+    passed_count: int
+    failed_count: int
+    total: int
+
+
+class RegressionResult(BaseModel):
+    regression_detected: bool
+    overall_delta: float
+    current_score: Optional[float] = None
+    previous_score: Optional[float] = None
+    regressions: list[dict[str, Any]] = []
+    improvements: list[dict[str, Any]] = []
+    regression_level: Optional[str] = None  # "ok" | "warning" | "critical"
+
+
+class PhaseStatus(BaseModel):
+    test_case_count: int
+    run_count: int
+    latest_score: Optional[float] = None
+    agreement_rate: Optional[float] = None
+    auto_mode_eligible: bool
+    current_phase: str  # "manual" | "semi-auto" | "full-auto"
+
+
 # ============================================
 # Onboarding
 # ============================================

@@ -5,6 +5,10 @@ import json
 from app.db import crud
 from app.core.llm_router.router import chat_completion
 
+# Regression detection thresholds
+REGRESSION_THRESHOLD_PER_CASE = 15  # single case score drop
+REGRESSION_THRESHOLD_OVERALL = 5    # overall avg score drop
+
 
 class EvalEngine:
 
@@ -80,6 +84,15 @@ class EvalEngine:
                 details={"reason": r["reason"]},
             )
 
+        # Update prompt version eval_score
+        try:
+            crud.update_prompt_eval_score(prompt["id"], avg_score)
+        except Exception:
+            pass  # non-critical
+
+        # Regression detection
+        regression_data = crud.get_regression_comparison(project_id, run["id"])
+
         return {
             "status": "completed",
             "run_id": run["id"],
@@ -88,6 +101,9 @@ class EvalEngine:
             "failed_count": failed,
             "total_cases": len(test_cases),
             "results": results,
+            "regression_detected": regression_data.get("regression_detected", False),
+            "overall_delta": regression_data.get("overall_delta", 0),
+            "regressions": regression_data.get("regressions", []),
         }
 
     async def _judge(self, input_text: str, expected: str, actual: str) -> tuple:
@@ -124,6 +140,20 @@ class EvalEngine:
             return data.get("score", 0), data.get("passed", False), data.get("reason", "")
         except Exception:
             return 50, False, "Judge failed"
+
+
+    def compare_runs(self, project_id: str, run_id: str) -> dict:
+        """Compare a run with its predecessor, with threshold-based regression detection"""
+        data = crud.get_regression_comparison(project_id, run_id)
+        # Apply stricter threshold labeling
+        severe_regressions = [r for r in data.get("regressions", []) if r["delta"] < -REGRESSION_THRESHOLD_PER_CASE]
+        data["severe_regressions"] = severe_regressions
+        data["regression_level"] = (
+            "critical" if data.get("overall_delta", 0) < -REGRESSION_THRESHOLD_OVERALL and severe_regressions
+            else "warning" if data.get("regression_detected", False)
+            else "ok"
+        )
+        return data
 
 
 eval_engine = EvalEngine()

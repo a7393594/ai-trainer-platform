@@ -149,3 +149,40 @@ export interface EvalRunResult {
   failed_count: number
   details: any[]
 }
+
+export interface EvalTrendPoint {
+  run_id: string
+  total_score: number
+  passed_count: number
+  failed_count: number
+  run_at: string
+  prompt_version_id?: string
+  model_used?: string
+}
+
+export interface CategoryAnalytics {
+  category: string
+  avg_score: number
+  passed_count: number
+  failed_count: number
+  total: number
+}
+
+export interface PhaseStatus {
+  test_case_count: number
+  run_count: number
+  latest_score: number | null
+  agreement_rate: number | null
+  auto_mode_eligible: boolean
+  current_phase: 'manual' | 'semi-auto' | 'full-auto'
+}
+
+export interface RegressionResult {
+  regression_detected: boolean
+  overall_delta: number
+  current_score?: number
+  previous_score?: number
+  regressions: Array<{ test_case_id: string; old_score: number; new_score: number; delta: number }>
+  improvements: Array<{ test_case_id: string; old_score: number; new_score: number; delta: number }>
+  regression_level?: 'ok' | 'warning' | 'critical'
+}

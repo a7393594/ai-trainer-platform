@@ -599,6 +599,182 @@ def get_eval_run_details(run_id: str) -> dict:
     return {"run": run.data[0] if run.data else None, "results": results.data}
 
 
+def get_eval_score_trend(project_id: str, limit: int = 20) -> list[dict]:
+    """取最近 N 次 eval run 的分數趨勢"""
+    return (
+        get_supabase().table(T_EVAL_RUNS)
+        .select("id, total_score, passed_count, failed_count, run_at, prompt_version_id, model_used")
+        .eq("project_id", project_id)
+        .order("run_at", desc=True).limit(limit).execute()
+    ).data
+
+
+def get_category_analytics(project_id: str, run_id: str) -> list[dict]:
+    """按 category 分群的平均分/通過率"""
+    results = get_supabase().table(T_EVAL_RESULTS).select("*").eq("run_id", run_id).execute().data
+    if not results:
+        return []
+    tc_ids = list({r["test_case_id"] for r in results})
+    test_cases = (
+        get_supabase().table(T_TEST_CASES)
+        .select("id, category").in_("id", tc_ids).execute()
+    ).data
+    tc_map = {tc["id"]: tc.get("category") or "Uncategorized" for tc in test_cases}
+
+    # Aggregate by category
+    cats: dict[str, dict] = {}
+    for r in results:
+        cat = tc_map.get(r["test_case_id"], "Uncategorized")
+        if cat not in cats:
+            cats[cat] = {"category": cat, "total_score": 0, "passed_count": 0, "failed_count": 0, "total": 0}
+        cats[cat]["total_score"] += r["score"]
+        cats[cat]["total"] += 1
+        if r["passed"]:
+            cats[cat]["passed_count"] += 1
+        else:
+            cats[cat]["failed_count"] += 1
+
+    return [
+        {**c, "avg_score": round(c["total_score"] / c["total"], 1) if c["total"] else 0}
+        for c in cats.values()
+    ]
+
+
+def get_regression_comparison(project_id: str, current_run_id: str) -> dict:
+    """對比當前 run 與前一次 run，找出退步/改善的 case"""
+    runs = (
+        get_supabase().table(T_EVAL_RUNS)
+        .select("id, total_score, run_at")
+        .eq("project_id", project_id)
+        .order("run_at", desc=True).limit(10).execute()
+    ).data
+
+    current_run = None
+    previous_run = None
+    found_current = False
+    for r in runs:
+        if r["id"] == current_run_id:
+            current_run = r
+            found_current = True
+            continue
+        if found_current:
+            previous_run = r
+            break
+
+    if not current_run or not previous_run:
+        return {"regression_detected": False, "overall_delta": 0, "regressions": [], "improvements": [], "message": "No previous run to compare"}
+
+    # Fetch results for both runs
+    cur_results = get_supabase().table(T_EVAL_RESULTS).select("*").eq("run_id", current_run["id"]).execute().data
+    prev_results = get_supabase().table(T_EVAL_RESULTS).select("*").eq("run_id", previous_run["id"]).execute().data
+
+    prev_map = {r["test_case_id"]: r for r in prev_results}
+    regressions = []
+    improvements = []
+
+    for cr in cur_results:
+        pr = prev_map.get(cr["test_case_id"])
+        if not pr:
+            continue
+        delta = cr["score"] - pr["score"]
+        item = {"test_case_id": cr["test_case_id"], "old_score": pr["score"], "new_score": cr["score"], "delta": round(delta, 1)}
+        if delta < -5:
+            regressions.append(item)
+        elif delta > 5:
+            improvements.append(item)
+
+    overall_delta = round(current_run["total_score"] - previous_run["total_score"], 1)
+    regression_detected = overall_delta < -5 or any(r["delta"] < -15 for r in regressions)
+
+    return {
+        "regression_detected": regression_detected,
+        "overall_delta": overall_delta,
+        "current_score": current_run["total_score"],
+        "previous_score": previous_run["total_score"],
+        "regressions": regressions,
+        "improvements": improvements,
+    }
+
+
+def get_prompt_version_comparison(project_id: str, version_ids: list[str]) -> list[dict]:
+    """多版本 eval 成績比較"""
+    result = []
+    for vid in version_ids:
+        runs = (
+            get_supabase().table(T_EVAL_RUNS)
+            .select("*").eq("project_id", project_id).eq("prompt_version_id", vid)
+            .order("run_at", desc=True).limit(1).execute()
+        ).data
+        if runs:
+            run = runs[0]
+            # Get category breakdown
+            cats = get_category_analytics(project_id, run["id"])
+            result.append({
+                "prompt_version_id": vid,
+                "run_id": run["id"],
+                "total_score": run["total_score"],
+                "passed_count": run["passed_count"],
+                "failed_count": run["failed_count"],
+                "run_at": run["run_at"],
+                "model_used": run["model_used"],
+                "categories": cats,
+            })
+        else:
+            result.append({"prompt_version_id": vid, "run_id": None, "total_score": None})
+    return result
+
+
+def get_phase_status(project_id: str) -> dict:
+    """計算 test case 數量、一致率、是否達自動化門檻"""
+    cases = (
+        get_supabase().table(T_TEST_CASES)
+        .select("id").eq("project_id", project_id).eq("is_active", True).execute()
+    ).data
+    test_case_count = len(cases)
+
+    runs = (
+        get_supabase().table(T_EVAL_RUNS)
+        .select("id, total_score, passed_count, failed_count")
+        .eq("project_id", project_id)
+        .order("run_at", desc=True).limit(1).execute()
+    ).data
+
+    latest_score = None
+    agreement_rate = None
+    if runs:
+        latest = runs[0]
+        latest_score = latest["total_score"]
+        total = latest["passed_count"] + latest["failed_count"]
+        agreement_rate = round((latest["passed_count"] / total) * 100, 1) if total > 0 else 0
+
+    auto_eligible = test_case_count >= 200 and (agreement_rate or 0) >= 90
+    if auto_eligible:
+        phase = "full-auto"
+    elif test_case_count >= 50 and (agreement_rate or 0) >= 70:
+        phase = "semi-auto"
+    else:
+        phase = "manual"
+
+    run_count = len((
+        get_supabase().table(T_EVAL_RUNS)
+        .select("id").eq("project_id", project_id).execute()
+    ).data)
+
+    return {
+        "test_case_count": test_case_count,
+        "run_count": run_count,
+        "latest_score": latest_score,
+        "agreement_rate": agreement_rate,
+        "auto_mode_eligible": auto_eligible,
+        "current_phase": phase,
+    }
+
+
+def update_prompt_eval_score(version_id: str, score: float) -> None:
+    """更新 prompt version 的 eval_score"""
+    get_supabase().table(T_PROMPTS).update({"eval_score": round(score, 1)}).eq("id", version_id).execute()
+
+
 # ============================================
 # Fine-tune helpers
 # ============================================
