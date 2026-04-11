@@ -160,3 +160,94 @@ def require_embed_auth(scope: str):
         )
 
     return _dep
+
+
+def _ip_allowed(client_ip: str | None, allowed_ips: list[str]) -> bool:
+    """Check if client IP matches the allowlist. Empty list = allow all."""
+    if not allowed_ips:
+        return True
+    if not client_ip:
+        return False
+    return client_ip in allowed_ips
+
+
+def require_api_key_auth(scope: str):
+    """
+    FastAPI dependency factory: validates API key and returns AuthContext.
+
+    Token source: X-API-Key header only (server-to-server, no query param).
+    Checks IP allowlist instead of origin.
+    """
+    async def _dep(
+        request: Request,
+        x_api_key: Optional[str] = Header(default=None, alias="X-API-Key"),
+        authorization: Optional[str] = Header(default=None),
+    ) -> AuthContext:
+        # 1. Resolve key
+        raw_key = x_api_key
+        if not raw_key and authorization and authorization.lower().startswith("bearer "):
+            raw_key = authorization.split(" ", 1)[1].strip()
+
+        if not raw_key:
+            raise HTTPException(status_code=401, detail="Missing API key")
+
+        # 2. Look up by hash
+        from app.core.auth.embed_token import hash_token as _hash
+        key_hash = _hash(raw_key)
+        row = crud_auth.get_api_key_by_hash(key_hash)
+        if not row:
+            raise HTTPException(status_code=401, detail="Invalid API key")
+
+        # 3. Check revoked
+        if row.get("revoked_at"):
+            raise HTTPException(status_code=401, detail="API key revoked")
+
+        # 4. Check expiry
+        expires_at = row.get("expires_at")
+        if expires_at:
+            if isinstance(expires_at, str):
+                exp = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
+            else:
+                exp = expires_at
+            if exp < datetime.now(timezone.utc):
+                raise HTTPException(status_code=401, detail="API key expired")
+
+        # 5. IP allowlist check (instead of origin check for embed)
+        client_ip = request.client.host if request.client else None
+        allowed_ips = row.get("allowed_ips") or []
+        if not _ip_allowed(client_ip, allowed_ips):
+            raise HTTPException(
+                status_code=403,
+                detail=f"IP not allowed: {client_ip}",
+            )
+
+        # 6. Scope check
+        scopes = row.get("scopes") or []
+        if scope not in scopes:
+            raise HTTPException(
+                status_code=403,
+                detail=f"API key missing required scope: {scope}",
+            )
+
+        # 7. Async touch last_used_at
+        try:
+            asyncio.create_task(
+                asyncio.to_thread(crud_auth.touch_api_key, row["id"])
+            )
+        except Exception:
+            pass
+
+        return AuthContext(
+            tenant_id=row["tenant_id"],
+            project_id=row["project_id"],
+            credential_type="api_key",
+            credential_id=row["id"],
+            scopes=scopes,
+            origin=None,
+            ip=client_ip,
+            allowed_project_ids=[row["project_id"]],
+            max_rpm=row.get("max_rpm") or 60,
+            max_rpd=row.get("max_rpd") or 20000,
+        )
+
+    return _dep

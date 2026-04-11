@@ -11,6 +11,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from app.core.auth.embed_token import generate_token
+from app.core.auth.api_key import generate_api_key
 from app.db import crud, crud_auth, crud_usage
 
 router = APIRouter()
@@ -175,3 +176,114 @@ async def list_tenant_projects(tenant_id: Optional[str] = None):
             for p in projects
         ],
     }
+
+
+# ============================================
+# API Keys CRUD
+# ============================================
+
+
+class CreateApiKeyRequest(BaseModel):
+    project_id: str
+    name: str = Field(..., min_length=1, max_length=100)
+    scopes: list[str] = Field(default_factory=lambda: ["chat:read", "chat:write"])
+    allowed_ips: list[str] = Field(default_factory=list)
+    max_rpm: int = 60
+    max_rpd: int = 20000
+    expires_at: Optional[str] = None
+
+
+class CreateApiKeyResponse(BaseModel):
+    id: str
+    key: str  # Plain key — shown ONCE
+    key_prefix: str
+    name: str
+    project_id: str
+    scopes: list[str]
+    allowed_ips: list[str]
+    created_at: str
+    warning: str = "Save this API key now — it will not be shown again."
+
+
+@router.post("/api-keys", response_model=CreateApiKeyResponse)
+async def create_api_key_endpoint(req: CreateApiKeyRequest):
+    """Create a new API key. Returns plaintext key ONCE."""
+    project = crud.get_project(req.project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    plain_key, key_hash, display_prefix = generate_api_key()
+
+    row = crud_auth.create_api_key(
+        tenant_id=project["tenant_id"],
+        project_id=req.project_id,
+        name=req.name,
+        key_hash=key_hash,
+        key_prefix=display_prefix,
+        scopes=req.scopes,
+        allowed_ips=req.allowed_ips,
+        max_rpm=req.max_rpm,
+        max_rpd=req.max_rpd,
+        expires_at=req.expires_at,
+    )
+
+    return CreateApiKeyResponse(
+        id=row["id"],
+        key=plain_key,
+        key_prefix=display_prefix,
+        name=row["name"],
+        project_id=row["project_id"],
+        scopes=row.get("scopes") or [],
+        allowed_ips=row.get("allowed_ips") or [],
+        created_at=row["created_at"],
+    )
+
+
+@router.get("/api-keys")
+async def list_api_keys_endpoint(
+    project_id: Optional[str] = None,
+    include_revoked: bool = False,
+):
+    """List API keys."""
+    if project_id:
+        project = crud.get_project(project_id)
+        if not project:
+            raise HTTPException(status_code=404, detail="Project not found")
+        tenant_id = project["tenant_id"]
+    else:
+        demo = crud.get_user_by_email("demo@ai-trainer.dev")
+        if not demo:
+            raise HTTPException(status_code=404, detail="No tenant context")
+        tenant_id = demo["tenant_id"]
+
+    keys = crud_auth.list_api_keys(
+        tenant_id=tenant_id,
+        project_id=project_id,
+        include_revoked=include_revoked,
+    )
+    return {"keys": keys}
+
+
+@router.delete("/api-keys/{key_id}")
+async def revoke_api_key_endpoint(key_id: str):
+    """Revoke an API key."""
+    existing = crud_auth.get_api_key(key_id)
+    if not existing:
+        raise HTTPException(status_code=404, detail="API key not found")
+    if existing.get("revoked_at"):
+        raise HTTPException(status_code=400, detail="API key already revoked")
+
+    crud_auth.revoke_api_key(key_id)
+    return {"status": "revoked", "id": key_id}
+
+
+@router.get("/api-keys/{key_id}/usage")
+async def get_api_key_usage(key_id: str, days: int = 7):
+    """Get usage stats for an API key."""
+    key = crud_auth.get_api_key(key_id)
+    if not key:
+        raise HTTPException(status_code=404, detail="API key not found")
+
+    summary = crud_usage.get_usage_summary(key_id, days=days)
+    by_day = crud_usage.get_usage_by_day(key_id, days=days)
+    return {"key_id": key_id, "days": days, **summary, "by_day": by_day}

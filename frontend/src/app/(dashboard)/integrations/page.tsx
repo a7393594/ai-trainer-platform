@@ -45,6 +45,35 @@ interface TokenUsage {
   tokens_out: number
 }
 
+interface ApiKey {
+  id: string
+  tenant_id: string
+  project_id: string
+  key_prefix: string
+  name: string
+  scopes: string[]
+  allowed_ips: string[]
+  max_rpm: number
+  max_rpd: number
+  expires_at: string | null
+  revoked_at: string | null
+  last_used_at: string | null
+  created_at: string
+}
+
+interface CreatedApiKeyResponse {
+  id: string
+  key: string
+  key_prefix: string
+  name: string
+  project_id: string
+  scopes: string[]
+  allowed_ips: string[]
+  created_at: string
+}
+
+type TabType = 'embed' | 'apikeys'
+
 const FRONTEND_URL =
   typeof window !== 'undefined' ? window.location.origin : 'https://frontend-gray-three-14.vercel.app'
 
@@ -72,6 +101,20 @@ export default function IntegrationsPage() {
   const [createdToken, setCreatedToken] = useState<CreatedTokenResponse | null>(null)
   const [copiedField, setCopiedField] = useState<string | null>(null)
   const [usageMap, setUsageMap] = useState<Record<string, TokenUsage>>({})
+
+  // Tab state
+  const [activeTab, setActiveTab] = useState<TabType>('embed')
+
+  // API Key state
+  const [apiKeys, setApiKeys] = useState<ApiKey[]>([])
+  const [apiKeyUsageMap, setApiKeyUsageMap] = useState<Record<string, TokenUsage>>({})
+  const [showCreateKey, setShowCreateKey] = useState(false)
+  const [keyName, setKeyName] = useState('')
+  const [keyIps, setKeyIps] = useState('')
+  const [keyScopeRead, setKeyScopeRead] = useState(true)
+  const [keyScopeWrite, setKeyScopeWrite] = useState(true)
+  const [creatingKey, setCreatingKey] = useState(false)
+  const [createdApiKey, setCreatedApiKey] = useState<CreatedApiKeyResponse | null>(null)
 
   useEffect(() => {
     getDemoContext()
@@ -199,6 +242,84 @@ export default function IntegrationsPage() {
     return new Date(iso).toLocaleString()
   }
 
+  // ========== API Keys ==========
+
+  const loadApiKeys = async (pid: string) => {
+    try {
+      const r = await fetch(`${AI}/api/v1/api-keys?project_id=${pid}`)
+      const d = await r.json()
+      const keyList: ApiKey[] = d.keys || []
+      setApiKeys(keyList)
+      const usageEntries = await Promise.all(
+        keyList.map(async (k) => {
+          try {
+            const ur = await fetch(`${AI}/api/v1/api-keys/${k.id}/usage?days=7`)
+            if (ur.ok) {
+              const ud = await ur.json()
+              return [k.id, { call_count: ud.call_count, tokens_in: ud.tokens_in, tokens_out: ud.tokens_out }] as [string, TokenUsage]
+            }
+          } catch {}
+          return [k.id, { call_count: 0, tokens_in: 0, tokens_out: 0 }] as [string, TokenUsage]
+        })
+      )
+      setApiKeyUsageMap(Object.fromEntries(usageEntries))
+    } catch {}
+  }
+
+  // Load API keys when tab switches or project loads
+  useEffect(() => {
+    if (activeTab === 'apikeys' && projectId) {
+      loadApiKeys(projectId)
+    }
+  }, [activeTab, projectId])
+
+  const handleCreateKey = async () => {
+    if (!keyName.trim() || !projectId) return
+    setCreatingKey(true)
+    try {
+      const scopes: string[] = []
+      if (keyScopeRead) scopes.push('chat:read')
+      if (keyScopeWrite) scopes.push('chat:write')
+      const allowedIps = keyIps.split(',').map((s) => s.trim()).filter(Boolean)
+
+      const r = await fetch(`${AI}/api/v1/api-keys`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          project_id: projectId,
+          name: keyName.trim(),
+          scopes,
+          allowed_ips: allowedIps,
+        }),
+      })
+      if (!r.ok) throw new Error(await r.text())
+      const data: CreatedApiKeyResponse = await r.json()
+      setCreatedApiKey(data)
+      setShowCreateKey(false)
+      setKeyName('')
+      setKeyIps('')
+      await loadApiKeys(projectId)
+    } catch (e) {
+      alert('Failed to create API key: ' + (e as Error).message)
+    }
+    setCreatingKey(false)
+  }
+
+  const handleRevokeKey = async (keyId: string) => {
+    try {
+      await fetch(`${AI}/api/v1/api-keys/${keyId}`, { method: 'DELETE' })
+    } catch {}
+    await loadApiKeys(projectId)
+  }
+
+  const buildCurlSnippet = (key: string) => {
+    const baseUrl = AI.startsWith('http://localhost') ? AI : 'https://ai-trainer-engine.onrender.com'
+    return `curl -X POST ${baseUrl}/public/v1/chat \\
+  -H "X-API-Key: ${key}" \\
+  -H "Content-Type: application/json" \\
+  -d '{"message": "Hello from my backend"}'`
+  }
+
   if (loading) {
     return (
       <div className="flex h-full items-center justify-center bg-zinc-900">
@@ -210,20 +331,52 @@ export default function IntegrationsPage() {
   return (
     <div className="h-full bg-zinc-900 p-6 overflow-y-auto">
       <div className="max-w-4xl mx-auto">
-        <div className="flex items-center justify-between mb-6">
-          <div>
-            <h1 className="text-lg font-medium text-zinc-200">{t('integrations.title')}</h1>
-            <p className="text-xs text-zinc-500 mt-1">{t('integrations.desc')}</p>
-            <p className="text-xs text-zinc-600 mt-1">{projectName}</p>
-          </div>
-          <button
-            onClick={() => setShowCreate(true)}
-            className="rounded bg-blue-600 px-4 py-2 text-sm text-white hover:bg-blue-500"
-          >
-            + {t('integrations.create')}
-          </button>
+        <div className="mb-4">
+          <h1 className="text-lg font-medium text-zinc-200">{t('integrations.title')}</h1>
+          <p className="text-xs text-zinc-500 mt-1">{t('integrations.desc')}</p>
+          <p className="text-xs text-zinc-600 mt-1">{projectName}</p>
         </div>
 
+        {/* Tabs */}
+        <div className="flex gap-1 mb-4 border-b border-zinc-700">
+          {(['embed', 'apikeys'] as TabType[]).map((tab) => (
+            <button
+              key={tab}
+              onClick={() => setActiveTab(tab)}
+              className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors ${
+                activeTab === tab
+                  ? 'border-blue-500 text-blue-400'
+                  : 'border-transparent text-zinc-500 hover:text-zinc-300'
+              }`}
+            >
+              {tab === 'embed' ? t('integrations.tabEmbed') : t('integrations.tabApiKeys')}
+            </button>
+          ))}
+        </div>
+
+        {/* Tab header with create button */}
+        <div className="flex items-center justify-between mb-6">
+          <div />
+          {activeTab === 'embed' && (
+            <button
+              onClick={() => setShowCreate(true)}
+              className="rounded bg-blue-600 px-4 py-2 text-sm text-white hover:bg-blue-500"
+            >
+              + {t('integrations.create')}
+            </button>
+          )}
+          {activeTab === 'apikeys' && (
+            <button
+              onClick={() => setShowCreateKey(true)}
+              className="rounded bg-blue-600 px-4 py-2 text-sm text-white hover:bg-blue-500"
+            >
+              + {t('integrations.apiKeyCreate')}
+            </button>
+          )}
+        </div>
+
+        {/* ==================== EMBED TOKENS TAB ==================== */}
+        {activeTab === 'embed' && <>
         {/* Create Form */}
         {showCreate && (
           <div className="mb-6 rounded-lg border border-zinc-700 bg-zinc-800 p-5">
@@ -367,7 +520,154 @@ export default function IntegrationsPage() {
           )}
         </div>
 
-        {/* Post-Creation Modal */}
+        </>}
+
+        {/* ==================== API KEYS TAB ==================== */}
+        {activeTab === 'apikeys' && <>
+          {/* Create API Key Form */}
+          {showCreateKey && (
+            <div className="mb-6 rounded-lg border border-zinc-700 bg-zinc-800 p-5">
+              <h3 className="text-sm font-medium text-zinc-200 mb-4">{t('integrations.apiKeyCreate')}</h3>
+
+              <label className="block text-xs text-zinc-400 mb-1">{t('integrations.name')}</label>
+              <input
+                value={keyName}
+                onChange={(e) => setKeyName(e.target.value)}
+                placeholder={t('integrations.namePlaceholder')}
+                className="w-full mb-4 rounded border border-zinc-600 bg-zinc-700 px-3 py-2 text-sm text-zinc-200 outline-none focus:border-blue-500"
+              />
+
+              <label className="block text-xs text-zinc-400 mb-1">{t('integrations.allowedIps')}</label>
+              <input
+                value={keyIps}
+                onChange={(e) => setKeyIps(e.target.value)}
+                placeholder={t('integrations.ipsPlaceholder')}
+                className="w-full mb-4 rounded border border-zinc-600 bg-zinc-700 px-3 py-2 text-sm text-zinc-200 outline-none focus:border-blue-500"
+              />
+
+              <label className="block text-xs text-zinc-400 mb-2">{t('integrations.scopes')}</label>
+              <div className="flex gap-4 mb-4 text-sm">
+                <label className="flex items-center gap-2 text-zinc-300">
+                  <input type="checkbox" checked={keyScopeRead} onChange={(e) => setKeyScopeRead(e.target.checked)} />
+                  {t('integrations.scope.chatRead')}
+                </label>
+                <label className="flex items-center gap-2 text-zinc-300">
+                  <input type="checkbox" checked={keyScopeWrite} onChange={(e) => setKeyScopeWrite(e.target.checked)} />
+                  {t('integrations.scope.chatWrite')}
+                </label>
+              </div>
+
+              <div className="flex gap-3">
+                <button
+                  onClick={handleCreateKey}
+                  disabled={creatingKey || !keyName.trim()}
+                  className="rounded bg-blue-600 px-4 py-2 text-sm text-white hover:bg-blue-500 disabled:opacity-50"
+                >
+                  {creatingKey ? '...' : t('integrations.createBtn')}
+                </button>
+                <button
+                  onClick={() => setShowCreateKey(false)}
+                  className="rounded bg-zinc-700 px-4 py-2 text-sm text-zinc-300 hover:bg-zinc-600"
+                >
+                  {t('integrations.close')}
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* API Key List */}
+          <div className="space-y-3">
+            {apiKeys.map((k) => (
+              <div key={k.id} className="rounded-lg border border-zinc-700 bg-zinc-800 p-4">
+                <div className="flex items-start justify-between">
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm font-medium text-zinc-200">{k.name}</span>
+                      <span className="text-xs font-mono text-zinc-500">{k.key_prefix}</span>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-x-4 gap-y-1 mt-2 text-[11px] text-zinc-500">
+                      <span>
+                        {t('integrations.allowedIps').split('（')[0]}:{' '}
+                        {k.allowed_ips.length === 0 ? t('integrations.allOrigins') : k.allowed_ips.join(', ')}
+                      </span>
+                      <span>
+                        {t('integrations.lastUsed')}: {formatDate(k.last_used_at)}
+                      </span>
+                      <span>{k.scopes.join(', ')}</span>
+                      <span>{k.max_rpm} {t('integrations.rpm')} / {k.max_rpd} {t('integrations.rpd')}</span>
+                    </div>
+                    {apiKeyUsageMap[k.id] && (
+                      <div className="mt-2 flex gap-4 text-[11px]">
+                        <span className="text-green-400">
+                          📊 {t('integrations.usage').replace('{days}', '7')}:
+                          <span className="ml-1 text-zinc-300 font-mono">{apiKeyUsageMap[k.id].call_count}</span> {t('integrations.usageCalls')}
+                          <span className="mx-1 text-zinc-600">·</span>
+                          <span className="text-zinc-300 font-mono">~{(apiKeyUsageMap[k.id].tokens_in + apiKeyUsageMap[k.id].tokens_out).toLocaleString()}</span> {t('integrations.usageTokens')}
+                        </span>
+                      </div>
+                    )}
+                  </div>
+                  <button
+                    onClick={() => handleRevokeKey(k.id)}
+                    className="text-xs text-red-400 hover:text-red-300"
+                  >
+                    {t('integrations.revoke')}
+                  </button>
+                </div>
+              </div>
+            ))}
+            {apiKeys.length === 0 && (
+              <p className="text-sm text-zinc-500 text-center py-12">{t('integrations.apiKeyEmpty')}</p>
+            )}
+          </div>
+
+          {/* API Key Created Modal */}
+          {createdApiKey && (
+            <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
+              <div className="bg-zinc-900 border border-zinc-700 rounded-xl p-6 max-w-2xl w-full max-h-[90vh] overflow-y-auto">
+                <h3 className="text-lg font-medium text-zinc-100 mb-2">{t('integrations.apiKeyCreated')}</h3>
+                <p className="text-xs text-amber-400 mb-4">{t('integrations.apiKeyWarning')}</p>
+
+                <div className="mb-4">
+                  <label className="block text-xs text-zinc-400 mb-1">API Key</label>
+                  <div className="flex gap-2">
+                    <code className="flex-1 bg-zinc-800 border border-zinc-700 rounded px-3 py-2 text-sm text-green-400 font-mono break-all">
+                      {createdApiKey.key}
+                    </code>
+                    <button
+                      onClick={() => copyToClipboard(createdApiKey.key, 'apikey')}
+                      className="rounded bg-zinc-700 px-3 py-2 text-xs text-zinc-300 hover:bg-zinc-600"
+                    >
+                      {copiedField === 'apikey' ? t('integrations.copied') : t('integrations.copyKey')}
+                    </button>
+                  </div>
+                </div>
+
+                <div className="mb-4">
+                  <label className="block text-xs text-zinc-400 mb-1">{t('integrations.curlTitle')}</label>
+                  <pre className="bg-zinc-800 border border-zinc-700 rounded p-3 text-xs text-zinc-300 font-mono overflow-x-auto whitespace-pre-wrap">
+                    {buildCurlSnippet(createdApiKey.key)}
+                  </pre>
+                  <button
+                    onClick={() => copyToClipboard(buildCurlSnippet(createdApiKey.key), 'curl')}
+                    className="mt-2 rounded bg-zinc-700 px-3 py-1.5 text-xs text-zinc-300 hover:bg-zinc-600"
+                  >
+                    {copiedField === 'curl' ? t('integrations.copied') : t('integrations.copyCurl')}
+                  </button>
+                </div>
+
+                <button
+                  onClick={() => setCreatedApiKey(null)}
+                  className="rounded bg-zinc-700 px-4 py-2 text-sm text-zinc-200 hover:bg-zinc-600"
+                >
+                  {t('integrations.done')}
+                </button>
+              </div>
+            </div>
+          )}
+        </>}
+
+        {/* Post-Creation Modal (Embed Tokens) */}
         {createdToken && (
           <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
             <div className="bg-zinc-900 border border-zinc-700 rounded-xl p-6 max-w-2xl w-full max-h-[90vh] overflow-y-auto">
