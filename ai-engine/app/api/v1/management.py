@@ -11,7 +11,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from app.core.auth.embed_token import generate_token
-from app.db import crud, crud_auth
+from app.db import crud, crud_auth, crud_usage
 
 router = APIRouter()
 
@@ -128,6 +128,26 @@ async def revoke_embed_token(token_id: str):
 
     crud_auth.revoke_embed_token(token_id)
     return {"status": "revoked", "id": token_id}
+
+
+@router.get("/embed-tokens/{token_id}/usage")
+async def get_embed_token_usage(
+    token_id: str,
+    days: int = 7,
+):
+    """Get usage stats for an embed token over the last N days."""
+    token = crud_auth.get_embed_token(token_id)
+    if not token:
+        raise HTTPException(status_code=404, detail="Token not found")
+
+    summary = crud_usage.get_usage_summary(token_id, days=days)
+    by_day = crud_usage.get_usage_by_day(token_id, days=days)
+    return {
+        "token_id": token_id,
+        "days": days,
+        **summary,
+        "by_day": by_day,
+    }
 
 
 @router.get("/tenant-projects")

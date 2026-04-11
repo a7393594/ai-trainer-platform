@@ -209,6 +209,13 @@ const translations: Record<Locale, Record<string, string>> = {
     'integrations.additionalProjects': '額外授權的 AI 模型',
     'integrations.additionalProjectsHint': '勾選後，此 token 可在 embed 介面切換使用這些 project',
     'integrations.accessibleProjects': '可存取 project',
+    'integrations.usage': '使用量（近 {days} 天）',
+    'integrations.usageCalls': '次呼叫',
+    'integrations.usageTokens': 'tokens',
+    'integrations.usageLoading': '載入中...',
+    'integrations.rateLimit': '速率限制',
+    'integrations.rpm': '次/分鐘',
+    'integrations.rpd': '次/天',
 
     // ====== Prompt Suggestion ======
     'suggestion.title': 'Prompt 優化建議',
@@ -432,6 +439,13 @@ const translations: Record<Locale, Record<string, string>> = {
     'integrations.additionalProjects': 'Additional authorized AI models',
     'integrations.additionalProjectsHint': 'Checked projects can be switched to inside the embed UI',
     'integrations.accessibleProjects': 'Accessible projects',
+    'integrations.usage': 'Usage (last {days} days)',
+    'integrations.usageCalls': 'calls',
+    'integrations.usageTokens': 'tokens',
+    'integrations.usageLoading': 'Loading...',
+    'integrations.rateLimit': 'Rate limit',
+    'integrations.rpm': 'req/min',
+    'integrations.rpd': 'req/day',
 
     // ====== Prompt Suggestion ======
     'suggestion.title': 'Prompt Optimization',

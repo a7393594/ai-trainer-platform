@@ -39,6 +39,12 @@ interface TenantProject {
   description: string | null
 }
 
+interface TokenUsage {
+  call_count: number
+  tokens_in: number
+  tokens_out: number
+}
+
 const FRONTEND_URL =
   typeof window !== 'undefined' ? window.location.origin : 'https://frontend-gray-three-14.vercel.app'
 
@@ -65,6 +71,7 @@ export default function IntegrationsPage() {
   // Post-creation modal
   const [createdToken, setCreatedToken] = useState<CreatedTokenResponse | null>(null)
   const [copiedField, setCopiedField] = useState<string | null>(null)
+  const [usageMap, setUsageMap] = useState<Record<string, TokenUsage>>({})
 
   useEffect(() => {
     getDemoContext()
@@ -90,7 +97,22 @@ export default function IntegrationsPage() {
     try {
       const r = await fetch(`${AI}/api/v1/embed-tokens?project_id=${pid}`)
       const d = await r.json()
-      setTokens(d.tokens || [])
+      const tokenList: EmbedToken[] = d.tokens || []
+      setTokens(tokenList)
+      // Fetch usage for each token in parallel
+      const usageEntries = await Promise.all(
+        tokenList.map(async (tok) => {
+          try {
+            const ur = await fetch(`${AI}/api/v1/embed-tokens/${tok.id}/usage?days=7`)
+            if (ur.ok) {
+              const ud = await ur.json()
+              return [tok.id, { call_count: ud.call_count, tokens_in: ud.tokens_in, tokens_out: ud.tokens_out }] as [string, TokenUsage]
+            }
+          } catch {}
+          return [tok.id, { call_count: 0, tokens_in: 0, tokens_out: 0 }] as [string, TokenUsage]
+        })
+      )
+      setUsageMap(Object.fromEntries(usageEntries))
     } catch {}
     setLoading(false)
   }
@@ -319,6 +341,17 @@ export default function IntegrationsPage() {
                       {t('integrations.accessibleProjects')}: {1 + (tok.additional_project_ids?.length || 0)}
                     </span>
                   </div>
+                  {/* Usage stats */}
+                  {usageMap[tok.id] && (
+                    <div className="mt-2 flex gap-4 text-[11px]">
+                      <span className="text-blue-400">
+                        📊 {t('integrations.usage').replace('{days}', '7')}:
+                        <span className="ml-1 text-zinc-300 font-mono">{usageMap[tok.id].call_count}</span> {t('integrations.usageCalls')}
+                        <span className="mx-1 text-zinc-600">·</span>
+                        <span className="text-zinc-300 font-mono">~{(usageMap[tok.id].tokens_in + usageMap[tok.id].tokens_out).toLocaleString()}</span> {t('integrations.usageTokens')}
+                      </span>
+                    </div>
+                  )}
                 </div>
                 <button
                   onClick={() => handleRevoke(tok.id)}

@@ -24,6 +24,8 @@ class AuthContext:
     origin: Optional[str] = None
     ip: Optional[str] = None
     allowed_project_ids: list[str] = field(default_factory=list)  # [project_id] + additional
+    max_rpm: int = 30   # requests per minute (from token config)
+    max_rpd: int = 5000  # requests per day (from token config)
 
     def can_access_project(self, pid: str) -> bool:
         return pid in self.allowed_project_ids
@@ -153,6 +155,8 @@ def require_embed_auth(scope: str):
             origin=origin,
             ip=request.client.host if request.client else None,
             allowed_project_ids=allowed,
+            max_rpm=row.get("max_rpm") or 30,
+            max_rpd=row.get("max_rpd") or 5000,
         )
 
     return _dep
