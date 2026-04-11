@@ -812,6 +812,44 @@ def get_correct_feedbacks_with_context(project_id: str) -> list[dict]:
     return pairs
 
 
+T_FINETUNE_JOBS = "ait_finetune_jobs"
+
+
+def create_finetune_job(project_id: str, provider: str, model_base: str, training_data_count: int) -> dict:
+    return get_supabase().table(T_FINETUNE_JOBS).insert({
+        "project_id": project_id, "provider": provider,
+        "model_base": model_base, "training_data_count": training_data_count,
+        "status": "pending",
+    }).execute().data[0]
+
+
+def list_finetune_jobs(project_id: str) -> list[dict]:
+    return (
+        get_supabase().table(T_FINETUNE_JOBS)
+        .select("*").eq("project_id", project_id)
+        .order("created_at", desc=True).execute()
+    ).data
+
+
+def get_finetune_job(job_id: str) -> Optional[dict]:
+    result = get_supabase().table(T_FINETUNE_JOBS).select("*").eq("id", job_id).execute()
+    return result.data[0] if result.data else None
+
+
+def update_finetune_job(job_id: str, status: str = None, result_model_id: str = None, error_message: str = None) -> dict:
+    data: dict = {}
+    if status:
+        data["status"] = status
+    if result_model_id:
+        data["result_model_id"] = result_model_id
+    if error_message is not None:
+        data["error_message"] = error_message
+    if status in ("completed", "failed"):
+        data["completed_at"] = "now()"
+    result = get_supabase().table(T_FINETUNE_JOBS).update(data).eq("id", job_id).execute()
+    return result.data[0] if result.data else {}
+
+
 # ============================================
 # Tools
 # ============================================
@@ -916,6 +954,14 @@ def update_workflow_run(run_id: str, current_step: str = None, status: str = Non
         data["context_json"] = context_json
     result = get_supabase().table(T_WF_RUNS).update(data).eq("id", run_id).execute()
     return result.data[0] if result.data else {}
+
+
+def list_workflow_runs(workflow_id: str) -> list[dict]:
+    return (
+        get_supabase().table(T_WF_RUNS)
+        .select("*").eq("workflow_id", workflow_id)
+        .order("started_at", desc=True).execute()
+    ).data
 
 
 def get_workflow_run(run_id: str) -> Optional[dict]:

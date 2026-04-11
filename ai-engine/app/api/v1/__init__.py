@@ -570,6 +570,44 @@ async def get_finetune_stats(project_id: str):
     return stats
 
 
+@router.post("/finetune/jobs/{project_id}")
+async def create_finetune_job(project_id: str, data: dict):
+    """建立微調任務"""
+    from app.core.finetune.pipeline import finetune_pipeline
+    result = await finetune_pipeline.create_job(
+        project_id, data.get("provider", "openai"), data.get("model_base", "gpt-4o-mini")
+    )
+    if result.get("status") == "error":
+        raise HTTPException(status_code=400, detail=result["message"])
+    return result
+
+
+@router.get("/finetune/jobs/{project_id}")
+async def list_finetune_jobs(project_id: str):
+    """列出微調任務"""
+    from app.core.finetune.pipeline import finetune_pipeline
+    jobs = await finetune_pipeline.list_jobs(project_id)
+    return {"jobs": jobs}
+
+
+@router.get("/finetune/job/{job_id}")
+async def get_finetune_job(job_id: str):
+    """取得微調任務詳情"""
+    from app.core.finetune.pipeline import finetune_pipeline
+    job = await finetune_pipeline.get_job(job_id)
+    if job.get("status") == "error":
+        raise HTTPException(status_code=404, detail=job["message"])
+    return job
+
+
+@router.post("/finetune/job/{job_id}/complete")
+async def complete_finetune_job(job_id: str, data: dict):
+    """標記微調任務完成（含產出模型 ID）"""
+    from app.core.finetune.pipeline import finetune_pipeline
+    result = await finetune_pipeline.complete_job(job_id, data.get("result_model_id", ""))
+    return {"status": "completed", "job": result}
+
+
 # ============================================
 # Workflows
 # ============================================
@@ -592,11 +630,58 @@ async def create_workflow_api(data: dict):
     return {"status": "created", "workflow": wf}
 
 
+@router.get("/workflows/detail/{workflow_id}")
+async def get_workflow_detail(workflow_id: str):
+    """取得單一工作流詳情"""
+    wf = crud.get_workflow(workflow_id)
+    if not wf:
+        raise HTTPException(status_code=404, detail="Workflow not found")
+    return wf
+
+
 @router.delete("/workflows/{workflow_id}")
 async def delete_workflow_api(workflow_id: str):
     """停用工作流"""
     crud.delete_workflow(workflow_id)
     return {"status": "deleted"}
+
+
+@router.post("/workflows/{workflow_id}/start")
+async def start_workflow_api(workflow_id: str, data: dict):
+    """啟動工作流執行"""
+    from app.core.workflows.engine import workflow_engine
+    result = await workflow_engine.start_workflow(
+        workflow_id, data.get("session_id", ""), data.get("user_id", "")
+    )
+    if result.get("status") == "error":
+        raise HTTPException(status_code=400, detail=result["detail"])
+    return result
+
+
+@router.post("/workflows/runs/{run_id}/advance")
+async def advance_workflow_api(run_id: str, data: dict):
+    """推進工作流到下一步"""
+    from app.core.workflows.engine import workflow_engine
+    result = await workflow_engine.advance_workflow(run_id, data.get("step_result", {}))
+    if result.get("status") == "error":
+        raise HTTPException(status_code=400, detail=result["detail"])
+    return result
+
+
+@router.get("/workflows/{workflow_id}/runs")
+async def list_workflow_runs(workflow_id: str):
+    """列出工作流執行歷史"""
+    runs = crud.list_workflow_runs(workflow_id)
+    return {"runs": runs}
+
+
+@router.get("/workflows/runs/{run_id}")
+async def get_workflow_run_api(run_id: str):
+    """取得單一執行記錄"""
+    run = crud.get_workflow_run(run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Run not found")
+    return run
 
 
 # ============================================
