@@ -110,6 +110,35 @@ export default function ComparisonPage() {
     loadGaps(projectId)
   }
 
+  const [generating, setGenerating] = useState(false)
+  const [judging, setJudging] = useState(false)
+  const [recommendation, setRecommendation] = useState<any>(null)
+
+  const handleAutoGenerate = async () => {
+    setGenerating(true)
+    try {
+      const r = await fetch(`${AI}/api/v1/comparison/generate-questions/${projectId}`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ count: 15 }),
+      })
+      const d = await r.json()
+      if (d.questions?.length) setQuestions(d.questions)
+    } catch {}
+    setGenerating(false)
+  }
+
+  const handleAutoJudge = async (runId: string) => {
+    setJudging(true)
+    await fetch(`${AI}/api/v1/comparison/${runId}/auto-judge`, { method: 'POST' })
+    if (expandedRun) handleExpand(expandedRun)
+    setJudging(false)
+  }
+
+  const handleRecommend = async (runId: string) => {
+    const r = await fetch(`${AI}/api/v1/comparison/${runId}/recommend`)
+    setRecommendation(await r.json())
+  }
+
   const addQuestion = () => {
     setQuestions([...questions, { id: `q${questions.length + 1}`, text: '' }])
   }
@@ -147,7 +176,10 @@ export default function ComparisonPage() {
             <div>
               <div className="flex items-center justify-between mb-2">
                 <span className="text-xs text-zinc-400">{t('comparison.questions')}</span>
-                <button onClick={addQuestion} className="text-xs text-blue-400 hover:text-blue-300">+ {t('comparison.addQ')}</button>
+                <div className="flex gap-2">
+                  <button onClick={handleAutoGenerate} disabled={generating} className="text-xs text-green-400 hover:text-green-300 disabled:opacity-50">{generating ? '...' : '🤖 AI 產出問題'}</button>
+                  <button onClick={addQuestion} className="text-xs text-blue-400 hover:text-blue-300">+ {t('comparison.addQ')}</button>
+                </div>
               </div>
               {questions.map((q, i) => (
                 <div key={i} className="flex gap-2 mb-1">
@@ -194,7 +226,11 @@ export default function ComparisonPage() {
                   </div>
                   <div className="flex items-center gap-2">
                     {run.status === 'pending' && <button onClick={(e) => { e.stopPropagation(); handleExecute(run.id) }} className="rounded bg-green-600 px-2 py-1 text-[10px] text-white">{t('comparison.execute')}</button>}
-                    {run.status === 'completed' && <button onClick={(e) => { e.stopPropagation(); handleAnalyzeGaps(run.id) }} className="rounded bg-orange-600 px-2 py-1 text-[10px] text-white">{t('comparison.analyzeGaps')}</button>}
+                    {run.status === 'completed' && <>
+                      <button onClick={(e) => { e.stopPropagation(); handleAutoJudge(run.id) }} disabled={judging} className="rounded bg-purple-600 px-2 py-1 text-[10px] text-white disabled:opacity-50">{judging ? '...' : '🤖 AI 評審'}</button>
+                      <button onClick={(e) => { e.stopPropagation(); handleRecommend(run.id) }} className="rounded bg-blue-600 px-2 py-1 text-[10px] text-white">⭐ 推薦</button>
+                      <button onClick={(e) => { e.stopPropagation(); handleAnalyzeGaps(run.id) }} className="rounded bg-orange-600 px-2 py-1 text-[10px] text-white">{t('comparison.analyzeGaps')}</button>
+                    </>}
                     <span className="text-zinc-600">{expandedRun === run.id ? '[-]' : '[+]'}</span>
                   </div>
                 </button>
@@ -203,6 +239,16 @@ export default function ComparisonPage() {
                 {expandedRun === run.id && runResults && (
                   <div className="border-t border-zinc-700 p-4 space-y-4">
                     {/* Model Stats Matrix */}
+                    {/* Recommendation Banner */}
+                    {recommendation?.recommendation && (
+                      <div className="rounded-lg border border-green-500/30 bg-green-500/10 px-4 py-3 flex items-center justify-between mb-3">
+                        <div>
+                          <span className="text-sm text-green-400 font-medium">⭐ 推薦模型：{recommendation.recommendation.split('-').slice(0, 3).join('-')}</span>
+                          <span className="text-xs text-zinc-400 ml-2">綜合分數 {(recommendation.score * 100).toFixed(0)}</span>
+                        </div>
+                        <button onClick={() => handleSelectModel(expandedRun!, recommendation.recommendation)} className="rounded bg-green-600 px-3 py-1 text-xs text-white">選定此模型</button>
+                      </div>
+                    )}
                     {runResults.model_stats && (
                       <div className="overflow-x-auto">
                         <table className="w-full text-xs">

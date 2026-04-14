@@ -31,6 +31,27 @@ MODEL_PRICING = {
 }
 
 
+GENERATE_QUESTIONS_PROMPT = """Based on the following AI system prompt, generate {count} key test questions that thoroughly cover the AI's domain knowledge.
+
+Requirements:
+- Questions should range from basic to advanced
+- Cover different aspects of the domain
+- Include both factual and analytical questions
+- Be specific enough to have clear right/wrong answers
+- Output as a JSON array: [{"id": "q1", "text": "question text"}, ...]
+- Reply with ONLY the JSON array, no markdown code blocks"""
+
+AUTO_JUDGE_PROMPT = """You are evaluating AI responses for correctness. For each response, judge if it is correct, partially correct, or incorrect.
+
+Score each response:
+- "correct": factually accurate, complete, helpful
+- "partial": mostly correct but missing key details or has minor errors
+- "incorrect": factually wrong, misleading, or unhelpful
+
+Reply with a JSON array: [{"response_id": "...", "verdict": "correct|partial|incorrect", "reason": "brief explanation"}]
+Reply with ONLY the JSON array."""
+
+
 class ComparisonEngine:
 
     def create_run(self, project_id: str, name: str, questions: list[dict], models: list[str]) -> dict:
@@ -276,6 +297,119 @@ class ComparisonEngine:
         }).eq("id", gap_id).execute()
 
         return {"status": "applied", "type": remediation_type}
+
+
+    async def generate_questions(self, project_id: str, count: int = 15) -> list[dict]:
+        """AI 自動產出關鍵測試問題"""
+        prompt = crud.get_active_prompt(project_id)
+        system_content = prompt["content"] if prompt else "General AI assistant"
+
+        messages = [
+            {"role": "system", "content": GENERATE_QUESTIONS_PROMPT.format(count=count)},
+            {"role": "user", "content": f"AI System Prompt:\n\n{system_content}"},
+        ]
+
+        response = await chat_completion(messages=messages, model="claude-sonnet-4-20250514", max_tokens=2000, project_id=project_id)
+        raw = response.choices[0].message.content or "[]"
+
+        # Parse JSON
+        try:
+            cleaned = raw.strip()
+            if cleaned.startswith("```"):
+                cleaned = cleaned.split("\n", 1)[1].rsplit("```", 1)[0]
+            questions = json.loads(cleaned)
+            if isinstance(questions, list):
+                return questions
+        except (json.JSONDecodeError, IndexError):
+            pass
+
+        return [{"id": f"q{i}", "text": line.strip()} for i, line in enumerate(raw.split("\n")) if line.strip()]
+
+    async def auto_judge(self, run_id: str) -> list[dict]:
+        """AI 輔助評審 — 用最強模型自動打分"""
+        run = self.get_run(run_id)
+        if not run:
+            return []
+
+        questions = run.get("questions", [])
+        responses = get_supabase().table(T_RESPONSES).select("*").eq("run_id", run_id).execute().data
+
+        # Group by question
+        by_q: dict[str, list] = {}
+        for r in responses:
+            by_q.setdefault(r["question_id"], []).append(r)
+
+        all_verdicts = []
+
+        for q in questions:
+            q_id = q.get("id", str(questions.index(q)))
+            q_text = q.get("text", "")
+            q_responses = by_q.get(q_id, [])
+            if not q_responses:
+                continue
+
+            # Build judge prompt
+            resp_texts = "\n\n".join([
+                f"[{r['id']}] Model: {r['model_id']}\nResponse: {r['response_text'][:500]}"
+                for r in q_responses
+            ])
+
+            messages = [
+                {"role": "system", "content": AUTO_JUDGE_PROMPT},
+                {"role": "user", "content": f"Question: {q_text}\n\nResponses:\n{resp_texts}"},
+            ]
+
+            try:
+                judge_resp = await chat_completion(messages=messages, model="claude-sonnet-4-20250514", max_tokens=1000)
+                raw = judge_resp.choices[0].message.content or "[]"
+                cleaned = raw.strip()
+                if cleaned.startswith("```"):
+                    cleaned = cleaned.split("\n", 1)[1].rsplit("```", 1)[0]
+                verdicts = json.loads(cleaned)
+
+                for v in verdicts:
+                    rid = v.get("response_id", "")
+                    verdict = v.get("verdict", "")
+                    is_correct = True if verdict == "correct" else (None if verdict == "partial" else False)
+
+                    # Update in DB
+                    if rid:
+                        get_supabase().table(T_RESPONSES).update({"is_correct": is_correct}).eq("id", rid).execute()
+                        all_verdicts.append({"response_id": rid, "verdict": verdict, "reason": v.get("reason", "")})
+            except Exception:
+                pass
+
+        return all_verdicts
+
+    def recommend_model(self, run_id: str) -> dict:
+        """自動推薦模型 — 綜合 正確率 × 成本 × 延遲"""
+        results = self.get_run_results(run_id)
+        if "error" in results:
+            return {"error": "Run not found"}
+
+        stats = results.get("model_stats", {})
+        if not stats:
+            return {"recommendation": None, "reason": "No data"}
+
+        # Scoring: accuracy (0.6) + cost_efficiency (0.25) + speed (0.15)
+        scores = {}
+        max_cost = max((s.get("avg_cost", 0) for s in stats.values()), default=0.001) or 0.001
+        max_latency = max((s.get("avg_latency", 0) for s in stats.values()), default=1) or 1
+
+        for model, s in stats.items():
+            accuracy_score = (s.get("accuracy", 0) / 100) * 0.6
+            cost_score = (1 - s.get("avg_cost", 0) / max_cost) * 0.25  # lower cost = higher score
+            speed_score = (1 - s.get("avg_latency", 0) / max_latency) * 0.15  # lower latency = higher score
+            total = accuracy_score + cost_score + speed_score
+            scores[model] = {"total_score": round(total, 3), "accuracy": s.get("accuracy", 0), "cost": s.get("avg_cost", 0), "latency": s.get("avg_latency", 0)}
+
+        best = max(scores.items(), key=lambda x: x[1]["total_score"])
+        return {
+            "recommendation": best[0],
+            "score": best[1]["total_score"],
+            "details": best[1],
+            "all_scores": scores,
+        }
 
 
 comparison_engine = ComparisonEngine()

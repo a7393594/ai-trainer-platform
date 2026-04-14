@@ -653,6 +653,30 @@ async def list_concept_gaps(project_id: str):
     return {"gaps": comparison_engine.list_gaps(project_id)}
 
 
+@router.post("/comparison/generate-questions/{project_id}")
+async def generate_questions(project_id: str, data: dict = {}):
+    """AI 自動產出關鍵測試問題"""
+    from app.core.comparison.engine import comparison_engine
+    count = data.get("count", 15) if data else 15
+    questions = await comparison_engine.generate_questions(project_id, count)
+    return {"questions": questions}
+
+
+@router.post("/comparison/{run_id}/auto-judge")
+async def auto_judge(run_id: str):
+    """AI 輔助評審 — 自動打分"""
+    from app.core.comparison.engine import comparison_engine
+    verdicts = await comparison_engine.auto_judge(run_id)
+    return {"verdicts": verdicts, "total": len(verdicts)}
+
+
+@router.get("/comparison/{run_id}/recommend")
+async def recommend_model(run_id: str):
+    """自動推薦模型"""
+    from app.core.comparison.engine import comparison_engine
+    return comparison_engine.recommend_model(run_id)
+
+
 # ============================================
 # 成本追蹤
 # ============================================
