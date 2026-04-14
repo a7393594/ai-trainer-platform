@@ -7,15 +7,9 @@ import litellm
 from typing import Optional
 from app.config import settings
 
-# Model pricing (per 1M tokens)
-MODEL_PRICING = {
-    "claude-sonnet-4-20250514": {"input": 3.0, "output": 15.0},
-    "claude-opus-4-20250514": {"input": 15.0, "output": 75.0},
-    "claude-haiku-4-5-20251001": {"input": 0.8, "output": 4.0},
-    "gpt-4o": {"input": 2.5, "output": 10.0},
-    "gpt-4o-mini": {"input": 0.15, "output": 0.6},
-    "gemini/gemini-2.0-flash": {"input": 0.075, "output": 0.3},
-}
+from app.core.llm_router.models import get_model_pricing
+
+MODEL_PRICING = get_model_pricing()
 
 
 def calculate_cost(model: str, input_tokens: int, output_tokens: int) -> float:
@@ -45,6 +39,8 @@ def _log_usage(project_id: Optional[str], session_id: Optional[str], model: str,
 
 def init_llm_router():
     """初始化 LLM 環境變數，LiteLLM 會自動讀取"""
+    import os
+
     if settings.openai_api_key:
         litellm.openai_key = settings.openai_api_key
     if settings.anthropic_api_key:
@@ -52,9 +48,19 @@ def init_llm_router():
     if settings.google_api_key:
         litellm.google_key = settings.google_api_key
 
+    # New providers
+    if settings.groq_api_key:
+        os.environ["GROQ_API_KEY"] = settings.groq_api_key
+    if settings.deepseek_api_key:
+        os.environ["DEEPSEEK_API_KEY"] = settings.deepseek_api_key
+    if settings.openrouter_api_key:
+        os.environ["OPENROUTER_API_KEY"] = settings.openrouter_api_key
+
     # 開啟成本追蹤
     litellm.success_callback = ["langfuse"] if settings.langfuse_public_key else []
-    print("[OK] LLM Router initialized")
+
+    model_count = len(MODEL_PRICING)
+    print(f"[OK] LLM Router initialized ({model_count} models)")
 
 
 async def chat_completion(

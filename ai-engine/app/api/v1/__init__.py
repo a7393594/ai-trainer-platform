@@ -990,13 +990,6 @@ async def get_project_detail(project_id: str):
 
 @router.get("/models")
 async def list_available_models():
-    """列出可用 LLM 模型"""
-    return {
-        "models": [
-            {"id": "claude-sonnet-4-20250514", "provider": "anthropic", "label": "Claude Sonnet 4"},
-            {"id": "claude-opus-4-20250514", "provider": "anthropic", "label": "Claude Opus 4"},
-            {"id": "gpt-4o", "provider": "openai", "label": "GPT-4o"},
-            {"id": "gpt-4o-mini", "provider": "openai", "label": "GPT-4o Mini"},
-            {"id": "gemini/gemini-2.0-flash", "provider": "google", "label": "Gemini 2.0 Flash"},
-        ]
-    }
+    """列出所有可用 LLM 模型（從集中模型定義讀取）"""
+    from app.core.llm_router.models import get_models_for_api
+    return {"models": get_models_for_api()}

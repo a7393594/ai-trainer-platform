@@ -6,14 +6,7 @@ import { useI18n } from '@/lib/i18n'
 
 const AI = process.env.NEXT_PUBLIC_AI_ENGINE_URL || 'http://localhost:8000'
 
-const AVAILABLE_MODELS = [
-  { id: 'claude-sonnet-4-20250514', label: 'Claude Sonnet 4', cost: '$3/$15' },
-  { id: 'claude-opus-4-20250514', label: 'Claude Opus 4', cost: '$15/$75' },
-  { id: 'claude-haiku-4-5-20251001', label: 'Claude Haiku 4.5', cost: '$0.8/$4' },
-  { id: 'gpt-4o', label: 'GPT-4o', cost: '$2.5/$10' },
-  { id: 'gpt-4o-mini', label: 'GPT-4o Mini', cost: '$0.15/$0.6' },
-  { id: 'gemini/gemini-2.0-flash', label: 'Gemini 2.0 Flash', cost: '$0.075/$0.3' },
-]
+// Models loaded dynamically from API
 
 type Tab = 'runs' | 'create' | 'gaps'
 
@@ -22,6 +15,7 @@ export default function ComparisonPage() {
   const [tab, setTab] = useState<Tab>('runs')
   const [runs, setRuns] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
+  const [availableModels, setAvailableModels] = useState<any[]>([])
   const [expandedRun, setExpandedRun] = useState<string | null>(null)
   const [runResults, setRunResults] = useState<any>(null)
   const [gaps, setGaps] = useState<any[]>([])
@@ -35,10 +29,11 @@ export default function ComparisonPage() {
   const { t } = useI18n()
 
   useEffect(() => {
-    getDemoContext().then((ctx) => {
+    getDemoContext().then(async (ctx) => {
       setProjectId(ctx.project_id)
       loadRuns(ctx.project_id)
       loadGaps(ctx.project_id)
+      setAvailableModels((await fetch(`${AI}/api/v1/models`).then(r => r.json()).catch(() => ({ models: [] }))).models || [])
     }).catch(() => setLoading(false))
   }, [])
 
@@ -193,7 +188,7 @@ export default function ComparisonPage() {
             <div>
               <span className="text-xs text-zinc-400 block mb-2">{t('comparison.selectModels')}</span>
               <div className="grid grid-cols-2 gap-1">
-                {AVAILABLE_MODELS.map(m => (
+                {availableModels.map(m => (
                   <label key={m.id} className={`flex items-center gap-2 rounded border px-3 py-2 text-xs cursor-pointer ${selectedModels.includes(m.id) ? 'border-blue-500/50 bg-blue-500/10 text-zinc-200' : 'border-zinc-600 text-zinc-400'}`}>
                     <input type="checkbox" checked={selectedModels.includes(m.id)} onChange={() => toggleModel(m.id)} className="rounded" />
                     <span>{m.label}</span>

@@ -6,14 +6,7 @@ import { useI18n } from '@/lib/i18n'
 
 const AI = process.env.NEXT_PUBLIC_AI_ENGINE_URL || 'http://localhost:8000'
 
-const MODELS = [
-  { id: 'claude-sonnet-4-20250514', label: 'Claude Sonnet 4', provider: 'anthropic' },
-  { id: 'claude-opus-4-20250514', label: 'Claude Opus 4', provider: 'anthropic' },
-  { id: 'claude-haiku-4-5-20251001', label: 'Claude Haiku 4.5', provider: 'anthropic' },
-  { id: 'gpt-4o', label: 'GPT-4o', provider: 'openai' },
-  { id: 'gpt-4o-mini', label: 'GPT-4o Mini', provider: 'openai' },
-  { id: 'gemini/gemini-2.0-flash', label: 'Gemini 2.0 Flash', provider: 'google' },
-]
+// Models loaded dynamically from API
 
 type Tab = 'project' | 'finetune' | 'eval'
 
@@ -23,6 +16,7 @@ export default function SettingsPage() {
   const [loading, setLoading] = useState(true)
   const [selectedModel, setSelectedModel] = useState('')
   const [saving, setSaving] = useState(false)
+  const [models, setModels] = useState<any[]>([])
 
   // Finetune state
   const [ftStats, setFtStats] = useState<any>(null)
@@ -45,7 +39,8 @@ export default function SettingsPage() {
   useEffect(() => {
     getDemoContext().then(async ctx => {
       setContext(ctx)
-      // Load project model
+      // Load models from API + project settings
+      setModels((await fetch(`${AI}/api/v1/models`).then(r => r.json()).catch(() => ({ models: [] }))).models || [])
       const pr = await fetch(`${AI}/api/v1/projects/${ctx.project_id}`).then(r => r.json()).catch(() => ({}))
       setSelectedModel(pr.default_model || 'claude-sonnet-4-20250514')
       // Load finetune
@@ -131,14 +126,20 @@ export default function SettingsPage() {
                 <h2 className="text-sm font-medium text-zinc-200">{t('settings.defaultModel')}</h2>
                 {saving && <span className="text-[10px] text-blue-400 animate-pulse">saving...</span>}
               </div>
-              {MODELS.map(m => (
+              {models.map((m: any) => (
                 <button key={m.id} onClick={() => handleModelChange(m.id)}
                   className={`w-full flex items-center justify-between py-2 px-3 rounded-lg text-left mb-1 transition-colors ${selectedModel === m.id ? 'bg-blue-600/20 border border-blue-500/50' : 'hover:bg-zinc-700/50 border border-transparent'}`}>
                   <div className="flex items-center gap-2">
                     {selectedModel === m.id && <span className="text-blue-400 text-xs">✓</span>}
                     <span className={`text-sm ${selectedModel === m.id ? 'text-blue-300' : 'text-zinc-200'}`}>{m.label}</span>
+                    <span className={`rounded px-1 py-0.5 text-[9px] ${m.tier === 'free' ? 'bg-green-500/20 text-green-400' : m.tier === 'free-tier' ? 'bg-cyan-500/20 text-cyan-400' : m.tier === 'low-cost' ? 'bg-yellow-500/20 text-yellow-400' : 'bg-zinc-600/20 text-zinc-400'}`}>
+                      {m.tier === 'free' ? 'FREE' : m.tier === 'free-tier' ? 'FREE TIER' : m.tier === 'low-cost' ? 'LOW COST' : 'PAID'}
+                    </span>
                   </div>
-                  <span className="text-xs text-zinc-500">{m.provider}</span>
+                  <div className="flex items-center gap-2">
+                    <span className="text-[10px] text-zinc-500 font-mono">{m.cost}</span>
+                    <span className="text-[10px] text-zinc-600">{m.provider}</span>
+                  </div>
                 </button>
               ))}
             </div>

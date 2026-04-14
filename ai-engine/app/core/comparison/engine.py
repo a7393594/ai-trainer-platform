@@ -20,15 +20,8 @@ T_RUNS = "ait_comparison_runs"
 T_RESPONSES = "ait_comparison_responses"
 T_GAPS = "ait_concept_gaps"
 
-# Model pricing (per 1M tokens, input/output)
-MODEL_PRICING = {
-    "claude-sonnet-4-20250514": {"input": 3.0, "output": 15.0},
-    "claude-opus-4-20250514": {"input": 15.0, "output": 75.0},
-    "claude-haiku-4-5-20251001": {"input": 0.8, "output": 4.0},
-    "gpt-4o": {"input": 2.5, "output": 10.0},
-    "gpt-4o-mini": {"input": 0.15, "output": 0.6},
-    "gemini/gemini-2.0-flash": {"input": 0.075, "output": 0.3},
-}
+from app.core.llm_router.models import get_model_pricing
+MODEL_PRICING = get_model_pricing()
 
 
 GENERATE_QUESTIONS_PROMPT = """Based on the following AI system prompt, generate {count} key test questions that thoroughly cover the AI's domain knowledge.

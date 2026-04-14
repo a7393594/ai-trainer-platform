@@ -18,6 +18,9 @@ class Settings(BaseSettings):
     openai_api_key: Optional[str] = None
     anthropic_api_key: Optional[str] = None
     google_api_key: Optional[str] = None
+    groq_api_key: Optional[str] = None
+    deepseek_api_key: Optional[str] = None
+    openrouter_api_key: Optional[str] = None
 
     # Embedding
     embedding_model: str = "text-embedding-3-small"
