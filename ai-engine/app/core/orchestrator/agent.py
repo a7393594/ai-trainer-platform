@@ -251,10 +251,60 @@ class AgentOrchestrator:
 
         return clean_text, widgets
 
+    async def _load_project_tools(self, project_id: str) -> tuple[list[dict], list[dict]]:
+        """載入專案可用工具，回傳 (db_tools, llm_tools)"""
+        from app.core.tools.registry import tool_registry
+        # Tools are tenant-level; get tenant from project
+        project = crud.get_project(project_id)
+        if not project:
+            return [], []
+        tenant_id = project.get("tenant_id")
+        if not tenant_id:
+            return [], []
+        db_tools = await tool_registry.list_tools(tenant_id)
+        llm_tools = tool_registry.convert_to_llm_tools(db_tools)
+        return db_tools, llm_tools
+
+    async def _execute_tool_calls(self, response, db_tools: list[dict]) -> tuple[list[dict], list[dict]]:
+        """解析 LLM 回覆中的 tool_calls，執行工具，回傳 (tool_messages, tool_results)"""
+        from app.core.tools.registry import tool_registry
+        tool_messages = []
+        tool_results = []
+
+        tool_calls = getattr(response.choices[0].message, 'tool_calls', None) or []
+        for tc in tool_calls:
+            fn_name = tc.function.name
+            try:
+                fn_args = json.loads(tc.function.arguments) if isinstance(tc.function.arguments, str) else tc.function.arguments
+            except json.JSONDecodeError:
+                fn_args = {}
+
+            # Execute via registry
+            result = await tool_registry.execute_tool_by_name(fn_name, fn_args, db_tools)
+
+            # Parse result data
+            result_data = result.get("data", result)
+            if isinstance(result_data, str):
+                try:
+                    result_data = json.loads(result_data)
+                except json.JSONDecodeError:
+                    pass
+
+            tool_results.append({"tool_name": fn_name, "input": fn_args, "result": result_data, "status": result.get("status", "success")})
+
+            # Build tool result message for LLM
+            tool_messages.append({
+                "role": "tool",
+                "tool_call_id": tc.id,
+                "content": json.dumps(result_data, ensure_ascii=False) if not isinstance(result_data, str) else result_data,
+            })
+
+        return tool_messages, tool_results
+
     async def _general_chat(
         self, request: ChatRequest, session_id: str, history: list
     ) -> ChatResponse:
-        """一般 LLM 對話（Prompt + RAG + Widget 自動偵測）"""
+        """一般 LLM 對話（Prompt + RAG + 工具調用 + Widget 自動偵測）"""
         # 1. 先存 user message
         user_msg = crud.create_message(
             session_id=session_id,
@@ -262,7 +312,10 @@ class AgentOrchestrator:
             content=request.message,
         )
 
-        # 2. 組合 LLM messages
+        # 2. 載入工具
+        db_tools, llm_tools = await self._load_project_tools(request.project_id)
+
+        # 3. 組合 LLM messages
         messages = []
 
         # System prompt + widget instruction
@@ -284,23 +337,57 @@ class AgentOrchestrator:
         # 當前訊息
         messages.append({"role": "user", "content": request.message})
 
-        # 3. 呼叫 LLM
+        # 4. 呼叫 LLM（帶工具）
         model = request.model or "claude-sonnet-4-20250514"
         llm_response = await chat_completion(
             messages=messages,
             model=model,
+            tools=llm_tools if llm_tools else None,
         )
 
-        # 4. 解析回覆中的 widget 標記
-        raw_content = llm_response.choices[0].message.content
+        # 5. 工具調用迴圈
+        all_tool_results = []
+        loop_count = 0
+        MAX_TOOL_LOOPS = 5
+
+        while loop_count < MAX_TOOL_LOOPS:
+            tool_calls = getattr(llm_response.choices[0].message, 'tool_calls', None)
+            if not tool_calls:
+                break
+
+            loop_count += 1
+
+            # Add assistant message with tool calls to history
+            messages.append(llm_response.choices[0].message)
+
+            # Execute tools
+            tool_msgs, tool_results = await self._execute_tool_calls(llm_response, db_tools)
+            all_tool_results.extend(tool_results)
+            messages.extend(tool_msgs)
+
+            # Re-invoke LLM with tool results
+            llm_response = await chat_completion(
+                messages=messages,
+                model=model,
+                tools=llm_tools if llm_tools else None,
+            )
+
+        # 6. 解析最終回覆中的 widget 標記
+        raw_content = llm_response.choices[0].message.content or ""
         clean_text, widgets = self._parse_widget_from_response(raw_content)
 
-        # 5. 存 assistant message（存原始文字，不含標記）
+        # 7. 存 assistant message
+        metadata = {}
+        if widgets:
+            metadata["widgets"] = widgets
+        if all_tool_results:
+            metadata["tool_results"] = all_tool_results
+
         assistant_msg = crud.create_message(
             session_id=session_id,
             role="assistant",
             content=clean_text,
-            metadata={"widgets": widgets} if widgets else {},
+            metadata=metadata,
         )
 
         return ChatResponse(
@@ -308,6 +395,7 @@ class AgentOrchestrator:
             message=ChatMessage(role=Role.ASSISTANT, content=clean_text),
             message_id=assistant_msg["id"],
             widgets=widgets,
+            tool_results=all_tool_results,
         )
 
     async def _general_chat_with_history(

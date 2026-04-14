@@ -90,6 +90,33 @@ class ToolRegistry:
             r = await client.post(url, json=params)
             return {"status": "success", "status_code": r.status_code}
 
+    def convert_to_llm_tools(self, tools: list[dict]) -> list[dict]:
+        """Convert DB tool definitions to LLM Tool Use format (OpenAI/Claude compatible)."""
+        llm_tools = []
+        for tool in tools:
+            config = tool.get("config_json", {})
+            input_schema = config.get("input_schema", {})
+            if not input_schema:
+                # Build minimal schema from tool description
+                input_schema = {"type": "object", "properties": {}, "required": []}
+
+            llm_tools.append({
+                "type": "function",
+                "function": {
+                    "name": tool["name"],
+                    "description": tool.get("description", ""),
+                    "parameters": input_schema,
+                },
+            })
+        return llm_tools
+
+    async def execute_tool_by_name(self, name: str, params: dict, tools: list[dict]) -> dict:
+        """Execute a tool by its name (from LLM tool_call), looking up from a tools list."""
+        for tool in tools:
+            if tool["name"] == name:
+                return await self.execute_tool(tool["id"], params=params)
+        return {"status": "error", "detail": f"Tool '{name}' not found"}
+
     async def list_tools(self, tenant_id: str) -> list[dict]:
         return crud.list_tools(tenant_id)
 
