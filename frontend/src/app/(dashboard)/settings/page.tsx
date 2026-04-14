@@ -8,16 +8,26 @@ const AI = process.env.NEXT_PUBLIC_AI_ENGINE_URL || 'http://localhost:8000'
 
 export default function SettingsPage() {
   const [context, setContext] = useState<any>(null)
+  const [project, setProject] = useState<any>(null)
   const [models, setModels] = useState<any[]>([])
   const [ftStats, setFtStats] = useState<any>(null)
   const [loading, setLoading] = useState(true)
+  const [selectedModel, setSelectedModel] = useState('')
+  const [saving, setSaving] = useState(false)
   const { t } = useI18n()
 
   useEffect(() => {
     getDemoContext().then(async (ctx) => {
       setContext(ctx)
-      const mr = await fetch(`${AI}/api/v1/models`)
-      setModels((await mr.json()).models || [])
+      const [mr, pr] = await Promise.all([
+        fetch(`${AI}/api/v1/models`),
+        fetch(`${AI}/api/v1/projects/${ctx.project_id}`),
+      ])
+      const modelsData = (await mr.json()).models || []
+      setModels(modelsData)
+      const projectData = await pr.json()
+      setProject(projectData)
+      setSelectedModel(projectData.default_model || 'claude-sonnet-4-20250514')
       try {
         const fr = await fetch(`${AI}/api/v1/finetune/stats/${ctx.project_id}`)
         setFtStats(await fr.json())
@@ -25,6 +35,16 @@ export default function SettingsPage() {
       setLoading(false)
     }).catch(() => setLoading(false))
   }, [])
+
+  const handleModelChange = async (modelId: string) => {
+    setSelectedModel(modelId)
+    setSaving(true)
+    await fetch(`${AI}/api/v1/projects/${context.project_id}`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ default_model: modelId }),
+    })
+    setSaving(false)
+  }
 
   const handleExport = async () => {
     if (!context) return
@@ -61,17 +81,27 @@ export default function SettingsPage() {
           </div>
         </section>
 
-        {/* LLM Models */}
+        {/* Default Model Selection */}
         <section className="rounded-lg border border-zinc-700 bg-zinc-800/50 p-4">
-          <h2 className="text-sm font-medium text-zinc-200 mb-3">{t('settings.llmModels')}</h2>
+          <div className="flex items-center justify-between mb-3">
+            <h2 className="text-sm font-medium text-zinc-200">{t('settings.defaultModel')}</h2>
+            {saving && <span className="text-[10px] text-blue-400 animate-pulse">saving...</span>}
+          </div>
           <div className="space-y-1">
             {models.map((m) => (
-              <div key={m.id} className="flex items-center justify-between py-1.5 px-2 rounded hover:bg-zinc-700/50">
-                <span className="text-sm text-zinc-200">{m.label}</span>
+              <button key={m.id} onClick={() => handleModelChange(m.id)}
+                className={`w-full flex items-center justify-between py-2 px-3 rounded-lg text-left transition-colors ${
+                  selectedModel === m.id ? 'bg-blue-600/20 border border-blue-500/50' : 'hover:bg-zinc-700/50 border border-transparent'
+                }`}>
+                <div className="flex items-center gap-2">
+                  {selectedModel === m.id && <span className="text-blue-400 text-xs">✓</span>}
+                  <span className={`text-sm ${selectedModel === m.id ? 'text-blue-300 font-medium' : 'text-zinc-200'}`}>{m.label}</span>
+                </div>
                 <span className="text-xs text-zinc-500 font-mono">{m.provider}</span>
-              </div>
+              </button>
             ))}
           </div>
+          <p className="text-[10px] text-zinc-500 mt-2">{t('settings.modelNote')}</p>
         </section>
 
         {/* API Keys */}

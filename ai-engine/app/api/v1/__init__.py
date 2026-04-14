@@ -850,6 +850,31 @@ async def get_workflow_run_api(run_id: str):
 
 
 # ============================================
+# 專案設定
+# ============================================
+
+@router.patch("/projects/{project_id}")
+async def update_project(project_id: str, data: dict):
+    """更新專案設定"""
+    from app.db.supabase import get_supabase
+    allowed = {"name", "description", "default_model", "domain_template"}
+    updates = {k: v for k, v in data.items() if k in allowed}
+    if not updates:
+        raise HTTPException(status_code=400, detail="No valid fields")
+    result = get_supabase().table("ait_projects").update(updates).eq("id", project_id).execute()
+    return {"status": "updated", "project": result.data[0] if result.data else {}}
+
+
+@router.get("/projects/{project_id}")
+async def get_project_detail(project_id: str):
+    """取得專案詳情（含 default_model）"""
+    project = crud.get_project(project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return project
+
+
+# ============================================
 # LLM 管理
 # ============================================
 

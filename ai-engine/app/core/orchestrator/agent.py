@@ -338,7 +338,9 @@ class AgentOrchestrator:
         messages.append({"role": "user", "content": request.message})
 
         # 4. 呼叫 LLM（帶工具 + 成本追蹤）
-        model = request.model or "claude-sonnet-4-20250514"
+        # Model priority: request > project default > global default
+        project = crud.get_project(request.project_id)
+        model = request.model or (project.get("default_model") if project else None) or "claude-sonnet-4-20250514"
         llm_response = await chat_completion(
             messages=messages,
             model=model,
