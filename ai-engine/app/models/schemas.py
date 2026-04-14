@@ -130,9 +130,11 @@ class ActionType(str, Enum):
 
 
 class CapabilityRule(BaseModel):
+    project_id: str
     trigger_description: str           # 人話描述的觸發條件
+    trigger_keywords: list[str] = []   # 觸發關鍵字（用於意圖匹配）
     action_type: ActionType
-    action_config: dict[str, Any]      # 對應的動作設定
+    action_config: dict[str, Any]      # 對應的動作設定（widget config / tool_id / workflow_id）
     priority: int = 0
 
 

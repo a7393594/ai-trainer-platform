@@ -79,26 +79,123 @@ class AgentOrchestrator:
     # ========================================
 
     async def _classify_intent(self, message: str, project_id: str) -> dict:
-        """意圖分類 — Phase 1 全部走一般對話"""
-        # TODO Phase 3: 語意比對能力規則
-        # TODO Phase 5: 工作流狀態檢查
-        return {"type": "general"}
+        """意圖分類 — 語意比對能力規則"""
+        from app.core.intent.classifier import intent_classifier
+        result = intent_classifier.classify(message, project_id)
+
+        # Check for active workflow (Phase 5)
+        # TODO: check if user has an active workflow_run in waiting_input state
+
+        return result
 
     async def _execute_capability(
         self, intent: dict, request: ChatRequest,
         session_id: str, history: list
     ) -> ChatResponse:
         """執行匹配到的能力規則"""
-        # TODO Phase 3
-        raise NotImplementedError("Phase 3")
+        rule = intent["rule"]
+        action_type = rule["action_type"]
+        action_config = rule.get("action_config", {})
+
+        # Save user message
+        crud.create_message(session_id=session_id, role="user", content=request.message)
+
+        if action_type == "widget":
+            # Return widget definition in response
+            widget_def = action_config.get("widget", {})
+            # Also generate a text response via LLM for context
+            text_response = action_config.get("text", "")
+            if not text_response:
+                # Generate contextual text with LLM
+                system_prompt = await self._load_active_prompt(request.project_id)
+                messages = []
+                if system_prompt:
+                    messages.append({"role": "system", "content": system_prompt})
+                messages.extend(history)
+                messages.append({"role": "user", "content": request.message})
+                messages.append({"role": "system", "content": f"使用者的問題匹配到了一個互動元件規則。請用自然語言回覆使用者，然後系統會自動顯示互動元件。規則描述：{rule['trigger_description']}"})
+                llm_response = await chat_completion(messages=messages, model=request.model or "claude-sonnet-4-20250514")
+                text_response = llm_response.choices[0].message.content
+
+            assistant_msg = crud.create_message(
+                session_id=session_id, role="assistant", content=text_response,
+                metadata={"capability_rule_id": rule["id"], "action_type": action_type},
+            )
+
+            return ChatResponse(
+                session_id=session_id,
+                message=ChatMessage(role=Role.ASSISTANT, content=text_response),
+                message_id=assistant_msg["id"],
+                widgets=[widget_def] if widget_def else [],
+            )
+
+        elif action_type == "tool_call":
+            # Execute registered tool
+            tool_id = action_config.get("tool_id")
+            if tool_id:
+                tool = crud.get_tool(tool_id)
+                if tool:
+                    # For now, include tool info in LLM context
+                    system_prompt = await self._load_active_prompt(request.project_id)
+                    messages = []
+                    if system_prompt:
+                        messages.append({"role": "system", "content": system_prompt})
+                    messages.extend(history)
+                    messages.append({"role": "user", "content": request.message})
+                    messages.append({"role": "system", "content": f"可用工具：{tool['name']} — {tool['description']}。請使用此工具回答使用者。"})
+                    llm_response = await chat_completion(messages=messages, model=request.model or "claude-sonnet-4-20250514")
+                    text_response = llm_response.choices[0].message.content
+
+                    assistant_msg = crud.create_message(
+                        session_id=session_id, role="assistant", content=text_response,
+                        metadata={"capability_rule_id": rule["id"], "tool_id": tool_id},
+                    )
+                    return ChatResponse(
+                        session_id=session_id,
+                        message=ChatMessage(role=Role.ASSISTANT, content=text_response),
+                        message_id=assistant_msg["id"],
+                        tool_results=[{"tool_name": tool["name"], "status": "referenced"}],
+                    )
+
+            # Fallback to general chat if tool not found
+            return await self._general_chat(request, session_id, history)
+
+        elif action_type == "workflow":
+            # Start a workflow
+            from app.core.workflows.engine import workflow_engine
+            workflow_id = action_config.get("workflow_id")
+            if workflow_id:
+                user_id = request.user_id or "anonymous"
+                result = await workflow_engine.start_workflow(workflow_id, session_id, user_id)
+                if result.get("status") == "started":
+                    text = f"已啟動工作流：{result.get('workflow_name', '')}。\n\n當前步驟：{result.get('current_step', {}).get('id', '')}"
+                    assistant_msg = crud.create_message(
+                        session_id=session_id, role="assistant", content=text,
+                        metadata={"workflow_run_id": result.get("run_id"), "capability_rule_id": rule["id"]},
+                    )
+                    # If first step has a widget, include it
+                    step = result.get("current_step", {})
+                    widgets = [step.get("widget")] if step.get("widget") else []
+                    return ChatResponse(
+                        session_id=session_id,
+                        message=ChatMessage(role=Role.ASSISTANT, content=text),
+                        message_id=assistant_msg["id"],
+                        widgets=widgets,
+                    )
+
+            return await self._general_chat(request, session_id, history)
+
+        else:
+            # composite or unknown — fallback to general chat
+            return await self._general_chat(request, session_id, history)
 
     async def _continue_workflow(
         self, intent: dict, request: ChatRequest,
         session_id: str, history: list
     ) -> ChatResponse:
         """繼續進行中的工作流"""
-        # TODO Phase 5
-        raise NotImplementedError("Phase 5")
+        # TODO Phase 5: check active workflow_run, advance with user response
+        return await self._general_chat(request, session_id, history)
 
     async def _general_chat(
         self, request: ChatRequest, session_id: str, history: list

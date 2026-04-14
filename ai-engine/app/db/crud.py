@@ -906,6 +906,55 @@ def create_audit_log(tenant_id: str, user_id: Optional[str] = None, action_type:
 
 
 # ============================================
+# Capability Rules
+# ============================================
+
+T_CAPABILITY_RULES = "ait_capability_rules"
+
+
+def create_capability_rule(
+    project_id: str, trigger_description: str, action_type: str,
+    action_config: dict, trigger_keywords: list = None, priority: int = 0,
+    created_by: str = None
+) -> dict:
+    data: dict = {
+        "project_id": project_id,
+        "trigger_description": trigger_description,
+        "action_type": action_type,
+        "action_config": action_config,
+        "priority": priority,
+    }
+    if trigger_keywords:
+        data["trigger_keywords"] = trigger_keywords
+    if created_by:
+        data["created_by"] = created_by
+    return get_supabase().table(T_CAPABILITY_RULES).insert(data).execute().data[0]
+
+
+def list_capability_rules(project_id: str) -> list[dict]:
+    return (
+        get_supabase().table(T_CAPABILITY_RULES)
+        .select("*").eq("project_id", project_id).eq("is_active", True)
+        .order("priority", desc=True).execute()
+    ).data
+
+
+def get_capability_rule(rule_id: str) -> Optional[dict]:
+    result = get_supabase().table(T_CAPABILITY_RULES).select("*").eq("id", rule_id).execute()
+    return result.data[0] if result.data else None
+
+
+def update_capability_rule(rule_id: str, **kwargs) -> dict:
+    data = {k: v for k, v in kwargs.items() if v is not None}
+    result = get_supabase().table(T_CAPABILITY_RULES).update(data).eq("id", rule_id).execute()
+    return result.data[0] if result.data else {}
+
+
+def delete_capability_rule(rule_id: str) -> None:
+    get_supabase().table(T_CAPABILITY_RULES).update({"is_active": False}).eq("id", rule_id).execute()
+
+
+# ============================================
 # Workflows
 # ============================================
 

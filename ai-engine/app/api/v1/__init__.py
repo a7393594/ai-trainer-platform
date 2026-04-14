@@ -425,28 +425,52 @@ async def test_tool(tool_id: str):
 @router.post("/capabilities")
 async def create_capability(rule: CapabilityRule):
     """建立能力規則"""
-    # Store in DB (simplified — no embedding for now)
-    from app.db.supabase import get_supabase
-    result = get_supabase().table("ait_capability_rules").insert({
-        "project_id": rule.trigger_description,  # Will be fixed when we add project_id to schema
-        "trigger_description": rule.trigger_description,
-        "action_type": rule.action_type,
-        "action_config": rule.action_config,
-        "priority": rule.priority,
-    }).execute()
-    return {"status": "created", "rule": result.data[0] if result.data else {}}
+    result = crud.create_capability_rule(
+        project_id=rule.project_id,
+        trigger_description=rule.trigger_description,
+        action_type=rule.action_type,
+        action_config=rule.action_config,
+        trigger_keywords=rule.trigger_keywords,
+        priority=rule.priority,
+    )
+    return {"status": "created", "rule": result}
 
 
 @router.get("/capabilities/{project_id}")
 async def list_capabilities(project_id: str):
     """列出能力規則"""
-    from app.db.supabase import get_supabase
-    result = (
-        get_supabase().table("ait_capability_rules")
-        .select("*").eq("project_id", project_id).eq("is_active", True)
-        .order("priority", desc=True).execute()
-    )
-    return {"rules": result.data}
+    rules = crud.list_capability_rules(project_id)
+    return {"rules": rules}
+
+
+@router.put("/capabilities/{rule_id}")
+async def update_capability(rule_id: str, data: dict):
+    """更新能力規則"""
+    allowed = {"trigger_description", "trigger_keywords", "action_type", "action_config", "priority"}
+    updates = {k: v for k, v in data.items() if k in allowed}
+    if not updates:
+        raise HTTPException(status_code=400, detail="No valid fields to update")
+    result = crud.update_capability_rule(rule_id, **updates)
+    return {"status": "updated", "rule": result}
+
+
+@router.delete("/capabilities/{rule_id}")
+async def delete_capability(rule_id: str):
+    """停用能力規則"""
+    crud.delete_capability_rule(rule_id)
+    return {"status": "deleted"}
+
+
+@router.post("/capabilities/classify")
+async def classify_intent(data: dict):
+    """測試意圖分類"""
+    from app.core.intent.classifier import intent_classifier
+    project_id = data.get("project_id", "")
+    message = data.get("message", "")
+    if not project_id or not message:
+        raise HTTPException(status_code=400, detail="project_id and message required")
+    result = intent_classifier.classify(message, project_id)
+    return result
 
 
 # ============================================

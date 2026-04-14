@@ -12,6 +12,7 @@ const translations: Record<Locale, Record<string, string>> = {
     'nav.prompts': '提示詞工作室',
     'nav.eval': '評估引擎',
     'nav.tools': '工具管理',
+    'nav.capabilities': '能力規則',
     'nav.workflows': '工作流',
     'nav.settings': '設定',
     'nav.integrations': '整合管理',
@@ -168,6 +169,23 @@ const translations: Record<Locale, Record<string, string>> = {
     'tools.description': '描述',
     'tools.test': '測試',
     'tools.empty': '尚無工具。新增一個來擴展 AI 的能力。',
+
+    // ====== Capabilities ======
+    'capabilities.title': '能力規則',
+    'capabilities.desc': '設定意圖觸發條件和對應動作（Widget / 工具 / 工作流）',
+    'capabilities.create': '新增規則',
+    'capabilities.trigger': '觸發描述',
+    'capabilities.keywords': '觸發關鍵字（逗號分隔）',
+    'capabilities.actionType': '動作類型',
+    'capabilities.priority': '優先級',
+    'capabilities.widgetBuilder': 'Widget 建構器',
+    'capabilities.options': '選項',
+    'capabilities.test': '測試',
+    'capabilities.testPlaceholder': '輸入測試訊息來匹配規則...',
+    'capabilities.edit': '編輯',
+    'capabilities.update': '更新',
+    'capabilities.delete': '刪除',
+    'capabilities.empty': '尚無能力規則。新增規則來定義 AI 的互動行為。',
 
     // ====== Workflows ======
     'workflows.title': '工作流',
@@ -464,6 +482,24 @@ const translations: Record<Locale, Record<string, string>> = {
     'tools.description': 'Description',
     'tools.test': 'Test',
     'tools.empty': 'No tools registered. Add one to extend your AI\'s capabilities.',
+
+    // ====== Capabilities ======
+    'nav.capabilities': 'Capabilities',
+    'capabilities.title': 'Capability Rules',
+    'capabilities.desc': 'Configure intent triggers and actions (Widget / Tool Call / Workflow)',
+    'capabilities.create': 'Add Rule',
+    'capabilities.trigger': 'Trigger Description',
+    'capabilities.keywords': 'Trigger Keywords (comma-separated)',
+    'capabilities.actionType': 'Action Type',
+    'capabilities.priority': 'Priority',
+    'capabilities.widgetBuilder': 'Widget Builder',
+    'capabilities.options': 'Options',
+    'capabilities.test': 'Test',
+    'capabilities.testPlaceholder': 'Type a test message to match rules...',
+    'capabilities.edit': 'Edit',
+    'capabilities.update': 'Update',
+    'capabilities.delete': 'Delete',
+    'capabilities.empty': 'No capability rules. Add rules to define AI interaction behaviors.',
 
     // ====== Workflows ======
     'workflows.title': 'Workflows',
