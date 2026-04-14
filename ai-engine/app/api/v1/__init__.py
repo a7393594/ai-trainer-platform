@@ -567,6 +567,93 @@ async def get_eval_phase_status(project_id: str):
 
 
 # ============================================
+# 多模型比較
+# ============================================
+
+@router.post("/comparison/create")
+async def create_comparison(data: dict):
+    """建立多模型比較"""
+    from app.core.comparison.engine import comparison_engine
+    project_id = data.get("project_id", "")
+    name = data.get("name", "Untitled")
+    questions = data.get("questions", [])
+    models = data.get("models", [])
+    if not project_id or not questions or not models:
+        raise HTTPException(status_code=400, detail="project_id, questions, models required")
+    run = comparison_engine.create_run(project_id, name, questions, models)
+    return {"status": "created", "run": run}
+
+
+@router.post("/comparison/{run_id}/run")
+async def execute_comparison(run_id: str):
+    """批次執行所有模型"""
+    from app.core.comparison.engine import comparison_engine
+    result = await comparison_engine.execute_run(run_id)
+    if "error" in result:
+        raise HTTPException(status_code=400, detail=result["error"])
+    return result
+
+
+@router.get("/comparison/{run_id}")
+async def get_comparison_results(run_id: str):
+    """取得比較結果"""
+    from app.core.comparison.engine import comparison_engine
+    return comparison_engine.get_run_results(run_id)
+
+
+@router.get("/comparison/list/{project_id}")
+async def list_comparisons(project_id: str):
+    """列出專案的比較"""
+    from app.core.comparison.engine import comparison_engine
+    return {"runs": comparison_engine.list_runs(project_id)}
+
+
+@router.post("/comparison/vote")
+async def vote_response(data: dict):
+    """投票/標記正確性"""
+    from app.core.comparison.engine import comparison_engine
+    response_id = data.get("response_id", "")
+    is_correct = data.get("is_correct")
+    voted_rank = data.get("voted_rank")
+    result = comparison_engine.vote(response_id, is_correct, voted_rank)
+    return {"status": "voted", "response": result}
+
+
+@router.post("/comparison/{run_id}/select-model")
+async def select_comparison_model(run_id: str, data: dict):
+    """選定模型"""
+    from app.core.comparison.engine import comparison_engine
+    model_id = data.get("model_id", "")
+    return comparison_engine.select_model(run_id, model_id)
+
+
+@router.get("/comparison/{run_id}/gaps")
+async def analyze_comparison_gaps(run_id: str):
+    """概念差分析"""
+    from app.core.comparison.engine import comparison_engine
+    gaps = comparison_engine.analyze_gaps(run_id)
+    return {"gaps": gaps}
+
+
+@router.post("/comparison/gaps/{gap_id}/remediate")
+async def remediate_gap(gap_id: str, data: dict):
+    """自動補齊概念差"""
+    from app.core.comparison.engine import comparison_engine
+    rtype = data.get("type", "rag")
+    result = await comparison_engine.remediate_gap(gap_id, rtype)
+    if "error" in result:
+        raise HTTPException(status_code=400, detail=result["error"])
+    return result
+
+
+@router.get("/comparison/gaps/list/{project_id}")
+async def list_concept_gaps(project_id: str):
+    """列出專案的概念差"""
+    from app.core.comparison.engine import comparison_engine
+    return {"gaps": comparison_engine.list_gaps(project_id)}
+
+
+# ============================================
 # Fine-tune
 # ============================================
 

@@ -16,6 +16,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     { href: '/knowledge', label: t('nav.knowledge'), icon: '📚' },
     { href: '/prompts', label: t('nav.prompts'), icon: '✏️' },
     { href: '/eval', label: t('nav.eval'), icon: '📊' },
+    { href: '/comparison', label: t('nav.comparison'), icon: '⚖️' },
     { href: '/tools', label: t('nav.tools'), icon: '🔧' },
     { href: '/capabilities', label: t('nav.capabilities'), icon: '🧩' },
     { href: '/workflows', label: t('nav.workflows'), icon: '⚡' },
