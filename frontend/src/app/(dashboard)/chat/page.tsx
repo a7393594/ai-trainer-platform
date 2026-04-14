@@ -77,6 +77,18 @@ export default function ChatPage() {
             <PromptSuggestionButton projectId={context.project_id} />
           </div>
         </header>
+        {/* Onboarding Banner — show when no sessions exist or mode is freeform */}
+        {mode === 'freeform' && !sessionId && (
+          <div className="border-b border-zinc-800 bg-blue-600/10 px-4 py-2.5 flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <span className="text-sm">🚀</span>
+              <span className="text-xs text-blue-300">{t('chat.onboardingBanner')}</span>
+            </div>
+            <button onClick={() => handleModeChange('onboarding')} className="rounded bg-blue-600 px-3 py-1 text-xs text-white hover:bg-blue-500">
+              {t('chat.startOnboarding')}
+            </button>
+          </div>
+        )}
         <div className="flex-1 min-h-0">
           <ChatInterface key={sessionKey} projectId={context.project_id} userId={context.user_id} sessionId={sessionId} model={model} mode={mode} />
         </div>

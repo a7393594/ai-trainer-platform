@@ -91,6 +91,23 @@ const translations: Record<Locale, Record<string, string>> = {
     'settings.download': '下載',
     'settings.jobs': '訓練任務',
 
+    // Empty states
+    'overview.emptyTitle': '開始你的 AI 訓練之旅',
+    'overview.emptyDesc': '按照以下步驟設定你的 AI Agent',
+    'overview.step1': '開始訓練對話 — 與 AI 對話並給予回饋',
+    'overview.step2': '模型比較 — 找到最適合的模型',
+    'overview.step3': '增強能力 — 上傳知識庫或串接工具',
+
+    // Chat banner
+    'chat.onboardingBanner': '新專案？先完成引導設定，讓 AI 更了解你的需求',
+    'chat.startOnboarding': '開始引導設定',
+
+    // Behavior impact
+    'behavior.impactWidget': '觸發時顯示互動元件（選擇題/排序等），影響使用者互動體驗',
+    'behavior.impactTool': '觸發時調用外部工具，AI 回覆將包含工具計算結果',
+    'behavior.impactWorkflow': '觸發時啟動多步驟流程，引導使用者完成特定任務',
+    'behavior.impactComposite': '觸發時執行複合動作（元件 + 工具 + 流程）',
+
     // ====== Login ======
     'login.title': 'AI Trainer',
     'login.signIn': '登入你的工作區',
@@ -526,6 +543,20 @@ const translations: Record<Locale, Record<string, string>> = {
     'settings.exportBtn': 'Export',
     'settings.download': 'Download',
     'settings.jobs': 'Training Jobs',
+
+    'overview.emptyTitle': 'Start Your AI Training Journey',
+    'overview.emptyDesc': 'Follow these steps to set up your AI Agent',
+    'overview.step1': 'Start Training — Chat with AI and give feedback',
+    'overview.step2': 'Compare Models — Find the best model for you',
+    'overview.step3': 'Enhance — Upload knowledge or connect tools',
+
+    'chat.onboardingBanner': 'New project? Complete guided setup to help AI understand your needs',
+    'chat.startOnboarding': 'Start Setup',
+
+    'behavior.impactWidget': 'Shows interactive widget (quiz/rank) when triggered',
+    'behavior.impactTool': 'Calls external tool, response includes calculated data',
+    'behavior.impactWorkflow': 'Starts multi-step flow guiding user through a task',
+    'behavior.impactComposite': 'Executes combined actions (widget + tool + workflow)',
 
     // ====== Login ======
     'login.title': 'AI Trainer',

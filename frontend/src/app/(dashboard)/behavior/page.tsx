@@ -149,22 +149,32 @@ export default function BehaviorPage() {
             )}
 
             {rules.map(rule => (
-              <div key={rule.id} className="rounded-lg border border-zinc-700 bg-zinc-800/50 px-4 py-3 flex items-center justify-between">
-                <div className="flex-1">
-                  <div className="flex items-center gap-2 mb-1">
-                    <span className={`rounded px-1.5 py-0.5 text-[10px] ${rule.action_type === 'widget' ? 'bg-purple-500/20 text-purple-400' : 'bg-blue-500/20 text-blue-400'}`}>{rule.action_type}</span>
-                    <span className="text-[10px] text-zinc-500">P{rule.priority}</span>
-                  </div>
-                  <p className="text-sm text-zinc-200">{rule.trigger_description}</p>
-                  {rule.trigger_keywords?.length > 0 && (
-                    <div className="flex gap-1 mt-1 flex-wrap">
-                      {rule.trigger_keywords.map((kw: string, i: number) => (
-                        <span key={i} className="rounded bg-zinc-700 px-1.5 py-0.5 text-[10px] text-zinc-400">{kw}</span>
-                      ))}
+              <div key={rule.id} className="rounded-lg border border-zinc-700 bg-zinc-800/50 px-4 py-3">
+                <div className="flex items-center justify-between">
+                  <div className="flex-1">
+                    <div className="flex items-center gap-2 mb-1">
+                      <span className="w-2 h-2 rounded-full bg-green-500" title="Active" />
+                      <span className={`rounded px-1.5 py-0.5 text-[10px] ${rule.action_type === 'widget' ? 'bg-purple-500/20 text-purple-400' : rule.action_type === 'tool_call' ? 'bg-blue-500/20 text-blue-400' : rule.action_type === 'workflow' ? 'bg-orange-500/20 text-orange-400' : 'bg-zinc-600/20 text-zinc-400'}`}>{rule.action_type}</span>
+                      <span className="text-[10px] text-zinc-500">P{rule.priority}</span>
                     </div>
-                  )}
+                    <p className="text-sm text-zinc-200">{rule.trigger_description}</p>
+                    {rule.trigger_keywords?.length > 0 && (
+                      <div className="flex gap-1 mt-1 flex-wrap">
+                        {rule.trigger_keywords.map((kw: string, i: number) => (
+                          <span key={i} className="rounded bg-zinc-700 px-1.5 py-0.5 text-[10px] text-zinc-400">{kw}</span>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                  <button onClick={() => handleToggleRule(rule.id, true)} className="text-xs text-red-400 hover:text-red-300 ml-3">{t('behavior.disable')}</button>
                 </div>
-                <button onClick={() => handleToggleRule(rule.id, true)} className="text-xs text-red-400 hover:text-red-300 ml-3">{t('behavior.disable')}</button>
+                {/* Impact preview */}
+                <div className="mt-2 rounded bg-zinc-900/50 px-3 py-1.5 text-[10px] text-zinc-500 border-l-2 border-blue-500/30">
+                  💡 {rule.action_type === 'widget' && t('behavior.impactWidget')}
+                  {rule.action_type === 'tool_call' && t('behavior.impactTool')}
+                  {rule.action_type === 'workflow' && t('behavior.impactWorkflow')}
+                  {rule.action_type === 'composite' && t('behavior.impactComposite')}
+                </div>
               </div>
             ))}
             {rules.length === 0 && <p className="text-sm text-zinc-500 text-center py-12">{t('behavior.noCapabilities')}</p>}

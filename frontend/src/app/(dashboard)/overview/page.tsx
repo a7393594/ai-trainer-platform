@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react'
 import { getDemoContext } from '@/lib/ai-engine'
 import { useI18n } from '@/lib/i18n'
+import { EmptyState } from '@/components/EmptyState'
 
 const AI = process.env.NEXT_PUBLIC_AI_ENGINE_URL || 'http://localhost:8000'
 
@@ -44,6 +45,22 @@ export default function OverviewPage() {
 
   const o = analytics?.overview || {}
   const fb = analytics?.feedback || {}
+  const isEmpty = !o.total_sessions && !o.total_messages
+
+  if (isEmpty) return (
+    <div className="h-full bg-zinc-900 p-6">
+      <EmptyState
+        icon="📊"
+        title={t('overview.emptyTitle')}
+        description={t('overview.emptyDesc')}
+        steps={[
+          { label: t('overview.step1'), href: '/chat', done: false },
+          { label: t('overview.step2'), href: '/comparison', done: false },
+          { label: t('overview.step3'), href: '/enhance', done: false },
+        ]}
+      />
+    </div>
+  )
 
   return (
     <div className="h-full bg-zinc-900 p-6 overflow-auto">
