@@ -222,6 +222,22 @@ const translations: Record<Locale, Record<string, string>> = {
     'usage.dailyTrend': '每日成本趨勢',
     'usage.noData': '尚無使用記錄',
 
+    // ====== Analytics ======
+    'nav.analytics': '使用分析',
+    'analytics.title': '使用分析',
+    'analytics.desc': '對話統計、回饋分佈、專案健康度',
+    'analytics.sessions': '對話數',
+    'analytics.messages': '總訊息',
+    'analytics.userMsgs': '用戶訊息',
+    'analytics.avgPerSession': '平均/對話',
+    'analytics.feedbackDist': '回饋分佈',
+    'analytics.prompts': 'Prompt 版本',
+    'analytics.knowledge': '知識庫',
+    'analytics.eval': '評估',
+    'analytics.tools': '工具',
+    'analytics.registeredTools': '個已註冊',
+    'analytics.dailyActivity': '每日活躍度',
+
     // ====== Workflows ======
     'workflows.title': '工作流',
     'workflows.desc': '建立多步驟自動化流程',
@@ -572,6 +588,22 @@ const translations: Record<Locale, Record<string, string>> = {
     'usage.byModel': 'Usage by Model',
     'usage.dailyTrend': 'Daily Cost Trend',
     'usage.noData': 'No usage data yet',
+
+    // ====== Analytics ======
+    'nav.analytics': 'Analytics',
+    'analytics.title': 'Analytics',
+    'analytics.desc': 'Conversation stats, feedback distribution, project health',
+    'analytics.sessions': 'Sessions',
+    'analytics.messages': 'Messages',
+    'analytics.userMsgs': 'User Messages',
+    'analytics.avgPerSession': 'Avg/Session',
+    'analytics.feedbackDist': 'Feedback Distribution',
+    'analytics.prompts': 'Prompt Versions',
+    'analytics.knowledge': 'Knowledge Base',
+    'analytics.eval': 'Evaluation',
+    'analytics.tools': 'Tools',
+    'analytics.registeredTools': 'registered',
+    'analytics.dailyActivity': 'Daily Activity',
 
     // ====== Workflows ======
     'workflows.title': 'Workflows',

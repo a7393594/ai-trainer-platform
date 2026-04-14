@@ -665,29 +665,29 @@ async def get_project_cost(project_id: str, days: int = 30):
     since = (datetime.utcnow() - timedelta(days=days)).isoformat()
     data = (
         get_supabase().table("ait_llm_usage")
-        .select("model, input_tokens, output_tokens, total_tokens, cost_usd, created_at")
+        .select("model, input_tokens, output_tokens, total_tokens, cost_usd, latency_ms, endpoint, created_at")
         .eq("project_id", project_id)
         .gte("created_at", since)
         .order("created_at", desc=True)
         .execute()
     ).data
 
-    # Aggregate
     total_cost = sum(r.get("cost_usd", 0) or 0 for r in data)
     total_tokens = sum(r.get("total_tokens", 0) or 0 for r in data)
     total_calls = len(data)
 
-    # Per model breakdown
     by_model: dict = {}
     for r in data:
         m = r["model"]
         if m not in by_model:
-            by_model[m] = {"calls": 0, "tokens": 0, "cost": 0}
+            by_model[m] = {"calls": 0, "tokens": 0, "cost": 0, "total_latency": 0}
         by_model[m]["calls"] += 1
         by_model[m]["tokens"] += r.get("total_tokens", 0) or 0
         by_model[m]["cost"] += r.get("cost_usd", 0) or 0
+        by_model[m]["total_latency"] += r.get("latency_ms", 0) or 0
+    for s in by_model.values():
+        s["avg_latency"] = round(s["total_latency"] / s["calls"]) if s["calls"] else 0
 
-    # Daily trend
     daily: dict = {}
     for r in data:
         day = r["created_at"][:10]
@@ -703,6 +703,92 @@ async def get_project_cost(project_id: str, days: int = 30):
         "total_calls": total_calls,
         "by_model": {k: {**v, "cost": round(v["cost"], 4)} for k, v in by_model.items()},
         "daily_trend": [{"date": k, **v, "cost": round(v["cost"], 4)} for k, v in sorted(daily.items())],
+        "period_days": days,
+    }
+
+
+@router.get("/analytics/{project_id}")
+async def get_project_analytics(project_id: str, days: int = 30):
+    """完整使用分析"""
+    from app.db.supabase import get_supabase
+    from datetime import datetime, timedelta
+    since = (datetime.utcnow() - timedelta(days=days)).isoformat()
+
+    # 1. Sessions
+    sessions = get_supabase().table("ait_training_sessions").select("id, created_at").eq("project_id", project_id).gte("created_at", since).execute().data
+    total_sessions = len(sessions)
+
+    # 2. Messages
+    session_ids = [s["id"] for s in sessions]
+    total_messages = 0
+    user_messages = 0
+    if session_ids:
+        # Batch in chunks of 50
+        for i in range(0, len(session_ids), 50):
+            chunk = session_ids[i:i+50]
+            msgs = get_supabase().table("ait_training_messages").select("role").in_("session_id", chunk).execute().data
+            total_messages += len(msgs)
+            user_messages += sum(1 for m in msgs if m["role"] == "user")
+
+    # 3. Feedbacks
+    feedbacks = crud.get_feedback_stats(project_id)
+
+    # 4. Tool calls (from LLM usage with endpoint)
+    tool_usage = get_supabase().table("ait_llm_usage").select("endpoint, model, cost_usd, created_at").eq("project_id", project_id).gte("created_at", since).execute().data
+    by_endpoint: dict = {}
+    for r in tool_usage:
+        ep = r.get("endpoint", "chat")
+        if ep not in by_endpoint:
+            by_endpoint[ep] = {"calls": 0, "cost": 0}
+        by_endpoint[ep]["calls"] += 1
+        by_endpoint[ep]["cost"] += r.get("cost_usd", 0) or 0
+
+    # 5. Registered tools
+    project_data = crud.get_project(project_id)
+    tenant_id = project_data.get("tenant_id") if project_data else None
+    tools = crud.list_tools(tenant_id) if tenant_id else []
+
+    # 6. Prompt versions
+    prompts = crud.list_prompt_versions(project_id)
+
+    # 7. Knowledge docs
+    docs = crud.list_knowledge_docs(project_id)
+
+    # 8. Eval runs
+    eval_runs = crud.list_eval_runs(project_id)
+
+    # 9. Daily activity
+    daily_activity: dict = {}
+    for s in sessions:
+        day = s["created_at"][:10]
+        daily_activity.setdefault(day, {"sessions": 0})
+        daily_activity[day]["sessions"] += 1
+
+    return {
+        "overview": {
+            "total_sessions": total_sessions,
+            "total_messages": total_messages,
+            "user_messages": user_messages,
+            "avg_messages_per_session": round(total_messages / total_sessions, 1) if total_sessions else 0,
+        },
+        "feedback": feedbacks,
+        "tools": {
+            "registered": len(tools),
+            "tool_names": [t["name"] for t in tools],
+        },
+        "prompts": {
+            "total_versions": len(prompts),
+            "active_version": next((p["version"] for p in prompts if p.get("is_active")), None),
+        },
+        "knowledge": {
+            "total_docs": len(docs),
+        },
+        "eval": {
+            "total_runs": len(eval_runs),
+            "latest_score": eval_runs[0]["total_score"] if eval_runs else None,
+        },
+        "by_endpoint": {k: {**v, "cost": round(v["cost"], 4)} for k, v in by_endpoint.items()},
+        "daily_activity": [{"date": k, **v} for k, v in sorted(daily_activity.items())],
         "period_days": days,
     }
 
