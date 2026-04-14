@@ -52,6 +52,7 @@ MODELS = [
     {"id": "openrouter/mistralai/devstral-small:free", "label": "Devstral Small (Free)", "provider": "openrouter", "tier": "free", "input_cost": 0, "output_cost": 0, "context": 131072, "tool_use": False, "tags": ["free", "coding"]},
     {"id": "openrouter/nvidia/llama-3.1-nemotron-70b-instruct:free", "label": "Nemotron 70B (Free)", "provider": "openrouter", "tier": "free", "input_cost": 0, "output_cost": 0, "context": 131072, "tool_use": False, "tags": ["free", "open-source"]},
     {"id": "openrouter/google/gemini-2.0-flash-exp:free", "label": "Gemini 2.0 Flash Exp (Free)", "provider": "openrouter", "tier": "free", "input_cost": 0, "output_cost": 0, "context": 1048576, "tool_use": False, "tags": ["free", "huge-context"]},
+    {"id": "openrouter/google/gemma-4-26b-a4b-it:free", "label": "Gemma 4 26B A4B (Free)", "provider": "openrouter", "tier": "free", "input_cost": 0, "output_cost": 0, "context": 256000, "tool_use": True, "tags": ["free", "multimodal", "reasoning", "open-source", "MoE"]},
 ]
 
 
