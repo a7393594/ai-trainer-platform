@@ -12,18 +12,13 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   const { locale, setLocale, t } = useI18n()
 
   const NAV_ITEMS = [
-    { href: '/chat', label: t('nav.chat'), icon: '💬' },
-    { href: '/knowledge', label: t('nav.knowledge'), icon: '📚' },
-    { href: '/prompts', label: t('nav.prompts'), icon: '✏️' },
-    { href: '/eval', label: t('nav.eval'), icon: '📊' },
+    { href: '/overview', label: t('nav.overview'), icon: '📊' },
+    { href: '/chat', label: t('nav.train'), icon: '💬' },
     { href: '/comparison', label: t('nav.comparison'), icon: '⚖️' },
-    { href: '/tools', label: t('nav.tools'), icon: '🔧' },
-    { href: '/capabilities', label: t('nav.capabilities'), icon: '🧩' },
-    { href: '/workflows', label: t('nav.workflows'), icon: '⚡' },
-    { href: '/finetune', label: t('nav.finetune'), icon: '🎯' },
-    { href: '/analytics', label: t('nav.analytics'), icon: '📈' },
-    { href: '/usage', label: t('nav.usage'), icon: '💰' },
-    { href: '/integrations', label: t('nav.integrations'), icon: '🔌' },
+    { href: '/prompts', label: t('nav.prompts'), icon: '✏️' },
+    { href: '/behavior', label: t('nav.behavior'), icon: '🧠' },
+    { href: '/enhance', label: t('nav.enhance'), icon: '🧰' },
+    { href: '/integrations', label: t('nav.deploy'), icon: '🔌' },
     { href: '/settings', label: t('nav.settings'), icon: '⚙️' },
   ]
 
