@@ -6,7 +6,10 @@ Agent Orchestrator — AI Agent 的大腦
 2. 意圖分類（匹配能力規則 / 進行中工作流 / 一般對話）
 3. 分派到對應能力（元件 / 工具 / 工作流）
 4. 組合最終回覆（文字 + 元件 + 工具結果）
+5. 自動偵測回覆中的互動意圖並產生 Widget（Phase 3）
 """
+import json
+import re
 from typing import Optional
 from app.models.schemas import (
     ChatRequest, ChatResponse, ChatMessage,
@@ -14,6 +17,29 @@ from app.models.schemas import (
 )
 from app.core.llm_router.router import chat_completion
 from app.db import crud
+
+# Widget 標記指示 — 附加到所有 system prompt
+WIDGET_INSTRUCTION = """
+
+## 互動元件指示（重要）
+當你的回覆包含需要使用者做選擇、排序、或回答的問題時，請在回覆最末尾附上一個 JSON 標記，格式如下：
+
+<!--WIDGET:{"type":"single_select","question":"問題文字","options":[{"id":"a","label":"選項A"},{"id":"b","label":"選項B"}]}-->
+
+支援的 widget 類型：
+- single_select：單選題（最常用，適合 A/B/C/D 選擇）
+- multi_select：多選題（適合「選出所有正確答案」）
+- rank：排序題（適合「由強到弱排列」）
+- form：簡答題（適合開放式問題，fields: [{"id":"answer","label":"你的答案","type":"text"}]）
+- confirm：是/否確認
+
+規則：
+- 只有當你主動向使用者提問、出題、或需要使用者做選擇時才使用
+- 純講解性質的回覆不需要附加 widget
+- JSON 標記必須放在回覆的最後一行
+- 標記前的文字會正常顯示給使用者
+- 不要在回覆正文中提到這個標記的存在
+"""
 
 # Demo user fallback
 DEMO_USER_EMAIL = "demo@ai-trainer.dev"
@@ -197,10 +223,38 @@ class AgentOrchestrator:
         # TODO Phase 5: check active workflow_run, advance with user response
         return await self._general_chat(request, session_id, history)
 
+    def _parse_widget_from_response(self, content: str) -> tuple[str, list[dict]]:
+        """解析回覆中的 <!--WIDGET:...--> 標記，拆分為文字和 widget 列表"""
+        widgets = []
+        pattern = r'<!--WIDGET:(.*?)-->'
+        matches = re.findall(pattern, content, re.DOTALL)
+
+        clean_text = re.sub(pattern, '', content).strip()
+
+        for match in matches:
+            try:
+                widget_data = json.loads(match.strip())
+                # Normalize to WidgetDefinition format
+                widget = {
+                    "widget_type": widget_data.get("type", "single_select"),
+                    "question": widget_data.get("question", ""),
+                    "options": widget_data.get("options", []),
+                    "config": widget_data.get("config", {}),
+                    "allow_skip": widget_data.get("allow_skip", False),
+                }
+                # Add fields for form type
+                if widget_data.get("fields"):
+                    widget["config"]["fields"] = widget_data["fields"]
+                widgets.append(widget)
+            except (json.JSONDecodeError, KeyError):
+                pass
+
+        return clean_text, widgets
+
     async def _general_chat(
         self, request: ChatRequest, session_id: str, history: list
     ) -> ChatResponse:
-        """一般 LLM 對話（Prompt + RAG）"""
+        """一般 LLM 對話（Prompt + RAG + Widget 自動偵測）"""
         # 1. 先存 user message
         user_msg = crud.create_message(
             session_id=session_id,
@@ -211,10 +265,10 @@ class AgentOrchestrator:
         # 2. 組合 LLM messages
         messages = []
 
-        # System prompt
+        # System prompt + widget instruction
         system_prompt = await self._load_active_prompt(request.project_id)
-        if system_prompt:
-            messages.append({"role": "system", "content": system_prompt})
+        full_system = (system_prompt or "") + WIDGET_INSTRUCTION
+        messages.append({"role": "system", "content": full_system})
 
         # RAG context
         rag_context = await self._search_knowledge(request.message, request.project_id)
@@ -237,18 +291,23 @@ class AgentOrchestrator:
             model=model,
         )
 
-        # 4. 存 assistant message
-        assistant_content = llm_response.choices[0].message.content
+        # 4. 解析回覆中的 widget 標記
+        raw_content = llm_response.choices[0].message.content
+        clean_text, widgets = self._parse_widget_from_response(raw_content)
+
+        # 5. 存 assistant message（存原始文字，不含標記）
         assistant_msg = crud.create_message(
             session_id=session_id,
             role="assistant",
-            content=assistant_content,
+            content=clean_text,
+            metadata={"widgets": widgets} if widgets else {},
         )
 
         return ChatResponse(
             session_id=session_id,
-            message=ChatMessage(role=Role.ASSISTANT, content=assistant_content),
+            message=ChatMessage(role=Role.ASSISTANT, content=clean_text),
             message_id=assistant_msg["id"],
+            widgets=widgets,
         )
 
     async def _general_chat_with_history(
@@ -256,18 +315,21 @@ class AgentOrchestrator:
     ) -> ChatResponse:
         """帶完整歷史的一般對話（用於元件回覆後繼續）"""
         llm_response = await chat_completion(messages=history)
-        assistant_content = llm_response.choices[0].message.content
+        raw_content = llm_response.choices[0].message.content
+        clean_text, widgets = self._parse_widget_from_response(raw_content)
 
         assistant_msg = crud.create_message(
             session_id=session_id,
             role="assistant",
-            content=assistant_content,
+            content=clean_text,
+            metadata={"widgets": widgets} if widgets else {},
         )
 
         return ChatResponse(
             session_id=session_id,
-            message=ChatMessage(role=Role.ASSISTANT, content=assistant_content),
+            message=ChatMessage(role=Role.ASSISTANT, content=clean_text),
             message_id=assistant_msg["id"],
+            widgets=widgets,
         )
 
     # ========================================
