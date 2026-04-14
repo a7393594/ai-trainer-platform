@@ -337,12 +337,14 @@ class AgentOrchestrator:
         # 當前訊息
         messages.append({"role": "user", "content": request.message})
 
-        # 4. 呼叫 LLM（帶工具）
+        # 4. 呼叫 LLM（帶工具 + 成本追蹤）
         model = request.model or "claude-sonnet-4-20250514"
         llm_response = await chat_completion(
             messages=messages,
             model=model,
             tools=llm_tools if llm_tools else None,
+            project_id=request.project_id,
+            session_id=session_id,
         )
 
         # 5. 工具調用迴圈
@@ -370,6 +372,8 @@ class AgentOrchestrator:
                 messages=messages,
                 model=model,
                 tools=llm_tools if llm_tools else None,
+                project_id=request.project_id,
+                session_id=session_id,
             )
 
         # 6. 解析最終回覆中的 widget 標記

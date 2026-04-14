@@ -654,6 +654,60 @@ async def list_concept_gaps(project_id: str):
 
 
 # ============================================
+# 成本追蹤
+# ============================================
+
+@router.get("/usage/cost/{project_id}")
+async def get_project_cost(project_id: str, days: int = 30):
+    """取得專案成本統計"""
+    from app.db.supabase import get_supabase
+    from datetime import datetime, timedelta
+    since = (datetime.utcnow() - timedelta(days=days)).isoformat()
+    data = (
+        get_supabase().table("ait_llm_usage")
+        .select("model, input_tokens, output_tokens, total_tokens, cost_usd, created_at")
+        .eq("project_id", project_id)
+        .gte("created_at", since)
+        .order("created_at", desc=True)
+        .execute()
+    ).data
+
+    # Aggregate
+    total_cost = sum(r.get("cost_usd", 0) or 0 for r in data)
+    total_tokens = sum(r.get("total_tokens", 0) or 0 for r in data)
+    total_calls = len(data)
+
+    # Per model breakdown
+    by_model: dict = {}
+    for r in data:
+        m = r["model"]
+        if m not in by_model:
+            by_model[m] = {"calls": 0, "tokens": 0, "cost": 0}
+        by_model[m]["calls"] += 1
+        by_model[m]["tokens"] += r.get("total_tokens", 0) or 0
+        by_model[m]["cost"] += r.get("cost_usd", 0) or 0
+
+    # Daily trend
+    daily: dict = {}
+    for r in data:
+        day = r["created_at"][:10]
+        if day not in daily:
+            daily[day] = {"calls": 0, "cost": 0, "tokens": 0}
+        daily[day]["calls"] += 1
+        daily[day]["cost"] += r.get("cost_usd", 0) or 0
+        daily[day]["tokens"] += r.get("total_tokens", 0) or 0
+
+    return {
+        "total_cost": round(total_cost, 4),
+        "total_tokens": total_tokens,
+        "total_calls": total_calls,
+        "by_model": {k: {**v, "cost": round(v["cost"], 4)} for k, v in by_model.items()},
+        "daily_trend": [{"date": k, **v, "cost": round(v["cost"], 4)} for k, v in sorted(daily.items())],
+        "period_days": days,
+    }
+
+
+# ============================================
 # Fine-tune
 # ============================================
 

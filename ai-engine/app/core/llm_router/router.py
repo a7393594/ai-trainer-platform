@@ -1,10 +1,46 @@
 """
-LLM Router — 多模型切換器
+LLM Router — 多模型切換器 + 成本追蹤
 透過 LiteLLM 統一介面呼叫任何 LLM（Claude / GPT / Gemini / Llama ...）
 """
+import time
 import litellm
 from typing import Optional
 from app.config import settings
+
+# Model pricing (per 1M tokens)
+MODEL_PRICING = {
+    "claude-sonnet-4-20250514": {"input": 3.0, "output": 15.0},
+    "claude-opus-4-20250514": {"input": 15.0, "output": 75.0},
+    "claude-haiku-4-5-20251001": {"input": 0.8, "output": 4.0},
+    "gpt-4o": {"input": 2.5, "output": 10.0},
+    "gpt-4o-mini": {"input": 0.15, "output": 0.6},
+    "gemini/gemini-2.0-flash": {"input": 0.075, "output": 0.3},
+}
+
+
+def calculate_cost(model: str, input_tokens: int, output_tokens: int) -> float:
+    pricing = MODEL_PRICING.get(model, {"input": 0, "output": 0})
+    return (input_tokens * pricing["input"] + output_tokens * pricing["output"]) / 1_000_000
+
+
+def _log_usage(project_id: Optional[str], session_id: Optional[str], model: str,
+               input_tokens: int, output_tokens: int, cost: float, latency_ms: int, endpoint: str = "chat"):
+    """Fire-and-forget usage logging"""
+    try:
+        from app.db.supabase import get_supabase
+        get_supabase().table("ait_llm_usage").insert({
+            "project_id": project_id or "00000000-0000-0000-0000-000000000000",
+            "session_id": session_id,
+            "model": model,
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "total_tokens": input_tokens + output_tokens,
+            "cost_usd": round(cost, 8),
+            "latency_ms": latency_ms,
+            "endpoint": endpoint,
+        }).execute()
+    except Exception:
+        pass  # non-critical
 
 
 def init_llm_router():
@@ -28,20 +64,11 @@ async def chat_completion(
     max_tokens: int = 2000,
     tools: Optional[list[dict]] = None,
     tenant_id: Optional[str] = None,
+    project_id: Optional[str] = None,
+    session_id: Optional[str] = None,
 ) -> dict:
     """
-    統一的 LLM 呼叫介面
-
-    Args:
-        messages: 對話歷史 [{"role": "user", "content": "..."}]
-        model: 模型名稱（LiteLLM 格式，例如 "gpt-4o", "claude-sonnet-4-20250514"）
-        temperature: 創意度（0=確定性高, 1=更有創意）
-        max_tokens: 最大回覆長度
-        tools: Function calling 工具定義（給 Agent 用）
-        tenant_id: 租戶 ID（用於成本追蹤）
-
-    Returns:
-        LLM 回覆的完整結構
+    統一的 LLM 呼叫介面（含成本追蹤）
     """
     kwargs = {
         "model": model,
@@ -55,7 +82,20 @@ async def chat_completion(
         kwargs["tools"] = tools
         kwargs["tool_choice"] = "auto"
 
+    start = time.time()
     response = await litellm.acompletion(**kwargs)
+    latency = int((time.time() - start) * 1000)
+
+    # Extract token usage
+    usage = getattr(response, 'usage', None)
+    input_tokens = getattr(usage, 'prompt_tokens', 0) if usage else 0
+    output_tokens = getattr(usage, 'completion_tokens', 0) if usage else 0
+    cost = calculate_cost(model, input_tokens, output_tokens)
+
+    # Log usage
+    if project_id:
+        _log_usage(project_id, session_id, model, input_tokens, output_tokens, cost, latency)
+
     return response
 
 
@@ -83,15 +123,7 @@ async def stream_chat_completion(
 
 
 async def get_embedding(text: str) -> list[float]:
-    """
-    取得文字的 Embedding 向量
-
-    Args:
-        text: 要轉成向量的文字
-
-    Returns:
-        向量（list of floats）
-    """
+    """取得文字的 Embedding 向量"""
     response = await litellm.aembedding(
         model=f"{settings.embedding_provider}/{settings.embedding_model}",
         input=[text],

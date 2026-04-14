@@ -211,6 +211,17 @@ const translations: Record<Locale, Record<string, string>> = {
     'comparison.noGaps': '尚無概念差記錄',
     'comparison.empty': '尚無比較記錄。建立一個來比較不同模型。',
 
+    // ====== Usage ======
+    'nav.usage': '成本追蹤',
+    'usage.title': '成本追蹤',
+    'usage.desc': 'LLM 呼叫成本、Token 用量、每日趨勢',
+    'usage.totalCost': '總成本',
+    'usage.totalTokens': '總 Token',
+    'usage.totalCalls': '總呼叫',
+    'usage.byModel': '各模型用量',
+    'usage.dailyTrend': '每日成本趨勢',
+    'usage.noData': '尚無使用記錄',
+
     // ====== Workflows ======
     'workflows.title': '工作流',
     'workflows.desc': '建立多步驟自動化流程',
@@ -548,6 +559,17 @@ const translations: Record<Locale, Record<string, string>> = {
     'comparison.remediated': 'Remediated',
     'comparison.noGaps': 'No concept gaps found',
     'comparison.empty': 'No comparisons yet. Create one to compare models.',
+
+    // ====== Usage ======
+    'nav.usage': 'Cost Tracking',
+    'usage.title': 'Cost Tracking',
+    'usage.desc': 'LLM call costs, token usage, daily trends',
+    'usage.totalCost': 'Total Cost',
+    'usage.totalTokens': 'Total Tokens',
+    'usage.totalCalls': 'Total Calls',
+    'usage.byModel': 'Usage by Model',
+    'usage.dailyTrend': 'Daily Cost Trend',
+    'usage.noData': 'No usage data yet',
 
     // ====== Workflows ======
     'workflows.title': 'Workflows',
