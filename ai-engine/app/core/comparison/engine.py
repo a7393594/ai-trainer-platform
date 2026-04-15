@@ -24,6 +24,64 @@ from app.core.llm_router.models import get_model_pricing
 MODEL_PRICING = get_model_pricing()
 
 
+async def run_single_prompt_parallel(
+    messages: list[dict],
+    models: list[str],
+    project_id: Optional[str] = None,
+    session_id: Optional[str] = None,
+    temperature: float = 0.7,
+    max_tokens: int = 2000,
+) -> list[dict]:
+    """Fan out the same prompt to multiple models in parallel via asyncio.gather.
+
+    Pipeline Studio 的 node-level compare 沿用這個 helper。
+    Returns list of {model, output_text, input_tokens, output_tokens, cost_usd, latency_ms, error}
+    in the same order as `models`.
+    """
+
+    async def _call(model: str) -> dict:
+        start = time.time()
+        try:
+            resp = await chat_completion(
+                messages=messages,
+                model=model,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                project_id=project_id,
+                session_id=session_id,
+                span_label=f"compare:{model}",
+            )
+            output_text = resp.choices[0].message.content or ""
+            usage = getattr(resp, "usage", None)
+            input_tokens = getattr(usage, "prompt_tokens", 0) if usage else 0
+            output_tokens = getattr(usage, "completion_tokens", 0) if usage else 0
+            pricing = MODEL_PRICING.get(model, {"input": 0, "output": 0})
+            cost = (
+                input_tokens * pricing["input"] + output_tokens * pricing["output"]
+            ) / 1_000_000
+            return {
+                "model": model,
+                "output_text": output_text,
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+                "cost_usd": round(cost, 8),
+                "latency_ms": int((time.time() - start) * 1000),
+                "error": None,
+            }
+        except Exception as e:
+            return {
+                "model": model,
+                "output_text": "",
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "cost_usd": 0.0,
+                "latency_ms": int((time.time() - start) * 1000),
+                "error": str(e),
+            }
+
+    return await asyncio.gather(*(_call(m) for m in models))
+
+
 GENERATE_QUESTIONS_PROMPT = """Based on the following AI system prompt, generate {count} key test questions that thoroughly cover the AI's domain knowledge.
 
 Requirements:

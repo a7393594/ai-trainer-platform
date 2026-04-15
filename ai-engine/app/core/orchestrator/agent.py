@@ -15,7 +15,13 @@ from app.models.schemas import (
     ChatRequest, ChatResponse, ChatMessage,
     WidgetResponse, Role,
 )
-from app.core.llm_router.router import chat_completion
+from app.core.llm_router.router import chat_completion, stream_chat_completion
+from app.core.pipeline.tracer import (
+    current_run,
+    finish_span,
+    pipeline_run_context,
+    start_process_span,
+)
 from app.db import crud
 
 # Widget 標記指示 — 附加到所有 system prompt
@@ -51,7 +57,7 @@ class AgentOrchestrator:
     """
 
     async def process(self, request: ChatRequest) -> ChatResponse:
-        """處理一次使用者輸入的完整流程"""
+        """處理一次使用者輸入的完整流程（外層 + Pipeline Studio 追蹤）"""
         # 取得 user_id（如果沒提供，用 demo user）
         user_id = request.user_id
         if not user_id:
@@ -69,19 +75,102 @@ class AgentOrchestrator:
             )
             session_id = session["id"]
 
-        # 載入對話歷史
-        history = await self._load_history(session_id)
+        # 把整個 turn 包進 pipeline_run context — 追蹤器無副作用，寫不成也不影響主流程
+        async with pipeline_run_context(
+            project_id=request.project_id,
+            session_id=session_id,
+            input_text=request.message,
+            mode="live",
+            triggered_by=user_id,
+        ):
+            # input span
+            input_span = start_process_span(
+                label="user_input",
+                input_ref={"message": request.message, "model": request.model},
+                node_type="input",
+            )
+            finish_span(
+                input_span,
+                output_ref={"session_id": session_id, "user_id": user_id},
+            )
 
-        # 意圖分類
-        intent = await self._classify_intent(request.message, request.project_id)
+            # context_loader: load history
+            ctx_span = start_process_span(
+                label="context_loader",
+                input_ref={"session_id": session_id},
+            )
+            history = await self._load_history(session_id)
+            finish_span(
+                ctx_span,
+                output_ref={"history_length": len(history)},
+                metadata={"history_preview": history[-3:] if history else []},
+            )
 
-        # 根據意圖分派
-        if intent["type"] == "capability_rule":
-            return await self._execute_capability(intent, request, session_id, history)
-        elif intent["type"] == "active_workflow":
-            return await self._continue_workflow(intent, request, session_id, history)
-        else:
-            return await self._general_chat(request, session_id, history)
+            # triage: intent classification (keyword matching today)
+            triage_span = start_process_span(
+                label="triage",
+                input_ref={"message": request.message},
+            )
+            intent = await self._classify_intent(request.message, request.project_id)
+            finish_span(
+                triage_span,
+                output_ref={
+                    "type": intent.get("type"),
+                    "matched": intent.get("rule", {}).get("trigger_description")
+                    if intent.get("type") == "capability_rule"
+                    else None,
+                },
+            )
+
+            # router: dispatch
+            router_span = start_process_span(
+                label="router",
+                input_ref={"intent_type": intent.get("type")},
+            )
+
+            try:
+                if intent["type"] == "capability_rule":
+                    finish_span(router_span, output_ref={"branch": "capability"})
+                    result = await self._execute_capability(
+                        intent, request, session_id, history
+                    )
+                elif intent["type"] == "active_workflow":
+                    finish_span(router_span, output_ref={"branch": "workflow"})
+                    result = await self._continue_workflow(
+                        intent, request, session_id, history
+                    )
+                else:
+                    finish_span(router_span, output_ref={"branch": "general"})
+                    result = await self._general_chat(request, session_id, history)
+            except Exception as e:
+                finish_span(router_span, status="error", error=str(e))
+                raise
+
+            # output span — link the final assistant message back to the pipeline run
+            run = current_run()
+            if run is not None and result is not None:
+                run.message_id = getattr(result, "message_id", None)
+
+            out_span = start_process_span(
+                label="output",
+                input_ref={
+                    "widgets": len(getattr(result, "widgets", []) or []),
+                    "tool_results": len(getattr(result, "tool_results", []) or []),
+                },
+                node_type="output",
+            )
+            finish_span(
+                out_span,
+                output_ref={
+                    "message_id": getattr(result, "message_id", None),
+                    "content_preview": (
+                        getattr(result.message, "content", "")[:200]
+                        if result and getattr(result, "message", None)
+                        else ""
+                    ),
+                },
+            )
+            return result
 
     async def handle_widget_result(self, response: WidgetResponse) -> ChatResponse:
         """處理使用者對互動元件的操作結果"""
@@ -313,9 +402,21 @@ class AgentOrchestrator:
         )
 
         # 2. 載入工具
+        tools_span = start_process_span(
+            label="load_tools",
+            input_ref={"project_id": request.project_id},
+        )
         db_tools, llm_tools = await self._load_project_tools(request.project_id)
+        finish_span(
+            tools_span,
+            output_ref={"tool_count": len(db_tools), "llm_tool_count": len(llm_tools)},
+        )
 
-        # 3. 組合 LLM messages
+        # 3. 組合 LLM messages（coaching_core stage — 組 prompt + RAG + 歷史）
+        compose_span = start_process_span(
+            label="prompt_compose",
+            input_ref={"message": request.message},
+        )
         messages = []
 
         # System prompt + widget instruction
@@ -336,6 +437,14 @@ class AgentOrchestrator:
 
         # 當前訊息
         messages.append({"role": "user", "content": request.message})
+        finish_span(
+            compose_span,
+            output_ref={
+                "message_count": len(messages),
+                "has_rag": bool(rag_context),
+                "system_prompt_length": len(full_system),
+            },
+        )
 
         # 4. 呼叫 LLM（帶工具 + 成本追蹤）
         # Model priority: request > project default > global default
@@ -347,6 +456,7 @@ class AgentOrchestrator:
             tools=llm_tools if llm_tools else None,
             project_id=request.project_id,
             session_id=session_id,
+            span_label="main_model",
         )
 
         # 5. 工具調用迴圈
@@ -364,8 +474,20 @@ class AgentOrchestrator:
             # Add assistant message with tool calls to history
             messages.append(llm_response.choices[0].message)
 
-            # Execute tools
+            # Execute tools (tracer hook inside execute_tool_by_name writes one span per tool)
+            tools_parallel_span = start_process_span(
+                label=f"tools_iteration_{loop_count}",
+                input_ref={"tool_calls": len(tool_calls)},
+                node_type="parallel",
+            )
             tool_msgs, tool_results = await self._execute_tool_calls(llm_response, db_tools)
+            finish_span(
+                tools_parallel_span,
+                output_ref={
+                    "tool_count": len(tool_results),
+                    "statuses": [t.get("status") for t in tool_results],
+                },
+            )
             all_tool_results.extend(tool_results)
             messages.extend(tool_msgs)
 
@@ -376,6 +498,7 @@ class AgentOrchestrator:
                 tools=llm_tools if llm_tools else None,
                 project_id=request.project_id,
                 session_id=session_id,
+                span_label=f"main_model_iter_{loop_count + 1}",
             )
 
         # 6. 解析最終回覆中的 widget 標記
@@ -425,6 +548,156 @@ class AgentOrchestrator:
             message_id=assistant_msg["id"],
             widgets=widgets,
         )
+
+    # ========================================
+    # Streaming 版本 — 供 /chat/stream 使用
+    # 與 process() 同樣被 Pipeline Studio 追蹤,但主模型呼叫改用 streaming。
+    # 注意:streaming 模式不支援工具呼叫(tool_calls 與 streaming 語意衝突)。
+    # ========================================
+
+    async def process_stream(self, request: ChatRequest):
+        """Async generator,yield dict 事件給 /chat/stream endpoint。
+
+        事件類型:
+          {"session_id": "..."}                      — 最先送出
+          {"content": "chunk text"}                  — 每次 LLM 產出 chunk
+          {"done": True, "message_id": "..."}        — 結束
+          {"error": "..."}                           — 錯誤
+        """
+        # 取得 user_id
+        user_id = request.user_id
+        if not user_id:
+            demo_user = crud.get_user_by_email(DEMO_USER_EMAIL)
+            if demo_user:
+                user_id = demo_user["id"]
+            else:
+                yield {"error": "找不到 demo user"}
+                return
+
+        # session
+        session_id = request.session_id
+        if not session_id:
+            session = await self._create_session(request.project_id, user_id)
+            session_id = session["id"]
+
+        # 送出 session_id 給 client(比 pipeline 追蹤還早)
+        yield {"session_id": session_id}
+
+        # 包進 pipeline_run_context
+        async with pipeline_run_context(
+            project_id=request.project_id,
+            session_id=session_id,
+            input_text=request.message,
+            mode="live",
+            triggered_by=user_id,
+        ):
+            try:
+                # input span
+                input_span = start_process_span(
+                    label="user_input",
+                    input_ref={"message": request.message, "model": request.model, "streaming": True},
+                    node_type="input",
+                )
+                finish_span(
+                    input_span,
+                    output_ref={"session_id": session_id, "user_id": user_id},
+                )
+
+                # 儲存使用者訊息
+                crud.create_message(session_id=session_id, role="user", content=request.message)
+
+                # context_loader
+                ctx_span = start_process_span(
+                    label="context_loader",
+                    input_ref={"session_id": session_id},
+                )
+                history = await self._load_history(session_id)
+                finish_span(ctx_span, output_ref={"history_length": len(history)})
+
+                # triage(streaming 模式下仍走 general 分支,不處理 capability/workflow)
+                triage_span = start_process_span(
+                    label="triage",
+                    input_ref={"message": request.message},
+                )
+                finish_span(
+                    triage_span,
+                    output_ref={"type": "general", "note": "streaming bypasses capability/workflow routing"},
+                )
+
+                # prompt_compose(coaching_core)
+                compose_span = start_process_span(
+                    label="prompt_compose",
+                    input_ref={"message": request.message},
+                )
+                messages: list[dict] = []
+                system_prompt = await self._load_active_prompt(request.project_id)
+                full_system = (system_prompt or "") + WIDGET_INSTRUCTION
+                messages.append({"role": "system", "content": full_system})
+
+                rag_context = await self._search_knowledge(request.message, request.project_id)
+                if rag_context:
+                    messages.append({
+                        "role": "system",
+                        "content": f"以下是相關參考資料：\n\n{rag_context}",
+                    })
+
+                messages.extend(history)
+                messages.append({"role": "user", "content": request.message})
+                finish_span(
+                    compose_span,
+                    output_ref={
+                        "message_count": len(messages),
+                        "has_rag": bool(rag_context),
+                        "system_prompt_length": len(full_system),
+                    },
+                )
+
+                # main_model 用 streaming
+                project = crud.get_project(request.project_id)
+                model = (
+                    request.model
+                    or (project.get("default_model") if project else None)
+                    or "claude-sonnet-4-20250514"
+                )
+
+                full_content = ""
+                async for chunk in stream_chat_completion(
+                    messages=messages,
+                    model=model,
+                    project_id=request.project_id,
+                    session_id=session_id,
+                    span_label="main_model",
+                ):
+                    full_content += chunk
+                    yield {"content": chunk}
+
+                # 存 assistant message
+                assistant_msg = crud.create_message(
+                    session_id=session_id,
+                    role="assistant",
+                    content=full_content,
+                )
+
+                # output span
+                run = current_run()
+                if run is not None:
+                    run.message_id = assistant_msg["id"]
+                out_span = start_process_span(
+                    label="output",
+                    input_ref={"stream": True},
+                    node_type="output",
+                )
+                finish_span(
+                    out_span,
+                    output_ref={
+                        "message_id": assistant_msg["id"],
+                        "content_preview": full_content[:200],
+                    },
+                )
+
+                yield {"done": True, "message_id": assistant_msg["id"]}
+            except Exception as e:
+                yield {"error": str(e)}
 
     # ========================================
     # 資料存取（接 Supabase）

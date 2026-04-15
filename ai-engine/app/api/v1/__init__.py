@@ -79,49 +79,12 @@ async def chat(request: ChatRequest):
 
 @router.post("/chat/stream")
 async def chat_stream(request: ChatRequest):
-    """Streaming 對話端點 (SSE)"""
-    from app.core.llm_router.router import stream_chat_completion
-
-    # 取得 user_id
-    user_id = request.user_id
-    if not user_id:
-        demo = crud.get_user_by_email("demo@ai-trainer.dev")
-        user_id = demo["id"] if demo else None
-
-    # 取得或建立 session
-    session_id = request.session_id
-    if not session_id:
-        session = crud.create_session(request.project_id, user_id, "freeform")
-        session_id = session["id"]
-
-    # 存 user message
-    crud.create_message(session_id, "user", request.message)
-
-    # 組合 messages
-    messages = []
-    prompt = crud.get_active_prompt(request.project_id)
-    if prompt:
-        messages.append({"role": "system", "content": prompt["content"]})
-
-    history = crud.list_messages(session_id)
-    messages.extend([
-        {"role": m["role"], "content": m["content"]}
-        for m in history if m["role"] in ("user", "assistant")
-    ])
-
-    model = request.model or "claude-sonnet-4-20250514"
+    """Streaming 對話端點 (SSE)。走 orchestrator.process_stream() 讓 Pipeline Studio 能追蹤。"""
 
     async def generate():
-        full_content = ""
-        yield f"data: {json.dumps({'session_id': session_id})}\n\n"
         try:
-            async for chunk in stream_chat_completion(messages=messages, model=model):
-                full_content += chunk
-                yield f"data: {json.dumps({'content': chunk})}\n\n"
-
-            # 存 assistant message
-            msg = crud.create_message(session_id, "assistant", full_content)
-            yield f"data: {json.dumps({'done': True, 'message_id': msg['id']})}\n\n"
+            async for event in orchestrator.process_stream(request):
+                yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
         except Exception as e:
             yield f"data: {json.dumps({'error': str(e)})}\n\n"
 

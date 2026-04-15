@@ -442,3 +442,73 @@ $$ LANGUAGE plpgsql;
 CREATE TRIGGER projects_updated_at
   BEFORE UPDATE ON projects
   FOR EACH ROW EXECUTE FUNCTION update_updated_at();
+
+
+-- ============================================================================
+-- Pipeline Studio v2.2 (Phase 7 add-on)
+-- ============================================================================
+-- Note: runtime code uses the `ait_` prefix for all tables. These two new
+-- tables follow that convention even though the earlier tables in this file
+-- were historically defined without the prefix.
+-- ============================================================================
+
+-- Pipeline run = one trace of a chat turn going through the orchestrator.
+-- nodes_json holds the full {nodes, edges} graph rendered by the frontend.
+CREATE TABLE IF NOT EXISTS ait_pipeline_runs (
+  id                 UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  project_id         UUID NOT NULL,
+  session_id         UUID,
+  message_id         UUID,
+  mode               TEXT NOT NULL DEFAULT 'live' CHECK (mode IN ('live','lab')),
+  input_text         TEXT NOT NULL,
+  nodes_json         JSONB NOT NULL,
+  total_cost_usd     NUMERIC(14,8) NOT NULL DEFAULT 0,
+  total_duration_ms  INTEGER NOT NULL DEFAULT 0,
+  parent_run_id      UUID,
+  triggered_by       UUID,
+  status             TEXT NOT NULL DEFAULT 'completed' CHECK (status IN ('running','completed','failed')),
+  created_at         TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_pipeline_runs_project
+  ON ait_pipeline_runs(project_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_pipeline_runs_session
+  ON ait_pipeline_runs(session_id);
+CREATE INDEX IF NOT EXISTS idx_pipeline_runs_message
+  ON ait_pipeline_runs(message_id);
+CREATE INDEX IF NOT EXISTS idx_pipeline_runs_parent
+  ON ait_pipeline_runs(parent_run_id);
+
+-- Per-node multi-model comparison candidates (Lab Mode v1)
+CREATE TABLE IF NOT EXISTS ait_pipeline_node_comparisons (
+  id                 UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  pipeline_run_id    UUID NOT NULL REFERENCES ait_pipeline_runs(id) ON DELETE CASCADE,
+  node_id            TEXT NOT NULL,
+  model              TEXT NOT NULL,
+  input_prompt       TEXT NOT NULL,
+  output_text        TEXT NOT NULL,
+  input_tokens       INTEGER NOT NULL DEFAULT 0,
+  output_tokens      INTEGER NOT NULL DEFAULT 0,
+  cost_usd           NUMERIC(14,8) NOT NULL DEFAULT 0,
+  latency_ms         INTEGER NOT NULL DEFAULT 0,
+  score              INTEGER,
+  score_reason       TEXT,
+  score_model        TEXT,
+  is_selected        BOOLEAN NOT NULL DEFAULT false,
+  prompt_version_id  UUID,
+  created_at         TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_pipeline_cmp_run
+  ON ait_pipeline_node_comparisons(pipeline_run_id);
+CREATE INDEX IF NOT EXISTS idx_pipeline_cmp_node
+  ON ait_pipeline_node_comparisons(pipeline_run_id, node_id);
+-- At most one selected candidate per (run, node)
+CREATE UNIQUE INDEX IF NOT EXISTS idx_pipeline_cmp_selected
+  ON ait_pipeline_node_comparisons(pipeline_run_id, node_id)
+  WHERE is_selected = true;
+
+-- RLS (service_role bypasses these; scoped policies added when dashboard
+-- migrates to user-scoped tokens, matching the pattern used for other ait_ tables)
+ALTER TABLE ait_pipeline_runs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE ait_pipeline_node_comparisons ENABLE ROW LEVEL SECURITY;

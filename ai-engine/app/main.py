@@ -8,6 +8,7 @@ from app.config import settings
 from app.api.v1 import router as api_v1_router
 from app.api.v1.embed import router as embed_router
 from app.api.v1.management import router as management_router
+from app.api.v1.pipeline import router as pipeline_router
 from app.api.v1.public import router as public_router
 from app.db.supabase import init_supabase
 from app.db.qdrant import init_qdrant
@@ -66,5 +67,6 @@ async def health_check():
 # 掛載 API 路由
 app.include_router(api_v1_router, prefix="/api/v1")
 app.include_router(management_router, prefix="/api/v1", tags=["management"])
+app.include_router(pipeline_router, prefix="/api/v1")
 app.include_router(embed_router, prefix="/embed", tags=["embed"])
 app.include_router(public_router, prefix="/public/v1", tags=["public-api"])

@@ -141,6 +141,56 @@ class EvalEngine:
         except Exception:
             return 50, False, "Judge failed"
 
+    async def judge_quality(
+        self,
+        question: str,
+        response: str,
+        principles: str = "",
+        judge_model: str = "claude-haiku-4-5-20251001",
+    ) -> tuple[int, str, str]:
+        """Pipeline Studio 用:沒有 expected 的情況下根據教學原則打分(0-100)。
+
+        回傳 (score, reason, judge_model)。Fire-and-forget 失敗時回 (50, 'judge failed', ...)。
+        """
+        try:
+            principles_section = principles.strip() or "（沒有額外原則,按通用 AI 教學回覆品質評估)"
+            prompt = (
+                "你是 AI 回覆品質評估器。根據以下標準給分(0-100):\n"
+                "1. 準確性(30%):回答是否正確、不誤導\n"
+                "2. 引導品質(25%):是否鼓勵使用者思考而非直接給答案\n"
+                "3. 個人化(20%):是否考慮使用者背景\n"
+                "4. 清晰度(15%):表達是否清楚易懂\n"
+                "5. 完整性(10%):是否涵蓋關鍵資訊\n\n"
+                f"使用者問題:\n{question}\n\n"
+                f"教學原則:\n{principles_section}\n\n"
+                f"AI 回覆:\n{response}\n\n"
+                "只回傳 JSON,格式 {\"score\": 0-100, \"reason\": \"一句簡短說明\"}"
+            )
+            result = await chat_completion(
+                messages=[{"role": "user", "content": prompt}],
+                model=judge_model,
+                max_tokens=200,
+                temperature=0,
+                span_label="judge_quality",
+            )
+            raw = (result.choices[0].message.content or "").strip()
+            # 盡量從回覆裡撈出 JSON
+            if raw.startswith("{"):
+                data = json.loads(raw)
+            else:
+                start = raw.find("{")
+                end = raw.rfind("}")
+                if start >= 0 and end > start:
+                    data = json.loads(raw[start : end + 1])
+                else:
+                    return 50, "judge output not JSON", judge_model
+            score = int(data.get("score", 50))
+            score = max(0, min(100, score))
+            reason = str(data.get("reason", ""))[:500]
+            return score, reason, judge_model
+        except Exception as e:
+            return 50, f"judge failed: {e}", judge_model
+
 
     def compare_runs(self, project_id: str, run_id: str) -> dict:
         """Compare a run with its predecessor, with threshold-based regression detection"""
