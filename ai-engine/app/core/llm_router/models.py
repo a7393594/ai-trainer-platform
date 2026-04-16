@@ -66,8 +66,32 @@ def get_model_by_id(model_id: str) -> dict | None:
     return next((m for m in MODELS if m["id"] == model_id), None)
 
 
+def get_available_providers() -> set[str]:
+    """Detect which providers have valid API keys configured."""
+    from app.config import settings
+    available = set()
+    if settings.anthropic_api_key:
+        available.add("anthropic")
+    if settings.openai_api_key:
+        available.add("openai")
+    if settings.google_api_key:
+        available.add("google")
+    if settings.groq_api_key:
+        available.add("groq")
+    if settings.deepseek_api_key:
+        available.add("deepseek")
+    if settings.openrouter_api_key:
+        available.add("openrouter")
+    return available
+
+
 def get_models_for_api() -> list[dict]:
-    """Get model list formatted for /models API endpoint"""
+    """Get model list formatted for /models API endpoint.
+
+    Each model includes an `available` boolean based on whether the
+    provider's API key is configured.
+    """
+    providers = get_available_providers()
     return [
         {
             "id": m["id"],
@@ -78,6 +102,7 @@ def get_models_for_api() -> list[dict]:
             "tool_use": m["tool_use"],
             "tags": m.get("tags", []),
             "cost": f"${m['input_cost']}/{m['output_cost']}" if m["input_cost"] > 0 else "Free",
+            "available": m["provider"] in providers,
         }
         for m in MODELS
     ]

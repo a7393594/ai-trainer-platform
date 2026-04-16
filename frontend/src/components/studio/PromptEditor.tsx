@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { NodeSpan, PipelineComparison } from '@/lib/studio/types'
 import { formatCost, formatDuration } from '@/lib/studio/graph'
-import { rerunNode } from '@/lib/studio/api'
+import { listAvailableModels, rerunNode, type ModelInfo } from '@/lib/studio/api'
 
 interface PromptEditorProps {
   runId: string
@@ -32,9 +32,14 @@ export default function PromptEditor({
 
   const [messages, setMessages] = useState<Message[]>(original)
   const [model, setModel] = useState(span.model || 'claude-sonnet-4-20250514')
+  const [availableModels, setAvailableModels] = useState<ModelInfo[]>([])
   const [running, setRunning] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [lastResult, setLastResult] = useState<PipelineComparison | null>(null)
+
+  useEffect(() => {
+    listAvailableModels().then(setAvailableModels).catch(() => {})
+  }, [])
 
   // span 換了就重置
   useEffect(() => {
@@ -94,10 +99,15 @@ export default function PromptEditor({
           onChange={(e) => setModel(e.target.value)}
           className="w-full rounded border border-zinc-700 bg-zinc-950 px-2 py-1 text-[11px] text-zinc-200 outline-none focus:border-blue-500"
         >
-          <option value="claude-sonnet-4-20250514">claude-sonnet-4</option>
-          <option value="claude-haiku-4-5-20251001">claude-haiku-4-5</option>
-          <option value="gpt-4o">gpt-4o</option>
-          <option value="gpt-4o-mini">gpt-4o-mini</option>
+          {availableModels.length > 0 ? (
+            availableModels.map((m) => (
+              <option key={m.id} value={m.id}>
+                {m.label} ({m.cost})
+              </option>
+            ))
+          ) : (
+            <option value={model}>{model.replace(/-\d{8}$/, '')}</option>
+          )}
         </select>
         <div className="mt-2 flex items-center gap-2">
           <button

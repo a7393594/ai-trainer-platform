@@ -123,6 +123,23 @@ export async function saveComparisonAsPrompt(
 }
 
 // ============================================================================
+// Models (dynamic availability detection)
+// ============================================================================
+
+export interface ModelInfo {
+  id: string
+  label: string
+  provider: string
+  available: boolean
+  cost: string
+}
+
+export async function listAvailableModels(): Promise<ModelInfo[]> {
+  const res = await request<{ models: ModelInfo[] }>('/api/v1/models')
+  return res.models.filter((m) => m.available)
+}
+
+// ============================================================================
 // v2: auto-scoring, save as test case, delete
 // ============================================================================
 

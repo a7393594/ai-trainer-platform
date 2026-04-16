@@ -1,14 +1,16 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import type { PipelineComparison } from '@/lib/studio/types'
 import { formatCost, formatDuration } from '@/lib/studio/graph'
 import {
   compareNode,
+  listAvailableModels,
   saveComparisonAsPrompt,
   saveComparisonAsTestCase,
   scoreComparison,
   selectComparison,
+  type ModelInfo,
 } from '@/lib/studio/api'
 
 interface ModelCompareGridProps {
@@ -19,14 +21,6 @@ interface ModelCompareGridProps {
   onComparisonsChange: (rows: PipelineComparison[]) => void
 }
 
-// 常用模型(可 compare 的候選池)
-const CANDIDATE_MODELS = [
-  'claude-sonnet-4-20250514',
-  'claude-haiku-4-5-20251001',
-  'gpt-4o-mini',
-  'gpt-4o',
-]
-
 export default function ModelCompareGrid({
   runId,
   nodeId,
@@ -35,11 +29,29 @@ export default function ModelCompareGrid({
   onComparisonsChange,
 }: ModelCompareGridProps) {
   const [comparisons, setComparisons] = useState<PipelineComparison[]>(initialComparisons)
+  const [candidateModels, setCandidateModels] = useState<ModelInfo[]>([])
   const [selectedModels, setSelectedModels] = useState<string[]>(() =>
-    currentModel && CANDIDATE_MODELS.includes(currentModel)
-      ? [currentModel]
-      : []
+    currentModel ? [currentModel] : []
   )
+
+  // 從 API 動態載入可用模型
+  useEffect(() => {
+    listAvailableModels()
+      .then((models) => {
+        setCandidateModels(models)
+        // 如果 currentModel 不在可用列表裡,清掉預選
+        if (currentModel && !models.some((m) => m.id === currentModel)) {
+          setSelectedModels([])
+        }
+      })
+      .catch(() => {
+        // fallback: 只放 anthropic 系列
+        setCandidateModels([
+          { id: 'claude-sonnet-4-20250514', label: 'Claude Sonnet 4', provider: 'anthropic', available: true, cost: '$3.0/15.0' },
+          { id: 'claude-haiku-4-5-20251001', label: 'Claude Haiku 4.5', provider: 'anthropic', available: true, cost: '$0.8/4.0' },
+        ])
+      })
+  }, [])
   const [running, setRunning] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [savingId, setSavingId] = useState<string | null>(null)
@@ -184,19 +196,22 @@ export default function ModelCompareGrid({
           選擇模型(最多 4 個)
         </div>
         <div className="flex flex-wrap gap-2">
-          {CANDIDATE_MODELS.map((m) => {
-            const checked = selectedModels.includes(m)
+          {candidateModels.length === 0 && (
+            <span className="text-[10px] text-zinc-500">載入模型中...</span>
+          )}
+          {candidateModels.map((m) => {
+            const checked = selectedModels.includes(m.id)
             return (
               <button
-                key={m}
-                onClick={() => toggleModel(m)}
+                key={m.id}
+                onClick={() => toggleModel(m.id)}
                 className={`rounded border px-2 py-1 text-[11px] transition-colors ${
                   checked
                     ? 'border-blue-500 bg-blue-950/50 text-blue-200'
                     : 'border-zinc-700 bg-zinc-800 text-zinc-400 hover:text-zinc-200'
                 }`}
               >
-                {m.replace(/-\d{8}$/, '')}
+                {m.label} <span className="text-[9px] opacity-60">{m.cost}</span>
               </button>
             )
           })}
