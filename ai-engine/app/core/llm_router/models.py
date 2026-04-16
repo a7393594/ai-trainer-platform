@@ -7,24 +7,36 @@ Other modules (router, comparison engine, API, frontend) reference this.
 
 MODELS = [
     # ═══════════════════════════════════════════
-    # Anthropic (付費)
+    # Anthropic（付費）— Claude 4 / 3.5 / 3 系列
     # ═══════════════════════════════════════════
-    {"id": "claude-sonnet-4-20250514", "label": "Claude Sonnet 4", "provider": "anthropic", "tier": "paid", "input_cost": 3.0, "output_cost": 15.0, "context": 200000, "tool_use": True, "tags": ["smart", "balanced"]},
-    {"id": "claude-opus-4-20250514", "label": "Claude Opus 4", "provider": "anthropic", "tier": "paid", "input_cost": 15.0, "output_cost": 75.0, "context": 200000, "tool_use": True, "tags": ["smartest", "expensive"]},
-    {"id": "claude-haiku-4-5-20251001", "label": "Claude Haiku 4.5", "provider": "anthropic", "tier": "paid", "input_cost": 0.8, "output_cost": 4.0, "context": 200000, "tool_use": True, "tags": ["fast", "cheap"]},
+    {"id": "claude-opus-4-20250514",       "label": "Claude Opus 4",           "provider": "anthropic", "tier": "paid", "input_cost": 15.0,  "output_cost": 75.0,  "context": 200000,  "tool_use": True,  "tags": ["smartest", "expensive"]},
+    {"id": "claude-sonnet-4-20250514",     "label": "Claude Sonnet 4",         "provider": "anthropic", "tier": "paid", "input_cost": 3.0,   "output_cost": 15.0,  "context": 200000,  "tool_use": True,  "tags": ["smart", "balanced"]},
+    {"id": "claude-haiku-4-5-20251001",    "label": "Claude Haiku 4.5",        "provider": "anthropic", "tier": "paid", "input_cost": 0.8,   "output_cost": 4.0,   "context": 200000,  "tool_use": True,  "tags": ["fast", "cheap"]},
+    {"id": "claude-3-5-sonnet-20241022",   "label": "Claude 3.5 Sonnet v2",    "provider": "anthropic", "tier": "paid", "input_cost": 3.0,   "output_cost": 15.0,  "context": 200000,  "tool_use": True,  "tags": ["smart", "balanced", "legacy"]},
+    {"id": "claude-3-5-haiku-20241022",    "label": "Claude 3.5 Haiku",        "provider": "anthropic", "tier": "paid", "input_cost": 0.8,   "output_cost": 4.0,   "context": 200000,  "tool_use": True,  "tags": ["fast", "cheap", "legacy"]},
+    {"id": "claude-3-opus-20240229",       "label": "Claude 3 Opus",           "provider": "anthropic", "tier": "paid", "input_cost": 15.0,  "output_cost": 75.0,  "context": 200000,  "tool_use": True,  "tags": ["smart", "legacy"]},
 
     # ═══════════════════════════════════════════
-    # OpenAI (付費)
+    # OpenAI（付費）— GPT-4o / o-series / GPT-4
     # ═══════════════════════════════════════════
-    {"id": "gpt-4o", "label": "GPT-4o", "provider": "openai", "tier": "paid", "input_cost": 2.5, "output_cost": 10.0, "context": 128000, "tool_use": True, "tags": ["smart", "multimodal"]},
-    {"id": "gpt-4o-mini", "label": "GPT-4o Mini", "provider": "openai", "tier": "paid", "input_cost": 0.15, "output_cost": 0.6, "context": 128000, "tool_use": True, "tags": ["fast", "cheap"]},
-    {"id": "o3-mini", "label": "o3-mini (Reasoning)", "provider": "openai", "tier": "paid", "input_cost": 1.1, "output_cost": 4.4, "context": 200000, "tool_use": True, "tags": ["reasoning"]},
+    {"id": "gpt-4o",                       "label": "GPT-4o",                  "provider": "openai",    "tier": "paid", "input_cost": 2.5,   "output_cost": 10.0,  "context": 128000,  "tool_use": True,  "tags": ["smart", "multimodal"]},
+    {"id": "gpt-4o-mini",                  "label": "GPT-4o Mini",             "provider": "openai",    "tier": "paid", "input_cost": 0.15,  "output_cost": 0.6,   "context": 128000,  "tool_use": True,  "tags": ["fast", "cheap"]},
+    {"id": "o3-mini",                      "label": "o3-mini (Reasoning)",     "provider": "openai",    "tier": "paid", "input_cost": 1.1,   "output_cost": 4.4,   "context": 200000,  "tool_use": True,  "tags": ["reasoning"]},
+    {"id": "o1",                           "label": "o1 (Reasoning)",          "provider": "openai",    "tier": "paid", "input_cost": 15.0,  "output_cost": 60.0,  "context": 200000,  "tool_use": False, "tags": ["reasoning", "expensive"]},
+    {"id": "o1-mini",                      "label": "o1-mini (Reasoning)",     "provider": "openai",    "tier": "paid", "input_cost": 3.0,   "output_cost": 12.0,  "context": 128000,  "tool_use": False, "tags": ["reasoning"]},
+    {"id": "gpt-4-turbo",                  "label": "GPT-4 Turbo",             "provider": "openai",    "tier": "paid", "input_cost": 10.0,  "output_cost": 30.0,  "context": 128000,  "tool_use": True,  "tags": ["smart", "legacy"]},
+    {"id": "gpt-4",                        "label": "GPT-4",                   "provider": "openai",    "tier": "paid", "input_cost": 30.0,  "output_cost": 60.0,  "context": 8192,    "tool_use": True,  "tags": ["smart", "legacy", "expensive"]},
+    {"id": "gpt-3.5-turbo",               "label": "GPT-3.5 Turbo",           "provider": "openai",    "tier": "paid", "input_cost": 0.5,   "output_cost": 1.5,   "context": 16385,   "tool_use": True,  "tags": ["fast", "cheap", "legacy"]},
 
     # ═══════════════════════════════════════════
-    # Google (免費額度)
+    # Google（免費額度）— Gemini 2.5 / 2.0 / 1.5
     # ═══════════════════════════════════════════
-    {"id": "gemini/gemini-2.0-flash", "label": "Gemini 2.0 Flash", "provider": "google", "tier": "free-tier", "input_cost": 0.075, "output_cost": 0.3, "context": 1000000, "tool_use": True, "tags": ["fast", "huge-context"]},
-    {"id": "gemini/gemini-2.5-flash-preview-04-17", "label": "Gemini 2.5 Flash", "provider": "google", "tier": "free-tier", "input_cost": 0.15, "output_cost": 0.6, "context": 1000000, "tool_use": True, "tags": ["smart", "huge-context"]},
+    {"id": "gemini/gemini-2.5-flash-preview-04-17", "label": "Gemini 2.5 Flash",   "provider": "google", "tier": "free-tier", "input_cost": 0.15, "output_cost": 0.6,  "context": 1000000, "tool_use": True, "tags": ["smart", "huge-context"]},
+    {"id": "gemini/gemini-2.5-pro-preview-05-06",   "label": "Gemini 2.5 Pro",     "provider": "google", "tier": "free-tier", "input_cost": 1.25, "output_cost": 10.0, "context": 1000000, "tool_use": True, "tags": ["smartest", "huge-context"]},
+    {"id": "gemini/gemini-2.0-flash",               "label": "Gemini 2.0 Flash",   "provider": "google", "tier": "free-tier", "input_cost": 0.075,"output_cost": 0.3,  "context": 1000000, "tool_use": True, "tags": ["fast", "huge-context"]},
+    {"id": "gemini/gemini-2.0-flash-lite",           "label": "Gemini 2.0 Flash Lite","provider":"google","tier": "free-tier", "input_cost": 0.0,  "output_cost": 0.0,  "context": 1000000, "tool_use": True, "tags": ["fast", "free", "lite"]},
+    {"id": "gemini/gemini-1.5-pro",                 "label": "Gemini 1.5 Pro",     "provider": "google", "tier": "free-tier", "input_cost": 1.25, "output_cost": 5.0,  "context": 2000000, "tool_use": True, "tags": ["smart", "huge-context", "legacy"]},
+    {"id": "gemini/gemini-1.5-flash",               "label": "Gemini 1.5 Flash",   "provider": "google", "tier": "free-tier", "input_cost": 0.075,"output_cost": 0.3,  "context": 1000000, "tool_use": True, "tags": ["fast", "huge-context", "legacy"]},
 
     # ═══════════════════════════════════════════
     # Groq (免費，LPU 超快推理)
