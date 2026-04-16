@@ -23,6 +23,89 @@ T_PIPELINE_CMP = "ait_pipeline_node_comparisons"
 
 
 # ============================================
+# Default Domain Configs (per project_type)
+# ============================================
+
+def _deep_merge(base: dict, override: dict) -> dict:
+    """Deep-merge override into base (non-destructive)."""
+    result = base.copy()
+    for k, v in override.items():
+        if k in result and isinstance(result[k], dict) and isinstance(v, dict):
+            result[k] = _deep_merge(result[k], v)
+        else:
+            result[k] = v
+    return result
+
+
+DEFAULT_DOMAIN_CONFIGS: dict[str, dict] = {
+    "trainer": {
+        "nav": [
+            {"href": "/overview",     "label": "nav.overview",  "icon": "📊"},
+            {"href": "/chat",         "label": "nav.train",     "icon": "💬"},
+            {"href": "/comparison",   "label": "nav.comparison","icon": "⚖️"},
+            {"href": "/prompts",      "label": "nav.prompts",   "icon": "✏️"},
+            {"href": "/behavior",     "label": "nav.behavior",  "icon": "🧠"},
+            {"href": "/enhance",      "label": "nav.enhance",   "icon": "🧰"},
+            {"href": "/studio",       "label": "nav.studio",    "icon": "🧬"},
+            {"href": "/knowledge",    "label": "nav.knowledge", "icon": "📚"},
+            {"href": "/integrations", "label": "nav.deploy",    "icon": "🔌"},
+            {"href": "/settings",     "label": "nav.settings",  "icon": "⚙️"},
+        ],
+        "terms": {"session": "Training Session", "knowledgeBase": "Knowledge Base"},
+        "features": {
+            "eval": True, "finetune": True, "pipeline_studio": True,
+            "knowledge_rag": True, "confidence_scoring": False,
+            "multi_model_voting": False, "challenge_mode": False,
+        },
+        "chat": {"mode": "orchestrator", "streaming": True},
+    },
+    "referee": {
+        "nav": [
+            {"href": "/overview",   "label": "Dashboard",    "icon": "📊"},
+            {"href": "/chat",       "label": "Submit Ruling","icon": "📝"},
+            {"href": "/history",    "label": "History",      "icon": "📋"},
+            {"href": "/knowledge",  "label": "Rule Library", "icon": "📚"},
+            {"href": "/settings",   "label": "Settings",     "icon": "⚙️"},
+        ],
+        "terms": {
+            "case": "Dispute", "ruling": "Ruling", "rule": "Rule",
+            "knowledgeBase": "Rule Library", "confidence": "Confidence",
+            "challenge": "Challenge",
+        },
+        "contextFields": [
+            {"key": "game_type", "label": "Game Type", "type": "select",
+             "options": ["NLHE", "PLO", "Limit", "Stud"]},
+            {"key": "pot_size", "label": "Pot Size", "type": "number", "placeholder": "15000"},
+            {"key": "blind_level", "label": "Blinds", "type": "text", "placeholder": "500/1000"},
+        ],
+        "modes": {
+            "A": {"label": "Auto Decide",   "color": "emerald"},
+            "B": {"label": "Challengeable", "color": "blue"},
+            "C": {"label": "Human Confirm", "color": "amber"},
+            "escalated": {"label": "Escalated", "color": "red"},
+        },
+        "features": {
+            "eval": False, "finetune": False, "pipeline_studio": False,
+            "knowledge_rag": True, "confidence_scoring": True,
+            "multi_model_voting": True, "challenge_mode": True,
+        },
+        "chat": {"mode": "referee_engine", "streaming": False},
+        "referee": {
+            "primary_model": "claude-opus-4-6",
+            "backup_model": "gpt-5.4",
+            "triage_model": "claude-haiku-4-5-20251001",
+            "auto_decide_threshold": 0.85,
+            "human_confirm_threshold": 0.60,
+            "enable_dual_model": True,
+            "enable_triple_model": False,
+            "voting_temperature": 0.3,
+            "consistency_samples": 3,
+        },
+    },
+}
+
+
+# ============================================
 # Tenant
 # ============================================
 
@@ -108,10 +191,14 @@ def create_project(
     name: str,
     description: Optional[str] = None,
     domain_template: Optional[str] = None,
+    project_type: str = "trainer",
+    domain_config: Optional[dict] = None,
 ) -> dict:
     data = {
         "tenant_id": tenant_id,
         "name": name,
+        "project_type": project_type,
+        "domain_config": domain_config or DEFAULT_DOMAIN_CONFIGS.get(project_type, {}),
     }
     if description:
         data["description"] = description
@@ -123,6 +210,34 @@ def create_project(
 
 def get_project(project_id: str) -> Optional[dict]:
     result = get_supabase().table(T_PROJECTS).select("*").eq("id", project_id).execute()
+    return result.data[0] if result.data else None
+
+
+def get_project_config(project_id: str) -> Optional[dict]:
+    """Return project with domain_config merged over defaults for its type."""
+    project = get_project(project_id)
+    if not project:
+        return None
+    ptype = project.get("project_type", "trainer")
+    defaults = DEFAULT_DOMAIN_CONFIGS.get(ptype, {})
+    stored = project.get("domain_config") or {}
+    project["domain_config"] = _deep_merge(defaults, stored)
+    return project
+
+
+def update_project_config(project_id: str, partial_config: dict) -> Optional[dict]:
+    """Partial JSONB merge update on domain_config."""
+    project = get_project(project_id)
+    if not project:
+        return None
+    current = project.get("domain_config") or {}
+    merged = _deep_merge(current, partial_config)
+    result = (
+        get_supabase().table(T_PROJECTS)
+        .update({"domain_config": merged})
+        .eq("id", project_id)
+        .execute()
+    )
     return result.data[0] if result.data else None
 
 
@@ -143,7 +258,7 @@ def list_projects_by_ids(project_ids: list[str]) -> list[dict]:
         return []
     result = (
         get_supabase().table(T_PROJECTS)
-        .select("id,tenant_id,name,description,created_at")
+        .select("id,tenant_id,name,description,project_type,created_at")
         .in_("id", project_ids)
         .execute()
     )
@@ -1186,7 +1301,9 @@ def search_rules_by_text(query: str, limit: int = 10) -> list[dict]:
 # Rulings
 # ============================================
 
-def create_ruling(data: dict) -> dict:
+def create_ruling(data: dict, project_id: Optional[str] = None) -> dict:
+    if project_id:
+        data["project_id"] = project_id
     return get_supabase().table(T_RULINGS).insert(data).execute().data[0]
 
 
@@ -1195,25 +1312,22 @@ def get_ruling(ruling_id: str) -> Optional[dict]:
     return result.data[0] if result.data else None
 
 
-def list_rulings(limit: int = 50) -> list[dict]:
-    return (
-        get_supabase().table(T_RULINGS)
-        .select("*")
-        .order("created_at", desc=True)
-        .limit(limit)
-        .execute()
-    ).data
+def list_rulings(limit: int = 50, project_id: Optional[str] = None) -> list[dict]:
+    q = get_supabase().table(T_RULINGS).select("*")
+    if project_id:
+        q = q.eq("project_id", project_id)
+    return q.order("created_at", desc=True).limit(limit).execute().data
 
 
 # ============================================
 # Audit Logs
 # ============================================
 
-def create_audit_log(ruling_id: str, full_log: dict) -> dict:
-    return get_supabase().table(T_AUDIT).insert({
-        "ruling_id": ruling_id,
-        "full_log": full_log,
-    }).execute().data[0]
+def create_audit_log(ruling_id: str, full_log: dict, project_id: Optional[str] = None) -> dict:
+    data = {"ruling_id": ruling_id, "full_log": full_log}
+    if project_id:
+        data["project_id"] = project_id
+    return get_supabase().table(T_AUDIT).insert(data).execute().data[0]
 
 
 def get_audit_log(ruling_id: str) -> Optional[dict]:

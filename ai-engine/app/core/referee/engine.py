@@ -10,6 +10,7 @@ from app.config import settings
 from app.core.llm_router.router import chat_completion
 from app.core.referee.rules.retriever import hybrid_search
 from app.core.referee.rules.resolver import resolve_rules
+from app.core.referee.config_resolver import get_referee_config
 
 
 SYSTEM_PROMPT = """你是一個專業的撲克賽事裁判 AI，精通 TDA 2024 規則、WSOP 規則、Robert's Rules of Poker 以及各大賽事的特殊條款。
@@ -40,6 +41,7 @@ async def make_ruling(
     game_context: dict = None,
     model: str = None,
     temperature: float = 0.2,
+    project_id: str = None,
 ) -> dict:
     """執行一次完整的裁決流程。
 
@@ -61,7 +63,8 @@ async def make_ruling(
             "cost_usd": float,
         }
     """
-    model = model or settings.primary_model
+    ref_cfg = get_referee_config(project_id)
+    model = model or ref_cfg["primary_model"]
     game_context = game_context or {}
     start = time.time()
 
@@ -162,13 +165,14 @@ async def make_ruling(
 
     except Exception as e:
         # Failover: 主模型失敗 → 備援模型
-        if model == settings.primary_model and settings.backup_model:
-            print(f"[WARN] Primary model failed ({e}), falling back to {settings.backup_model}")
+        if model == ref_cfg["primary_model"] and ref_cfg["backup_model"]:
+            print(f"[WARN] Primary model failed ({e}), falling back to {ref_cfg['backup_model']}")
             return await make_ruling(
                 dispute=dispute,
                 game_context=game_context,
-                model=settings.backup_model,
+                model=ref_cfg["backup_model"],
                 temperature=temperature,
+                project_id=project_id,
             )
         raise
 

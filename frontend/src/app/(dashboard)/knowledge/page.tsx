@@ -3,6 +3,10 @@
 import { useEffect, useState } from 'react'
 import { getDemoContext } from '@/lib/ai-engine'
 import { useI18n } from '@/lib/i18n'
+import { useProject } from '@/lib/project-context'
+import dynamic from 'next/dynamic'
+
+const RefereeKnowledge = dynamic(() => import('../referee/knowledge/page'), { ssr: false })
 
 const AI = process.env.NEXT_PUBLIC_AI_ENGINE_URL || 'http://localhost:8000'
 
@@ -12,6 +16,17 @@ interface DocDetail {
 }
 
 export default function KnowledgePage() {
+  const { currentProject } = useProject()
+
+  // Referee projects: show Rule Library
+  if (currentProject?.project_type === 'referee') {
+    return <RefereeKnowledge />
+  }
+
+  return <TrainerKnowledge />
+}
+
+function TrainerKnowledge() {
   const [projectId, setProjectId] = useState('')
   const [docs, setDocs] = useState<any[]>([])
   const [showUpload, setShowUpload] = useState(false)

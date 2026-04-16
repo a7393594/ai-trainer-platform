@@ -15,6 +15,7 @@ from app.db import crud
 DEMO_EMAIL = "demo@ai-trainer.dev"
 DEMO_TENANT_NAME = "Demo Organization"
 DEMO_PROJECT_NAME = "Poker AI Coach"
+REFEREE_PROJECT_NAME = "Poker Referee AI"
 
 INITIAL_PROMPT = """你是一位專業的撲克教練 AI，專門為撲克俱樂部提供策略指導和教學。
 
@@ -53,10 +54,33 @@ def seed():
         print(f"✅ Demo 資料已存在:")
         print(f"   User ID:    {existing['id']}")
         print(f"   Tenant ID:  {existing['tenant_id']}")
-        # 取 project
         projects = crud.list_projects(existing["tenant_id"])
-        if projects:
-            print(f"   Project ID: {projects[0]['id']}")
+        for p in projects:
+            print(f"   Project: {p['id']} ({p['name']}) type={p.get('project_type', 'unknown')}")
+
+        # Backfill: 確保有 referee project
+        has_referee = any(p.get("project_type") == "referee" for p in projects)
+        if not has_referee:
+            ref = crud.create_project(
+                tenant_id=existing["tenant_id"],
+                name=REFEREE_PROJECT_NAME,
+                description="TDA 2024 裁判系統",
+                domain_template="poker",
+                project_type="referee",
+            )
+            print(f"✅ Backfill: Referee Project 建立: {ref['id']}")
+
+        # Backfill: 現有 trainer projects 填充 domain_config
+        from app.db.crud import DEFAULT_DOMAIN_CONFIGS, get_supabase
+        for p in projects:
+            if not p.get("domain_config") or p["domain_config"] == {}:
+                ptype = p.get("project_type", "trainer")
+                defaults = DEFAULT_DOMAIN_CONFIGS.get(ptype, {})
+                get_supabase().table("ait_projects").update(
+                    {"domain_config": defaults}
+                ).eq("id", p["id"]).execute()
+                print(f"   ↳ Backfilled domain_config for {p['name']}")
+
         return
 
     # 建立 tenant
@@ -72,14 +96,25 @@ def seed():
     )
     print(f"✅ User 建立: {user['id']} ({user['email']})")
 
-    # 建立 project
+    # 建立 trainer project
     project = crud.create_project(
         tenant_id=tenant["id"],
         name=DEMO_PROJECT_NAME,
         description="撲克 AI 教練訓練專案 — Demo",
         domain_template="poker",
+        project_type="trainer",
     )
-    print(f"✅ Project 建立: {project['id']} ({project['name']})")
+    print(f"✅ Trainer Project 建立: {project['id']} ({project['name']})")
+
+    # 建立 referee project
+    referee_project = crud.create_project(
+        tenant_id=tenant["id"],
+        name=REFEREE_PROJECT_NAME,
+        description="TDA 2024 裁判系統",
+        domain_template="poker",
+        project_type="referee",
+    )
+    print(f"✅ Referee Project 建立: {referee_project['id']} ({referee_project['name']})")
 
     # 建立初始 prompt
     prompt = crud.create_prompt_version(

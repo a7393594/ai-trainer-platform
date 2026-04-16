@@ -37,11 +37,35 @@ export interface ChatResponse {
   metadata: Record<string, any>
 }
 
+export interface ProjectSummary {
+  id: string
+  name: string
+  project_type: 'trainer' | 'referee'
+  description?: string
+}
+
+export interface NavItem {
+  href: string
+  label: string
+  icon: string
+}
+
+export interface DomainConfig {
+  nav: NavItem[]
+  terms: Record<string, string>
+  features: Record<string, boolean>
+  chat: { mode: string; streaming: boolean }
+  contextFields?: { key: string; label: string; type: string; options?: string[]; placeholder?: string }[]
+  modes?: Record<string, { label: string; color: string }>
+  referee?: Record<string, any>
+}
+
 export interface DemoContext {
   tenant_id: string
   user_id: string
   project_id: string
   project_name: string
+  projects: ProjectSummary[]
 }
 
 // ============================================

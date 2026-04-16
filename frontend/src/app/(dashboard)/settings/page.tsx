@@ -3,6 +3,10 @@
 import { useEffect, useState } from 'react'
 import { getDemoContext } from '@/lib/ai-engine'
 import { useI18n } from '@/lib/i18n'
+import { useProject } from '@/lib/project-context'
+import dynamic from 'next/dynamic'
+
+const RefereeSettings = dynamic(() => import('../referee/settings/page'), { ssr: false })
 
 const AI = process.env.NEXT_PUBLIC_AI_ENGINE_URL || 'http://localhost:8000'
 
@@ -11,6 +15,16 @@ const AI = process.env.NEXT_PUBLIC_AI_ENGINE_URL || 'http://localhost:8000'
 type Tab = 'project' | 'finetune' | 'eval'
 
 export default function SettingsPage() {
+  const { currentProject } = useProject()
+
+  if (currentProject?.project_type === 'referee') {
+    return <RefereeSettings />
+  }
+
+  return <TrainerSettings />
+}
+
+function TrainerSettings() {
   const [context, setContext] = useState<any>(null)
   const [tab, setTab] = useState<Tab>('project')
   const [loading, setLoading] = useState(true)

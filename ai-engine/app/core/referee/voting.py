@@ -16,11 +16,13 @@ from typing import Optional
 
 from app.config import settings
 from app.core.referee.engine import make_ruling
+from app.core.referee.config_resolver import get_referee_config
 
 
 async def dual_model_vote(
     dispute: str,
     game_context: dict = None,
+    project_id: str = None,
 ) -> dict:
     """雙模型並行裁決 + 比較。
 
@@ -34,17 +36,20 @@ async def dual_model_vote(
             "latency_ms": int,         # 總延遲 (並行)
         }
     """
+    ref_cfg = get_referee_config(project_id)
     start = time.time()
 
     primary_task = make_ruling(
         dispute=dispute,
         game_context=game_context,
-        model=settings.primary_model,
+        model=ref_cfg["primary_model"],
+        project_id=project_id,
     )
     secondary_task = make_ruling(
         dispute=dispute,
         game_context=game_context,
-        model=settings.backup_model,
+        model=ref_cfg["backup_model"],
+        project_id=project_id,
     )
 
     results = await asyncio.gather(primary_task, secondary_task, return_exceptions=True)
@@ -114,20 +119,22 @@ async def triple_model_vote(
     dispute: str,
     game_context: dict = None,
     third_model: str = "gemini/gemini-3.1-pro",
+    project_id: str = None,
 ) -> dict:
     """三模型並行裁決 + 多數決。需 2/3 一致才出裁決。"""
+    ref_cfg = get_referee_config(project_id)
     start = time.time()
 
     tasks = [
-        make_ruling(dispute=dispute, game_context=game_context, model=settings.primary_model),
-        make_ruling(dispute=dispute, game_context=game_context, model=settings.backup_model),
-        make_ruling(dispute=dispute, game_context=game_context, model=third_model),
+        make_ruling(dispute=dispute, game_context=game_context, model=ref_cfg["primary_model"], project_id=project_id),
+        make_ruling(dispute=dispute, game_context=game_context, model=ref_cfg["backup_model"], project_id=project_id),
+        make_ruling(dispute=dispute, game_context=game_context, model=third_model, project_id=project_id),
     ]
 
     results = await asyncio.gather(*tasks, return_exceptions=True)
 
     valid_results = []
-    model_names = [settings.primary_model, settings.backup_model, third_model]
+    model_names = [ref_cfg["primary_model"], ref_cfg["backup_model"], third_model]
     for i, r in enumerate(results):
         if not isinstance(r, Exception) and r is not None:
             valid_results.append({"model": model_names[i], "result": r})

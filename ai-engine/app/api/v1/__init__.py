@@ -13,7 +13,7 @@ from app.models.schemas import (
     CapabilityRule,
     TestCaseRequest, EvalRunResult,
     OnboardingStartRequest, OnboardingAnswerRequest, OnboardingProgress,
-    DemoContext,
+    DemoContext, ProjectSummary,
 )
 from app.core.orchestrator.agent import AgentOrchestrator
 from app.core.orchestrator.onboarding import OnboardingManager
@@ -55,11 +55,22 @@ async def get_demo_context(email: str = Query(default=None)):
     if not projects:
         raise HTTPException(status_code=404, detail="No projects found")
 
+    # Default to first trainer project (backwards compat)
+    default = next((p for p in projects if p.get("project_type") == "trainer"), projects[0])
+
     return DemoContext(
         tenant_id=user["tenant_id"],
         user_id=user["id"],
-        project_id=projects[0]["id"],
-        project_name=projects[0]["name"],
+        project_id=default["id"],
+        project_name=default["name"],
+        projects=[
+            ProjectSummary(
+                id=p["id"], name=p["name"],
+                project_type=p.get("project_type", "trainer"),
+                description=p.get("description"),
+            )
+            for p in projects
+        ],
     )
 
 
@@ -926,22 +937,37 @@ async def get_workflow_run_api(run_id: str):
 # 專案設定
 # ============================================
 
+@router.get("/projects")
+async def list_all_projects(tenant_id: str = Query(...)):
+    """列出租戶所有專案（含 project_type + domain_config）"""
+    projects = crud.list_projects(tenant_id)
+    return {"projects": projects}
+
+
 @router.patch("/projects/{project_id}")
 async def update_project(project_id: str, data: dict):
     """更新專案設定"""
     from app.db.supabase import get_supabase
-    allowed = {"name", "description", "default_model", "domain_template"}
+    allowed = {"name", "description", "default_model", "domain_template", "project_type"}
     updates = {k: v for k, v in data.items() if k in allowed}
-    if not updates:
+    # domain_config uses partial merge
+    if "domain_config" in data and isinstance(data["domain_config"], dict):
+        result = crud.update_project_config(project_id, data["domain_config"])
+        if not result:
+            raise HTTPException(status_code=404, detail="Project not found")
+        if not updates:
+            return {"status": "updated", "project": result}
+    if not updates and "domain_config" not in data:
         raise HTTPException(status_code=400, detail="No valid fields")
-    result = get_supabase().table("ait_projects").update(updates).eq("id", project_id).execute()
-    return {"status": "updated", "project": result.data[0] if result.data else {}}
+    if updates:
+        result = get_supabase().table("ait_projects").update(updates).eq("id", project_id).execute()
+    return {"status": "updated", "project": result.data[0] if hasattr(result, 'data') and result.data else {}}
 
 
 @router.get("/projects/{project_id}")
 async def get_project_detail(project_id: str):
-    """取得專案詳情（含 default_model）"""
-    project = crud.get_project(project_id)
+    """取得專案詳情（含 domain_config merged with defaults）"""
+    project = crud.get_project_config(project_id)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
     return project

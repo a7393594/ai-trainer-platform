@@ -234,8 +234,16 @@ class OnboardingProgress(BaseModel):
 # Demo Context
 # ============================================
 
+class ProjectSummary(BaseModel):
+    id: str
+    name: str
+    project_type: str = "trainer"
+    description: str | None = None
+
+
 class DemoContext(BaseModel):
     tenant_id: str
     user_id: str
     project_id: str
     project_name: str
+    projects: list[ProjectSummary] = []

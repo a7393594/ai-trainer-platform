@@ -4,12 +4,26 @@ import { useEffect, useState } from 'react'
 import { getDemoContext } from '@/lib/ai-engine'
 import { useI18n } from '@/lib/i18n'
 import { EmptyState } from '@/components/EmptyState'
+import { useProject } from '@/lib/project-context'
+import dynamic from 'next/dynamic'
+
+const RefereeDashboard = dynamic(() => import('../referee/page'), { ssr: false })
 
 const AI = process.env.NEXT_PUBLIC_AI_ENGINE_URL || 'http://localhost:8000'
 
 type Tab = 'overview' | 'cost' | 'quality' | 'tools'
 
 export default function OverviewPage() {
+  const { currentProject } = useProject()
+
+  if (currentProject?.project_type === 'referee') {
+    return <RefereeDashboard />
+  }
+
+  return <TrainerOverview />
+}
+
+function TrainerOverview() {
   const [projectId, setProjectId] = useState('')
   const [tab, setTab] = useState<Tab>('overview')
   const [days, setDays] = useState(30)

@@ -12,6 +12,7 @@ def create_audit_entry(
     game_context: dict,
     ruling_result: dict,
     confidence: dict,
+    project_id: str = None,
 ) -> dict:
     """建立完整審計日誌條目(規格書 §3 定義的結構)。"""
     full_log = {
@@ -47,7 +48,7 @@ def create_audit_entry(
     }
 
     try:
-        return crud.create_audit_log(ruling_id, full_log)
+        return crud.create_audit_log(ruling_id, full_log, project_id=project_id)
     except Exception as e:
         print(f"[WARN] Audit log write failed: {e}")
         return {"error": str(e), "full_log": full_log}

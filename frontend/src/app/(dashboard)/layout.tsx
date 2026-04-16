@@ -4,60 +4,18 @@ import Link from 'next/link'
 import { usePathname, useRouter } from 'next/navigation'
 import { useAuth } from '@/lib/auth-context'
 import { useI18n } from '@/lib/i18n'
+import { ProjectProvider, useProject } from '@/lib/project-context'
 
-// ── 專案定義(可擴展更多 domain) ────────────────────
-const PROJECTS = [
-  {
-    id: 'trainer',
-    label: 'AI Trainer',
-    icon: '🤖',
-    description: 'AI Agent 訓練工作台',
-    basePath: '',
-  },
-  {
-    id: 'referee',
-    label: 'Poker Referee',
-    icon: '♠️',
-    description: 'TDA 2024 裁判系統',
-    basePath: '/referee',
-  },
-]
+// ── Inner layout that reads ProjectContext ────────────
 
-export default function DashboardLayout({ children }: { children: React.ReactNode }) {
+function DashboardInner({ children }: { children: React.ReactNode }) {
   const pathname = usePathname()
   const router = useRouter()
-  const { user, loading, signOut } = useAuth()
+  const { user, loading: authLoading, signOut } = useAuth()
   const { locale, setLocale, t } = useI18n()
+  const { projects, currentProject, switchProject, loading: projectLoading } = useProject()
 
-  // 根據 URL 判斷目前專案
-  const isReferee = pathname.startsWith('/referee')
-  const currentProject = isReferee ? PROJECTS[1] : PROJECTS[0]
-
-  // AI Trainer 導覽
-  const TRAINER_NAV = [
-    { href: '/overview', label: t('nav.overview'), icon: '📊' },
-    { href: '/chat', label: t('nav.train'), icon: '💬' },
-    { href: '/comparison', label: t('nav.comparison'), icon: '⚖️' },
-    { href: '/prompts', label: t('nav.prompts'), icon: '✏️' },
-    { href: '/behavior', label: t('nav.behavior'), icon: '🧠' },
-    { href: '/enhance', label: t('nav.enhance'), icon: '🧰' },
-    { href: '/studio', label: t('nav.studio'), icon: '🧬' },
-    { href: '/integrations', label: t('nav.deploy'), icon: '🔌' },
-    { href: '/settings', label: t('nav.settings'), icon: '⚙️' },
-  ]
-
-  // Poker Referee 導覽
-  const REFEREE_NAV = [
-    { href: '/referee', label: 'Dashboard', icon: '📊' },
-    { href: '/referee/submit', label: 'Submit Ruling', icon: '📝' },
-    { href: '/referee/history', label: 'History', icon: '📋' },
-    { href: '/referee/knowledge', label: 'Rule Library', icon: '📚' },
-    { href: '/referee/settings', label: 'Settings', icon: '⚙️' },
-  ]
-
-  const NAV_ITEMS = isReferee ? REFEREE_NAV : TRAINER_NAV
-
-  if (loading) {
+  if (authLoading || projectLoading) {
     return (
       <div className="flex h-screen items-center justify-center bg-zinc-900">
         <div className="h-5 w-5 animate-spin rounded-full border-2 border-zinc-600 border-t-blue-500" />
@@ -70,26 +28,37 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     return null
   }
 
+  // Nav items from domain_config (fallback to empty)
+  const navItems = currentProject?.domain_config?.nav || []
+
+  // i18n label resolution: if label starts with "nav.", try t(), else use as-is
+  const resolveLabel = (label: string) => {
+    if (label.startsWith('nav.')) {
+      const translated = t(label)
+      return translated !== label ? translated : label.replace('nav.', '')
+    }
+    return label
+  }
+
   return (
     <div className="flex h-screen">
       <aside className="w-56 flex-shrink-0 border-r border-zinc-800 bg-zinc-950 flex flex-col">
         {/* ── 專案切換器 ── */}
         <div className="px-3 py-3 border-b border-zinc-800">
           <select
-            value={currentProject.id}
-            onChange={(e) => {
-              const proj = PROJECTS.find((p) => p.id === e.target.value)
-              if (proj) router.push(proj.basePath || '/')
-            }}
+            value={currentProject?.project_id || ''}
+            onChange={(e) => switchProject(e.target.value)}
             className="w-full rounded-lg border border-zinc-700 bg-zinc-900 px-3 py-2 text-sm text-zinc-100 outline-none focus:border-blue-500"
           >
-            {PROJECTS.map((p) => (
+            {projects.map((p) => (
               <option key={p.id} value={p.id}>
-                {p.icon} {p.label}
+                {p.project_type === 'referee' ? '♠️' : '🤖'} {p.name}
               </option>
             ))}
           </select>
-          <p className="mt-1 px-1 text-[10px] text-zinc-600">{currentProject.description}</p>
+          <p className="mt-1 px-1 text-[10px] text-zinc-600">
+            {currentProject?.description || ''}
+          </p>
         </div>
 
         {/* ── 使用者 ── */}
@@ -97,13 +66,11 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
           <p className="text-xs text-zinc-500">{user.email?.split('@')[0]}</p>
         </div>
 
-        {/* ── 導覽 ── */}
+        {/* ── 導覽（從 domain_config.nav 動態生成）── */}
         <nav className="flex-1 px-2 py-3 space-y-1">
-          {NAV_ITEMS.map((item) => {
-            const isActive = isReferee
-              ? item.href === '/referee'
-                ? pathname === '/referee'
-                : pathname.startsWith(item.href) && item.href !== '/referee'
+          {navItems.map((item) => {
+            const isActive = item.href === '/overview'
+              ? pathname === '/overview' || pathname === '/'
               : pathname.startsWith(item.href)
             return (
               <Link
@@ -116,7 +83,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                 }`}
               >
                 <span>{item.icon}</span>
-                <span>{item.label}</span>
+                <span>{resolveLabel(item.label)}</span>
               </Link>
             )
           })}
@@ -156,5 +123,15 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
 
       <main className="flex-1 overflow-hidden">{children}</main>
     </div>
+  )
+}
+
+// ── Exported layout wraps with ProjectProvider ────────
+
+export default function DashboardLayout({ children }: { children: React.ReactNode }) {
+  return (
+    <ProjectProvider>
+      <DashboardInner>{children}</DashboardInner>
+    </ProjectProvider>
   )
 }

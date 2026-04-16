@@ -7,9 +7,24 @@ import { PromptSuggestionButton } from '@/components/chat/PromptSuggestion'
 import { getDemoContext } from '@/lib/ai-engine'
 import { useAuth } from '@/lib/auth-context'
 import { useI18n } from '@/lib/i18n'
+import { useProject } from '@/lib/project-context'
+import dynamic from 'next/dynamic'
 import type { DemoContext } from '@/types'
 
+const RefereeSubmit = dynamic(() => import('../referee/submit/page'), { ssr: false })
+
 export default function ChatPage() {
+  const { currentProject } = useProject()
+
+  // Referee projects: show Submit Ruling UI
+  if (currentProject?.project_type === 'referee') {
+    return <RefereeSubmit />
+  }
+
+  return <TrainerChat />
+}
+
+function TrainerChat() {
   const { user } = useAuth()
   const { t } = useI18n()
   const [context, setContext] = useState<DemoContext | null>(null)

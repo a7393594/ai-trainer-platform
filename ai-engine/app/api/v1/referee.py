@@ -16,6 +16,7 @@ from app.core.referee.confidence import compute_confidence
 from app.core.referee.voting import dual_model_vote, triple_model_vote
 from app.core.referee.audit import create_audit_entry
 from app.core.referee.rules.retriever import hybrid_search, search_by_topic
+from app.core.referee.config_resolver import get_referee_config
 
 # ---------------------------------------------------------------------------
 # Router
@@ -30,6 +31,7 @@ router = APIRouter(prefix="/referee", tags=["poker-referee"])
 class RulingRequest(BaseModel):
     dispute: str
     game_context: Optional[dict] = None
+    project_id: Optional[str] = None
     enable_consistency: bool = False
     enable_cross_model: bool = False
     force_dual_model: bool = False
@@ -78,10 +80,13 @@ async def submit_ruling(req: RulingRequest):
     6. Audit log entry
     """
     try:
+        ref_cfg = get_referee_config(req.project_id)
+
         # Step 1-3: rule retrieval + LLM ruling
         ruling_result = await make_ruling(
             dispute=req.dispute,
             game_context=req.game_context,
+            project_id=req.project_id,
         )
 
         # Step 4: confidence assessment
@@ -91,6 +96,7 @@ async def submit_ruling(req: RulingRequest):
             game_context=req.game_context,
             enable_consistency=req.enable_consistency,
             enable_cross_model=req.enable_cross_model,
+            project_id=req.project_id,
         )
 
         # Step 5: create initial ruling record
@@ -114,20 +120,20 @@ async def submit_ruling(req: RulingRequest):
             "confidence": confidence,
             "routing_mode": confidence.get("routing_mode", "C"),
             "final_decision": ruling_result.get("ruling", {}).get("decision"),
-        })
+        }, project_id=req.project_id)
 
         # Step 5b: multi-model verification (medium confidence or forced)
         voting_result = None
         mode = confidence.get("routing_mode", "C")
 
         if req.force_triple_model:
-            voting_result = await triple_model_vote(req.dispute, req.game_context)
+            voting_result = await triple_model_vote(req.dispute, req.game_context, project_id=req.project_id)
             if voting_result.get("escalate"):
                 mode = "escalated"
         elif req.force_dual_model or (
-            mode == "C" and settings.enable_dual_model
+            mode == "C" and ref_cfg["enable_dual_model"]
         ):
-            voting_result = await dual_model_vote(req.dispute, req.game_context)
+            voting_result = await dual_model_vote(req.dispute, req.game_context, project_id=req.project_id)
             if voting_result and voting_result.get("agreement"):
                 confidence["cross_model_agreement"] = voting_result["agreement_score"]
                 confidence["calibrated_final"] = min(
@@ -164,7 +170,7 @@ async def submit_ruling(req: RulingRequest):
             "confidence": confidence,
             "routing_mode": mode,
             "final_decision": ruling_result.get("ruling", {}).get("decision"),
-        })
+        }, project_id=req.project_id)
 
         # Step 7: audit log
         create_audit_entry(
@@ -173,6 +179,7 @@ async def submit_ruling(req: RulingRequest):
             game_context=req.game_context or {},
             ruling_result=ruling_result,
             confidence=confidence,
+            project_id=req.project_id,
         )
 
         # total cost
@@ -204,8 +211,8 @@ async def submit_ruling(req: RulingRequest):
 
 
 @router.get("/ruling/history")
-async def list_ruling_history(limit: int = 50):
-    return {"rulings": crud.list_rulings(limit)}
+async def list_ruling_history(limit: int = 50, project_id: Optional[str] = Query(None)):
+    return {"rulings": crud.list_rulings(limit, project_id=project_id)}
 
 
 @router.get("/ruling/{ruling_id}")
@@ -288,18 +295,14 @@ async def get_audit_log(ruling_id: str):
 
 
 @router.get("/analytics/summary")
-async def get_summary():
-    """Dashboard overview -- all KPIs."""
+async def get_summary(project_id: Optional[str] = Query(None)):
+    """Dashboard overview -- all KPIs. Filter by project_id when provided."""
     sb = get_supabase()
 
-    rulings = (
-        sb.table("pkr_rulings")
-        .select("*")
-        .order("created_at", desc=True)
-        .execute()
-        .data
-        or []
-    )
+    q = sb.table("pkr_rulings").select("*")
+    if project_id:
+        q = q.eq("project_id", project_id)
+    rulings = q.order("created_at", desc=True).execute().data or []
     total = len(rulings)
 
     if total == 0:
@@ -386,33 +389,34 @@ async def get_summary():
 
 
 @router.get("/config")
-async def get_config():
-    """Return all domain-visible settings (excludes API keys)."""
+async def get_config(project_id: Optional[str] = Query(None)):
+    """Return referee settings. When project_id given, returns per-project overrides."""
+    ref_cfg = get_referee_config(project_id)
     return {
-        "primary_model": settings.primary_model,
-        "backup_model": settings.backup_model,
-        "triage_model": settings.triage_model,
-        "auto_decide_threshold": settings.auto_decide_threshold,
-        "human_confirm_threshold": settings.human_confirm_threshold,
-        "enable_dual_model": settings.enable_dual_model,
-        "enable_triple_model": settings.enable_triple_model,
-        "voting_temperature": settings.voting_temperature,
-        "consistency_samples": settings.consistency_samples,
+        **ref_cfg,
         "embedding_model": settings.embedding_model,
         "environment": settings.environment,
     }
 
 
 @router.patch("/config")
-async def update_config(update: ConfigUpdate):
-    """Runtime config mutation (resets on restart)."""
-    changes = {}
-    for field, value in update.model_dump(exclude_none=True).items():
-        if hasattr(settings, field):
-            setattr(settings, field, value)
-            changes[field] = value
+async def update_config(update: ConfigUpdate, project_id: Optional[str] = Query(None)):
+    """Update config. With project_id: persists to domain_config.referee. Without: runtime-only."""
+    changes = update.model_dump(exclude_none=True)
+    if not changes:
+        return {"updated": {}, "current": await get_config(project_id)}
 
-    return {"updated": changes, "current": await get_config()}
+    if project_id:
+        # Persist to project's domain_config.referee
+        crud.update_project_config(project_id, {"referee": changes})
+    else:
+        # Legacy: runtime mutation of global settings (resets on restart)
+        for field, value in changes.items():
+            attr = f"referee_{field}" if not field.startswith("referee_") else field
+            if hasattr(settings, attr):
+                setattr(settings, attr, value)
+
+    return {"updated": changes, "current": await get_config(project_id)}
 
 
 # ===================================================================
@@ -436,17 +440,14 @@ AVAILABLE_MODELS = [
 
 
 @router.get("/models")
-async def list_available_models():
-    """Return the catalogue of models the referee can use.
-
-    The settings page reads this to populate the primary / backup / triage
-    model dropdowns.
-    """
+async def list_available_models(project_id: Optional[str] = Query(None)):
+    """Return the catalogue of models the referee can use."""
+    ref_cfg = get_referee_config(project_id)
     return {
         "models": AVAILABLE_MODELS,
         "current": {
-            "primary_model": settings.primary_model,
-            "backup_model": settings.backup_model,
-            "triage_model": settings.triage_model,
+            "primary_model": ref_cfg["primary_model"],
+            "backup_model": ref_cfg["backup_model"],
+            "triage_model": ref_cfg["triage_model"],
         },
     }

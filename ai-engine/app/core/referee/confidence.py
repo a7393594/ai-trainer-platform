@@ -4,6 +4,7 @@ Confidence Scoring — 多方法融合信心分數
 """
 from app.config import settings
 from app.core.referee.engine import make_ruling
+from app.core.referee.config_resolver import get_referee_config
 
 
 async def compute_confidence(
@@ -12,6 +13,7 @@ async def compute_confidence(
     game_context: dict = None,
     enable_consistency: bool = True,
     enable_cross_model: bool = False,
+    project_id: str = None,
 ) -> dict:
     """計算多方法融合信心分數。
 
@@ -50,23 +52,25 @@ async def compute_confidence(
             "details": {"lookup_result": True},
         }
 
+    ref_cfg = get_referee_config(project_id)
+
     consistency_score = 1.0
     consistency_details = []
 
     # 自我一致性抽樣
-    if enable_consistency and settings.consistency_samples > 1:
+    if enable_consistency and ref_cfg["consistency_samples"] > 1:
         primary_decision = primary_ruling.get("decision", "")
         matches = 0
-        for _ in range(settings.consistency_samples - 1):
+        for _ in range(ref_cfg["consistency_samples"] - 1):
             try:
                 sample = await make_ruling(
                     dispute=dispute,
                     game_context=game_context,
-                    model=ruling_result.get("model_used", settings.primary_model),
-                    temperature=settings.voting_temperature,
+                    model=ruling_result.get("model_used", ref_cfg["primary_model"]),
+                    temperature=ref_cfg["voting_temperature"],
+                    project_id=project_id,
                 )
                 sample_decision = sample.get("ruling", {}).get("decision", "")
-                # 簡化比較:取前 50 字看是否一致
                 if sample_decision[:50].lower() == primary_decision[:50].lower():
                     matches += 1
                 consistency_details.append({
@@ -75,20 +79,21 @@ async def compute_confidence(
                 })
             except Exception:
                 pass
-        total_samples = settings.consistency_samples
-        consistency_score = (matches + 1) / total_samples  # +1 for the original
+        total_samples = ref_cfg["consistency_samples"]
+        consistency_score = (matches + 1) / total_samples
 
     cross_model_score = 1.0
     cross_model_details = []
 
     # 跨模型驗證
-    if enable_cross_model and settings.backup_model:
+    if enable_cross_model and ref_cfg["backup_model"]:
         try:
             backup_result = await make_ruling(
                 dispute=dispute,
                 game_context=game_context,
-                model=settings.backup_model,
-                temperature=settings.voting_temperature,
+                model=ref_cfg["backup_model"],
+                temperature=ref_cfg["voting_temperature"],
+                project_id=project_id,
             )
             backup_decision = backup_result.get("ruling", {}).get("decision", "")
             primary_decision = primary_ruling.get("decision", "")
@@ -98,7 +103,7 @@ async def compute_confidence(
             else:
                 cross_model_score = 0.5
             cross_model_details.append({
-                "model": settings.backup_model,
+                "model": ref_cfg["backup_model"],
                 "decision_preview": backup_decision[:80],
                 "agrees": cross_model_score >= 0.8,
             })
@@ -113,9 +118,9 @@ async def compute_confidence(
     )
 
     # 路由決策
-    if calibrated >= settings.auto_decide_threshold:
+    if calibrated >= ref_cfg["auto_decide_threshold"]:
         mode = "B"  # 可爭議模式
-    elif calibrated >= settings.human_confirm_threshold:
+    elif calibrated >= ref_cfg["human_confirm_threshold"]:
         mode = "C"  # 輔助荷官模式
     else:
         mode = "escalated"  # 強制升級
