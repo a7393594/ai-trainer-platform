@@ -205,6 +205,7 @@ export default function ModelCompareGrid({
               <button
                 key={m.id}
                 onClick={() => toggleModel(m.id)}
+                title={m.notes || m.id}
                 className={`rounded border px-2 py-1 text-[11px] transition-colors ${
                   checked
                     ? 'border-blue-500 bg-blue-950/50 text-blue-200'

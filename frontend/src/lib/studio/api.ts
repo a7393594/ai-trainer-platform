@@ -132,6 +132,7 @@ export interface ModelInfo {
   provider: string
   available: boolean
   cost: string
+  notes: string
 }
 
 export async function listAvailableModels(): Promise<ModelInfo[]> {
