@@ -47,8 +47,8 @@ export default function ModelCompareGrid({
       .catch(() => {
         // fallback: 只放 anthropic 系列
         setCandidateModels([
-          { id: 'claude-sonnet-4-20250514', label: 'Claude Sonnet 4', provider: 'anthropic', available: true, cost: '$3.0/15.0' },
-          { id: 'claude-haiku-4-5-20251001', label: 'Claude Haiku 4.5', provider: 'anthropic', available: true, cost: '$0.8/4.0' },
+          { id: 'claude-sonnet-4-20250514', label: 'Claude Sonnet 4', provider: 'anthropic', available: true, cost: '$3.0/15.0', notes: '' },
+          { id: 'claude-haiku-4-5-20251001', label: 'Claude Haiku 4.5', provider: 'anthropic', available: true, cost: '$0.8/4.0', notes: '' },
         ])
       })
   }, [])

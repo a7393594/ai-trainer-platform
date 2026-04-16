@@ -38,6 +38,17 @@ class Settings(BaseSettings):
     environment: str = "development"
     log_level: str = "debug"
 
+    # ── Poker Referee AI 設定 ──────────────────
+    referee_primary_model: str = "claude-opus-4-6"
+    referee_backup_model: str = "gpt-5.4"
+    referee_triage_model: str = "claude-haiku-4-5-20251001"
+    referee_auto_decide_threshold: float = 0.85
+    referee_human_confirm_threshold: float = 0.60
+    referee_enable_dual_model: bool = True
+    referee_enable_triple_model: bool = False
+    referee_voting_temperature: float = 0.3
+    referee_consistency_samples: int = 3
+
     # CORS — comma-separated list for internal /api/v1 routes
     cors_allowed_origins: str = "http://localhost:3000,http://localhost:3003,https://frontend-gray-three-14.vercel.app"
 

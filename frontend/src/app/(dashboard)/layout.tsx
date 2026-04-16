@@ -5,13 +5,36 @@ import { usePathname, useRouter } from 'next/navigation'
 import { useAuth } from '@/lib/auth-context'
 import { useI18n } from '@/lib/i18n'
 
+// ── 專案定義(可擴展更多 domain) ────────────────────
+const PROJECTS = [
+  {
+    id: 'trainer',
+    label: 'AI Trainer',
+    icon: '🤖',
+    description: 'AI Agent 訓練工作台',
+    basePath: '',
+  },
+  {
+    id: 'referee',
+    label: 'Poker Referee',
+    icon: '♠️',
+    description: 'TDA 2024 裁判系統',
+    basePath: '/referee',
+  },
+]
+
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
   const pathname = usePathname()
   const router = useRouter()
   const { user, loading, signOut } = useAuth()
   const { locale, setLocale, t } = useI18n()
 
-  const NAV_ITEMS = [
+  // 根據 URL 判斷目前專案
+  const isReferee = pathname.startsWith('/referee')
+  const currentProject = isReferee ? PROJECTS[1] : PROJECTS[0]
+
+  // AI Trainer 導覽
+  const TRAINER_NAV = [
     { href: '/overview', label: t('nav.overview'), icon: '📊' },
     { href: '/chat', label: t('nav.train'), icon: '💬' },
     { href: '/comparison', label: t('nav.comparison'), icon: '⚖️' },
@@ -22,6 +45,17 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     { href: '/integrations', label: t('nav.deploy'), icon: '🔌' },
     { href: '/settings', label: t('nav.settings'), icon: '⚙️' },
   ]
+
+  // Poker Referee 導覽
+  const REFEREE_NAV = [
+    { href: '/referee', label: 'Dashboard', icon: '📊' },
+    { href: '/referee/submit', label: 'Submit Ruling', icon: '📝' },
+    { href: '/referee/history', label: 'History', icon: '📋' },
+    { href: '/referee/knowledge', label: 'Rule Library', icon: '📚' },
+    { href: '/referee/settings', label: 'Settings', icon: '⚙️' },
+  ]
+
+  const NAV_ITEMS = isReferee ? REFEREE_NAV : TRAINER_NAV
 
   if (loading) {
     return (
@@ -39,16 +73,38 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   return (
     <div className="flex h-screen">
       <aside className="w-56 flex-shrink-0 border-r border-zinc-800 bg-zinc-950 flex flex-col">
-        <div className="px-4 py-5 border-b border-zinc-800">
-          <h1 className="text-lg font-bold text-zinc-100">AI Trainer</h1>
-          <p className="text-xs text-zinc-500 mt-0.5">
-            {user.email?.split('@')[0]}
-          </p>
+        {/* ── 專案切換器 ── */}
+        <div className="px-3 py-3 border-b border-zinc-800">
+          <select
+            value={currentProject.id}
+            onChange={(e) => {
+              const proj = PROJECTS.find((p) => p.id === e.target.value)
+              if (proj) router.push(proj.basePath || '/')
+            }}
+            className="w-full rounded-lg border border-zinc-700 bg-zinc-900 px-3 py-2 text-sm text-zinc-100 outline-none focus:border-blue-500"
+          >
+            {PROJECTS.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.icon} {p.label}
+              </option>
+            ))}
+          </select>
+          <p className="mt-1 px-1 text-[10px] text-zinc-600">{currentProject.description}</p>
         </div>
 
+        {/* ── 使用者 ── */}
+        <div className="px-4 py-2 border-b border-zinc-800">
+          <p className="text-xs text-zinc-500">{user.email?.split('@')[0]}</p>
+        </div>
+
+        {/* ── 導覽 ── */}
         <nav className="flex-1 px-2 py-3 space-y-1">
           {NAV_ITEMS.map((item) => {
-            const isActive = pathname.startsWith(item.href)
+            const isActive = isReferee
+              ? item.href === '/referee'
+                ? pathname === '/referee'
+                : pathname.startsWith(item.href) && item.href !== '/referee'
+              : pathname.startsWith(item.href)
             return (
               <Link
                 key={item.href}

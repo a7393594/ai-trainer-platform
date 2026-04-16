@@ -1104,3 +1104,123 @@ def select_pipeline_comparison(comparison_id: str) -> Optional[dict]:
         .execute()
     )
     return updated.data[0] if updated.data else None
+
+T_SOURCES = "pkr_rule_sources"
+T_RULES = "pkr_rules"
+T_RULINGS = "pkr_rulings"
+T_AUDIT = "pkr_audit_logs"
+
+
+# ============================================
+# Rule Sources
+# ============================================
+
+def create_rule_source(name: str, priority: int, version: str = None, effective_date: str = None) -> dict:
+    data = {"name": name, "priority": priority}
+    if version:
+        data["version"] = version
+    if effective_date:
+        data["effective_date"] = effective_date
+    return get_supabase().table(T_SOURCES).insert(data).execute().data[0]
+
+
+def list_rule_sources() -> list[dict]:
+    return get_supabase().table(T_SOURCES).select("*").order("priority").execute().data
+
+
+def get_rule_source(source_id: str) -> Optional[dict]:
+    result = get_supabase().table(T_SOURCES).select("*").eq("id", source_id).execute()
+    return result.data[0] if result.data else None
+
+
+# ============================================
+# Rules
+# ============================================
+
+def create_rule(data: dict) -> dict:
+    return get_supabase().table(T_RULES).insert(data).execute().data[0]
+
+
+def get_rule(rule_id: str) -> Optional[dict]:
+    result = get_supabase().table(T_RULES).select("*").eq("id", rule_id).execute()
+    return result.data[0] if result.data else None
+
+
+def get_rule_by_code(rule_code: str) -> Optional[dict]:
+    result = get_supabase().table(T_RULES).select("*").eq("rule_code", rule_code).execute()
+    return result.data[0] if result.data else None
+
+
+def list_rules(source_id: str = None, topic: str = None) -> list[dict]:
+    q = get_supabase().table(T_RULES).select("*")
+    if source_id:
+        q = q.eq("source_id", source_id)
+    if topic:
+        q = q.contains("topic_tags", [topic])
+    return q.order("rule_code").execute().data
+
+
+def search_rules_by_text(query: str, limit: int = 10) -> list[dict]:
+    """全文搜尋規則條文(用 ilike fallback)"""
+    results = []
+    for kw in query.split()[:3]:
+        rows = (
+            get_supabase().table(T_RULES)
+            .select("*")
+            .ilike("rule_text", f"%{kw}%")
+            .limit(limit)
+            .execute()
+        ).data or []
+        results.extend(rows)
+    # 去重
+    seen = set()
+    deduped = []
+    for r in results:
+        if r["id"] not in seen:
+            seen.add(r["id"])
+            deduped.append(r)
+    return deduped[:limit]
+
+
+# ============================================
+# Rulings
+# ============================================
+
+def create_ruling(data: dict) -> dict:
+    return get_supabase().table(T_RULINGS).insert(data).execute().data[0]
+
+
+def get_ruling(ruling_id: str) -> Optional[dict]:
+    result = get_supabase().table(T_RULINGS).select("*").eq("id", ruling_id).execute()
+    return result.data[0] if result.data else None
+
+
+def list_rulings(limit: int = 50) -> list[dict]:
+    return (
+        get_supabase().table(T_RULINGS)
+        .select("*")
+        .order("created_at", desc=True)
+        .limit(limit)
+        .execute()
+    ).data
+
+
+# ============================================
+# Audit Logs
+# ============================================
+
+def create_audit_log(ruling_id: str, full_log: dict) -> dict:
+    return get_supabase().table(T_AUDIT).insert({
+        "ruling_id": ruling_id,
+        "full_log": full_log,
+    }).execute().data[0]
+
+
+def get_audit_log(ruling_id: str) -> Optional[dict]:
+    result = (
+        get_supabase().table(T_AUDIT)
+        .select("*")
+        .eq("ruling_id", ruling_id)
+        .execute()
+    )
+    return result.data[0] if result.data else None
