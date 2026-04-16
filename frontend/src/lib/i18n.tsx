@@ -13,6 +13,7 @@ const translations: Record<Locale, Record<string, string>> = {
     'nav.prompts': '提示詞管理',
     'nav.behavior': 'AI 行為',
     'nav.enhance': '增強',
+    'nav.studio': 'Pipeline Studio',
     'nav.deploy': '部署',
     'nav.settings': '設定',
     'nav.signOut': '登出',
@@ -86,7 +87,7 @@ const translations: Record<Locale, Record<string, string>> = {
     'settings.finetuneTab': '微調',
     'settings.evalTab': '評估',
     'settings.finetuneStats': '訓練數據統計',
-    'settings.export': '匯出 JSONL',
+    'settings.export': '匯出訓練資料 (JSONL)',
     'settings.exportBtn': '匯出',
     'settings.download': '下載',
     'settings.jobs': '訓練任務',
@@ -278,7 +279,6 @@ const translations: Record<Locale, Record<string, string>> = {
     'capabilities.empty': '尚無能力規則。新增規則來定義 AI 的互動行為。',
 
     // ====== Comparison ======
-    'nav.comparison': '模型比較',
     'comparison.title': '多模型比較',
     'comparison.desc': '比較不同模型的回答品質，找出概念差，自動補齊',
     'comparison.runs': '比較記錄',
@@ -388,7 +388,6 @@ const translations: Record<Locale, Record<string, string>> = {
     'settings.status': '狀態',
     'settings.ready': '就緒',
     'settings.needMore': '需要更多',
-    'settings.export': '匯出訓練資料 (JSONL)',
     'settings.language': '語言',
 
     // ====== Integrations ======
@@ -466,10 +465,11 @@ const translations: Record<Locale, Record<string, string>> = {
     // ====== Nav ======
     'nav.overview': 'Dashboard',
     'nav.train': 'Train',
-    'nav.comparison': 'Compare',
+    'nav.comparison': 'Model Compare',
     'nav.prompts': 'Prompts',
     'nav.behavior': 'AI Behavior',
     'nav.enhance': 'Enhance',
+    'nav.studio': 'Pipeline Studio',
     'nav.deploy': 'Deploy',
     'nav.settings': 'Settings',
     'nav.signOut': 'Sign Out',
@@ -539,7 +539,7 @@ const translations: Record<Locale, Record<string, string>> = {
     'settings.finetuneTab': 'Fine-tune',
     'settings.evalTab': 'Evaluation',
     'settings.finetuneStats': 'Training Data Stats',
-    'settings.export': 'Export JSONL',
+    'settings.export': 'Export Training Data (JSONL)',
     'settings.exportBtn': 'Export',
     'settings.download': 'Download',
     'settings.jobs': 'Training Jobs',
@@ -729,7 +729,6 @@ const translations: Record<Locale, Record<string, string>> = {
     'capabilities.empty': 'No capability rules. Add rules to define AI interaction behaviors.',
 
     // ====== Comparison ======
-    'nav.comparison': 'Model Compare',
     'comparison.title': 'Multi-Model Comparison',
     'comparison.desc': 'Compare response quality across models, find gaps, auto-remediate',
     'comparison.runs': 'Comparison Runs',
@@ -839,7 +838,6 @@ const translations: Record<Locale, Record<string, string>> = {
     'settings.status': 'Status',
     'settings.ready': 'Ready',
     'settings.needMore': 'Need More',
-    'settings.export': 'Export Training Data (JSONL)',
     'settings.language': 'Language',
 
     // ====== Integrations ======

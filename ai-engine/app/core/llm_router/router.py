@@ -72,9 +72,10 @@ async def chat_completion(
     tenant_id: Optional[str] = None,
     project_id: Optional[str] = None,
     session_id: Optional[str] = None,
+    span_label: str = "llm_call",
 ) -> dict:
     """
-    統一的 LLM 呼叫介面（含成本追蹤）
+    統一的 LLM 呼叫介面（含成本追蹤 + Pipeline Studio 追蹤）
     """
     kwargs = {
         "model": model,
@@ -102,6 +103,36 @@ async def chat_completion(
     if project_id:
         _log_usage(project_id, session_id, model, input_tokens, output_tokens, cost, latency)
 
+    # Pipeline Studio tracer hook — no-op if no pipeline_run context
+    try:
+        from app.core.pipeline.tracer import record_llm_span
+        output_text = ""
+        try:
+            output_text = response.choices[0].message.content or ""
+        except Exception:
+            pass
+        tool_calls_raw = None
+        try:
+            tool_calls_raw = getattr(response.choices[0].message, "tool_calls", None)
+        except Exception:
+            pass
+        record_llm_span(
+            label=span_label,
+            model=model,
+            messages=messages,
+            output_text=output_text,
+            tokens_in=input_tokens,
+            tokens_out=output_tokens,
+            cost_usd=cost,
+            latency_ms=latency,
+            metadata={
+                "has_tool_calls": bool(tool_calls_raw),
+                "tool_call_count": len(tool_calls_raw) if tool_calls_raw else 0,
+            },
+        )
+    except Exception:
+        pass  # tracer never breaks chat
+
     return response
 
 
@@ -111,8 +142,14 @@ async def stream_chat_completion(
     temperature: float = 0.7,
     max_tokens: int = 2000,
     tenant_id: Optional[str] = None,
+    project_id: Optional[str] = None,
+    session_id: Optional[str] = None,
+    span_label: str = "main_model_stream",
 ):
-    """Streaming LLM call — yields content chunks"""
+    """Streaming LLM call — yields content chunks.
+
+    收集完整文字後會補記一個 model span 到 Pipeline Studio tracer,成本由 messages 估算。
+    """
     kwargs = {
         "model": model,
         "messages": messages,
@@ -121,11 +158,49 @@ async def stream_chat_completion(
         "stream": True,
         "metadata": {"tenant_id": tenant_id} if tenant_id else {},
     }
+    start = time.time()
+    full_text = ""
     response = await litellm.acompletion(**kwargs)
     async for chunk in response:
         delta = chunk.choices[0].delta
         if delta and delta.content:
+            full_text += delta.content
             yield delta.content
+
+    latency = int((time.time() - start) * 1000)
+    # LiteLLM streaming 通常不回 usage 欄位,這裡用簡單 heuristic 估 token 數:
+    # 每個字元約 0.3 tokens(粗估,用於 Pipeline Studio 顯示成本)。
+    input_chars = sum(
+        len(m.get("content", "")) if isinstance(m.get("content"), str) else 0
+        for m in messages
+    )
+    input_tokens = max(1, int(input_chars * 0.3))
+    output_tokens = max(1, int(len(full_text) * 0.3))
+    cost = calculate_cost(model, input_tokens, output_tokens)
+
+    if project_id:
+        _log_usage(
+            project_id, session_id, model,
+            input_tokens, output_tokens, cost, latency,
+            endpoint="chat_stream",
+        )
+
+    # Pipeline Studio tracer hook
+    try:
+        from app.core.pipeline.tracer import record_llm_span
+        record_llm_span(
+            label=span_label,
+            model=model,
+            messages=messages,
+            output_text=full_text,
+            tokens_in=input_tokens,
+            tokens_out=output_tokens,
+            cost_usd=cost,
+            latency_ms=latency,
+            metadata={"streaming": True, "token_estimate": True},
+        )
+    except Exception:
+        pass
 
 
 async def get_embedding(text: str) -> list[float]:

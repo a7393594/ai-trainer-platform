@@ -18,6 +18,8 @@ T_MESSAGES = "ait_training_messages"
 T_FEEDBACKS = "ait_feedbacks"
 T_PROMPTS = "ait_prompt_versions"
 T_SUGGESTIONS = "ait_prompt_suggestions"
+T_PIPELINE_RUNS = "ait_pipeline_runs"
+T_PIPELINE_CMP = "ait_pipeline_node_comparisons"
 
 
 # ============================================
@@ -1016,3 +1018,89 @@ def list_workflow_runs(workflow_id: str) -> list[dict]:
 def get_workflow_run(run_id: str) -> Optional[dict]:
     result = get_supabase().table(T_WF_RUNS).select("*").eq("id", run_id).execute()
     return result.data[0] if result.data else None
+
+
+# ============================================
+# Pipeline Studio (Phase 7)
+# ============================================
+
+def list_pipeline_runs(
+    project_id: str,
+    limit: int = 50,
+    mode: Optional[str] = None,
+    cursor_created_at: Optional[str] = None,
+) -> list[dict]:
+    """列出專案最近的 pipeline runs(新到舊)。
+
+    回傳時只帶摘要欄位,nodes_json 另外用 get_pipeline_run() 讀。
+    """
+    q = (
+        get_supabase().table(T_PIPELINE_RUNS)
+        .select(
+            "id, project_id, session_id, message_id, mode, input_text, "
+            "total_cost_usd, total_duration_ms, status, parent_run_id, created_at"
+        )
+        .eq("project_id", project_id)
+        .order("created_at", desc=True)
+        .limit(limit)
+    )
+    if mode:
+        q = q.eq("mode", mode)
+    if cursor_created_at:
+        q = q.lt("created_at", cursor_created_at)
+    return q.execute().data or []
+
+
+def get_pipeline_run(run_id: str) -> Optional[dict]:
+    """取單一 run 完整內容(含 nodes_json)。"""
+    result = (
+        get_supabase().table(T_PIPELINE_RUNS)
+        .select("*")
+        .eq("id", run_id)
+        .execute()
+    )
+    return result.data[0] if result.data else None
+
+
+def list_pipeline_comparisons(run_id: str) -> list[dict]:
+    """取某個 run 下所有節點的多模型比較候選。"""
+    result = (
+        get_supabase().table(T_PIPELINE_CMP)
+        .select("*")
+        .eq("pipeline_run_id", run_id)
+        .order("created_at")
+        .execute()
+    )
+    return result.data or []
+
+
+def create_pipeline_comparison(data: dict) -> dict:
+    """新增一筆 node 多模型比較候選(Lab v1 用)。"""
+    result = get_supabase().table(T_PIPELINE_CMP).insert(data).execute()
+    return result.data[0] if result.data else {}
+
+
+def select_pipeline_comparison(comparison_id: str) -> Optional[dict]:
+    """把 comparison 標記為 is_selected=true(同節點其他候選自動取消)。"""
+    supabase = get_supabase()
+    cmp_row = (
+        supabase.table(T_PIPELINE_CMP)
+        .select("*")
+        .eq("id", comparison_id)
+        .execute()
+    )
+    if not cmp_row.data:
+        return None
+    row = cmp_row.data[0]
+    # 先把同 run + node 其他候選的 is_selected 關掉(避免 partial unique index 衝突)
+    supabase.table(T_PIPELINE_CMP).update({"is_selected": False}).eq(
+        "pipeline_run_id", row["pipeline_run_id"]
+    ).eq("node_id", row["node_id"]).execute()
+    # 再把這筆打開
+    updated = (
+        supabase.table(T_PIPELINE_CMP)
+        .update({"is_selected": True})
+        .eq("id", comparison_id)
+        .execute()
+    )
+    return updated.data[0] if updated.data else None

@@ -110,12 +110,52 @@ class ToolRegistry:
             })
         return llm_tools
 
-    async def execute_tool_by_name(self, name: str, params: dict, tools: list[dict]) -> dict:
-        """Execute a tool by its name (from LLM tool_call), looking up from a tools list."""
-        for tool in tools:
-            if tool["name"] == name:
-                return await self.execute_tool(tool["id"], params=params)
-        return {"status": "error", "detail": f"Tool '{name}' not found"}
+    async def execute_tool_by_name(
+        self,
+        name: str,
+        params: dict,
+        tools: list[dict],
+        parent_span_id: str = None,
+    ) -> dict:
+        """Execute a tool by its name (from LLM tool_call), looking up from a tools list.
+
+        Also records a tool span to the active Pipeline Studio run, if any.
+        """
+        start = time.time()
+        status = "ok"
+        error: str = None
+        try:
+            for tool in tools:
+                if tool["name"] == name:
+                    result = await self.execute_tool(tool["id"], params=params)
+                    if isinstance(result, dict) and result.get("status") == "error":
+                        status = "error"
+                        error = result.get("detail")
+                    return result
+            result = {"status": "error", "detail": f"Tool '{name}' not found"}
+            status = "error"
+            error = result["detail"]
+            return result
+        except Exception as e:
+            status = "error"
+            error = str(e)
+            result = {"status": "error", "detail": error}
+            return result
+        finally:
+            try:
+                from app.core.pipeline.tracer import record_tool_span
+                latency_ms = int((time.time() - start) * 1000)
+                record_tool_span(
+                    tool_name=name,
+                    params=params or {},
+                    result=result if "result" in locals() else None,
+                    latency_ms=latency_ms,
+                    status=status,
+                    error=error,
+                    parent_id=parent_span_id,
+                )
+            except Exception:
+                pass
 
     async def list_tools(self, tenant_id: str) -> list[dict]:
         return crud.list_tools(tenant_id)

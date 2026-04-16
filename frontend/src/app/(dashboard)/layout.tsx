@@ -18,6 +18,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     { href: '/prompts', label: t('nav.prompts'), icon: '✏️' },
     { href: '/behavior', label: t('nav.behavior'), icon: '🧠' },
     { href: '/enhance', label: t('nav.enhance'), icon: '🧰' },
+    { href: '/studio', label: t('nav.studio'), icon: '🧬' },
     { href: '/integrations', label: t('nav.deploy'), icon: '🔌' },
     { href: '/settings', label: t('nav.settings'), icon: '⚙️' },
   ]
