@@ -3,9 +3,11 @@
 import { useEffect, useState } from 'react';
 import { getConfig, updateConfig, listModels } from '@/lib/referee-api';
 import { domain } from '@/lib/referee-config';
+import { useI18n } from '@/lib/i18n';
 import type { ModelInfo, SystemConfig } from '@/types/referee';
 
 export default function SettingsPage() {
+  const { t } = useI18n();
   const [config, setConfig] = useState<SystemConfig | null>(null);
   const [models, setModels] = useState<ModelInfo[]>([]);
   const [loading, setLoading] = useState(true);
@@ -38,7 +40,7 @@ export default function SettingsPage() {
     try {
       const updated = await updateConfig(config);
       setConfig(updated);
-      setToast({ type: 'success', message: 'Settings saved successfully' });
+      setToast({ type: 'success', message: t('referee.settings.saved') });
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       setToast({ type: 'error', message: `Failed to save: ${msg}` });
@@ -58,7 +60,7 @@ export default function SettingsPage() {
       <div className="flex h-screen items-center justify-center">
         <div className="flex items-center gap-3 text-zinc-400">
           <div className="h-5 w-5 animate-spin rounded-full border-2 border-zinc-600 border-t-blue-500" />
-          Loading settings...
+          {t('referee.settings.loading')}
         </div>
       </div>
     );
@@ -80,7 +82,7 @@ export default function SettingsPage() {
     <div className="p-8">
       <div className="mb-8 flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight text-zinc-100">Settings</h1>
+          <h1 className="text-2xl font-bold tracking-tight text-zinc-100">{t('referee.settings.title')}</h1>
           <p className="mt-1 text-sm text-zinc-500">Configure {domain.name} behavior</p>
         </div>
         <button
@@ -91,10 +93,10 @@ export default function SettingsPage() {
           {saving ? (
             <span className="flex items-center gap-2">
               <span className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-zinc-400 border-t-white" />
-              Saving...
+              {t('referee.settings.saving')}
             </span>
           ) : (
-            'Save Settings'
+            t('referee.settings.save')
           )}
         </button>
       </div>
@@ -115,11 +117,11 @@ export default function SettingsPage() {
       <div className="space-y-6">
         {/* Models Section */}
         <div className="rounded-xl border border-zinc-800 bg-zinc-900/50 p-6">
-          <h2 className="mb-4 text-sm font-semibold text-zinc-300">Model Configuration</h2>
+          <h2 className="mb-4 text-sm font-semibold text-zinc-300">{t('referee.settings.modelConfig')}</h2>
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
             <div>
               <label className="mb-1.5 block text-xs font-medium text-zinc-400">
-                Primary Model
+                {t('referee.settings.primaryModel')}
               </label>
               <select
                 value={config.primary_model}
@@ -136,7 +138,7 @@ export default function SettingsPage() {
             </div>
             <div>
               <label className="mb-1.5 block text-xs font-medium text-zinc-400">
-                Backup Model
+                {t('referee.settings.backupModel')}
               </label>
               <select
                 value={config.backup_model}
@@ -155,7 +157,7 @@ export default function SettingsPage() {
             </div>
             <div>
               <label className="mb-1.5 block text-xs font-medium text-zinc-400">
-                Triage Model
+                {t('referee.settings.triageModel')}
               </label>
               <select
                 value={config.triage_model}
@@ -178,13 +180,13 @@ export default function SettingsPage() {
         {/* Thresholds Section */}
         <div className="rounded-xl border border-zinc-800 bg-zinc-900/50 p-6">
           <h2 className="mb-4 text-sm font-semibold text-zinc-300">
-            {domain.terms.confidence} Thresholds
+            {t('referee.settings.thresholds')}
           </h2>
           <div className="grid grid-cols-1 gap-6 sm:grid-cols-2">
             <div>
               <div className="mb-2 flex items-center justify-between">
                 <label className="text-xs font-medium text-zinc-400">
-                  Auto Decide Threshold
+                  {t('referee.settings.autoDecide')}
                 </label>
                 <span className="font-mono text-sm font-bold text-emerald-400">
                   {config.auto_decide_threshold.toFixed(2)}
@@ -210,7 +212,7 @@ export default function SettingsPage() {
             <div>
               <div className="mb-2 flex items-center justify-between">
                 <label className="text-xs font-medium text-zinc-400">
-                  Human Confirm Threshold
+                  {t('referee.settings.humanConfirm')}
                 </label>
                 <span className="font-mono text-sm font-bold text-amber-400">
                   {config.human_confirm_threshold.toFixed(2)}
@@ -292,14 +294,14 @@ export default function SettingsPage() {
         {/* Voting Section */}
         <div className="rounded-xl border border-zinc-800 bg-zinc-900/50 p-6">
           <h2 className="mb-4 text-sm font-semibold text-zinc-300">
-            Multi-Model Voting
+            {t('referee.settings.multiModelVoting')}
           </h2>
           <div className="space-y-5">
             {/* Toggles */}
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
               <div className="flex items-center justify-between rounded-lg border border-zinc-800 p-4">
                 <div>
-                  <p className="text-sm font-medium text-zinc-200">Dual Model</p>
+                  <p className="text-sm font-medium text-zinc-200">{t('referee.settings.dualModel')}</p>
                   <p className="text-[10px] text-zinc-500">
                     Cross-verify with a second model
                   </p>
@@ -319,7 +321,7 @@ export default function SettingsPage() {
               </div>
               <div className="flex items-center justify-between rounded-lg border border-zinc-800 p-4">
                 <div>
-                  <p className="text-sm font-medium text-zinc-200">Triple Model</p>
+                  <p className="text-sm font-medium text-zinc-200">{t('referee.settings.tripleModel')}</p>
                   <p className="text-[10px] text-zinc-500">
                     Three-way voting for maximum accuracy
                   </p>
@@ -343,7 +345,7 @@ export default function SettingsPage() {
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
               <div>
                 <label className="mb-1.5 block text-xs font-medium text-zinc-400">
-                  Consistency Samples
+                  {t('referee.settings.samples')}
                 </label>
                 <input
                   type="number"
@@ -361,7 +363,7 @@ export default function SettingsPage() {
               </div>
               <div>
                 <div className="mb-2 flex items-center justify-between">
-                  <label className="text-xs font-medium text-zinc-400">Temperature</label>
+                  <label className="text-xs font-medium text-zinc-400">{t('referee.settings.temperature')}</label>
                   <span className="font-mono text-sm font-bold text-violet-400">
                     {config.temperature.toFixed(2)}
                   </span>
@@ -391,7 +393,7 @@ export default function SettingsPage() {
             disabled={saving}
             className="rounded-lg bg-blue-600 px-8 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-blue-500 disabled:cursor-not-allowed disabled:bg-zinc-800 disabled:text-zinc-500"
           >
-            {saving ? 'Saving...' : 'Save Settings'}
+            {saving ? t('referee.settings.saving') : t('referee.settings.save')}
           </button>
         </div>
       </div>

@@ -3,9 +3,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { searchRules, listRuleSources, listRules } from '@/lib/referee-api';
 import { domain } from '@/lib/referee-config';
+import { useI18n } from '@/lib/i18n';
 import type { RuleItem, RuleSource } from '@/types/referee';
 
 export default function KnowledgePage() {
+  const { t } = useI18n();
   const [sources, setSources] = useState<RuleSource[]>([]);
   const [activeSource, setActiveSource] = useState<string | undefined>(undefined);
   const [rules, setRules] = useState<RuleItem[]>([]);
@@ -68,10 +70,10 @@ export default function KnowledgePage() {
     <div className="p-8">
       <div className="mb-8">
         <h1 className="text-2xl font-bold tracking-tight text-zinc-100">
-          {domain.terms.knowledgeBase}
+          {t('referee.knowledge.title')}
         </h1>
         <p className="mt-1 text-sm text-zinc-500">
-          Browse and search the {domain.terms.rule.toLowerCase()} database
+          {t('referee.knowledge.desc')}
         </p>
       </div>
 
@@ -95,7 +97,7 @@ export default function KnowledgePage() {
             type="text"
             value={searchQuery}
             onChange={(e) => handleSearchChange(e.target.value)}
-            placeholder={`Search ${domain.terms.rule.toLowerCase()}s by keyword or topic...`}
+            placeholder={t('referee.knowledge.searchPlaceholder')}
             className="w-full rounded-xl border border-zinc-700 bg-zinc-900/50 py-3 pl-10 pr-4 text-sm placeholder-zinc-500 outline-none transition-colors focus:border-blue-500"
           />
           {searchLoading && (
@@ -120,7 +122,7 @@ export default function KnowledgePage() {
                 : 'border-zinc-700 bg-zinc-800/50 text-zinc-400 hover:border-zinc-600'
             }`}
           >
-            All Sources
+            {t('referee.knowledge.allSources')}
           </button>
           {sources.map((src) => (
             <button
@@ -146,15 +148,15 @@ export default function KnowledgePage() {
       <div className="mb-6 flex items-center gap-6 rounded-xl border border-zinc-800 bg-zinc-900/50 px-6 py-3">
         <div className="text-xs text-zinc-400">
           <span className="mr-1 font-mono text-sm font-bold text-zinc-200">{totalRules}</span>
-          {domain.terms.rule}s
+          {t('referee.knowledge.totalRules')}
         </div>
         <div className="text-xs text-zinc-400">
           <span className="mr-1 font-mono text-sm font-bold text-amber-400">{judgmentPct}%</span>
-          Requires Judgment
+          {t('referee.knowledge.requiresJudgment')}
         </div>
         <div className="text-xs text-zinc-400">
           <span className="mr-1 font-mono text-sm font-bold text-violet-400">{topics.size}</span>
-          Topics
+          {t('referee.knowledge.topics')}
         </div>
       </div>
 
@@ -169,12 +171,12 @@ export default function KnowledgePage() {
         <div className="flex items-center justify-center py-16">
           <div className="flex items-center gap-3 text-zinc-400">
             <div className="h-5 w-5 animate-spin rounded-full border-2 border-zinc-600 border-t-blue-500" />
-            Loading {domain.terms.rule.toLowerCase()}s...
+            {t('referee.knowledge.loading')}
           </div>
         </div>
       ) : rules.length === 0 ? (
         <div className="flex items-center justify-center rounded-xl border border-dashed border-zinc-700 bg-zinc-900/20 p-16 text-sm text-zinc-500">
-          No {domain.terms.rule.toLowerCase()}s found
+          {t('referee.knowledge.noRules')}
           {searchQuery.trim() ? ` for "${searchQuery}"` : ''}.
         </div>
       ) : (
@@ -198,7 +200,7 @@ export default function KnowledgePage() {
                     <div className="mt-1.5 flex flex-wrap items-center gap-2">
                       {rule.requires_judgment && (
                         <span className="rounded border border-amber-500/40 bg-amber-950/50 px-2 py-0.5 text-[10px] font-medium text-amber-400">
-                          Requires Judgment
+                          {t('referee.knowledge.requiresJudgment')}
                         </span>
                       )}
                       {rule.topic && (

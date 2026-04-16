@@ -61,11 +61,11 @@ DEFAULT_DOMAIN_CONFIGS: dict[str, dict] = {
     },
     "referee": {
         "nav": [
-            {"href": "/overview",   "label": "Dashboard",    "icon": "📊"},
-            {"href": "/chat",       "label": "Submit Ruling","icon": "📝"},
-            {"href": "/history",    "label": "History",      "icon": "📋"},
-            {"href": "/knowledge",  "label": "Rule Library", "icon": "📚"},
-            {"href": "/settings",   "label": "Settings",     "icon": "⚙️"},
+            {"href": "/overview",   "label": "nav.referee.dashboard", "icon": "📊"},
+            {"href": "/chat",       "label": "nav.referee.submit",    "icon": "📝"},
+            {"href": "/history",    "label": "nav.referee.history",   "icon": "📋"},
+            {"href": "/knowledge",  "label": "nav.referee.knowledge", "icon": "📚"},
+            {"href": "/settings",   "label": "nav.referee.settings",  "icon": "⚙️"},
         ],
         "terms": {
             "case": "Dispute", "ruling": "Ruling", "rule": "Rule",

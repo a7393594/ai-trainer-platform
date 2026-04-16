@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { getAnalyticsSummary } from '@/lib/referee-api';
 import { domain, type ModeKey } from '@/lib/referee-config';
+import { useI18n } from '@/lib/i18n';
 import type { AnalyticsSummary } from '@/types/referee';
 
 const modeColorMap: Record<string, string> = {
@@ -32,6 +33,7 @@ const confidenceBucketColors: Record<string, string> = {
 };
 
 export default function DashboardPage() {
+  const { t } = useI18n();
   const [data, setData] = useState<AnalyticsSummary | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -48,7 +50,7 @@ export default function DashboardPage() {
       <div className="flex h-screen items-center justify-center">
         <div className="flex items-center gap-3 text-zinc-400">
           <div className="h-5 w-5 animate-spin rounded-full border-2 border-zinc-600 border-t-blue-500" />
-          Loading dashboard...
+          {t('referee.dashboard.loading')}
         </div>
       </div>
     );
@@ -74,29 +76,29 @@ export default function DashboardPage() {
     <div className="p-8">
       {/* Page Header */}
       <div className="mb-8">
-        <h1 className="text-2xl font-bold tracking-tight text-zinc-100">Dashboard</h1>
+        <h1 className="text-2xl font-bold tracking-tight text-zinc-100">{t('referee.dashboard.title')}</h1>
         <p className="mt-1 text-sm text-zinc-500">{domain.description}</p>
       </div>
 
       {/* KPI Cards */}
       <div className="mb-8 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <KPICard
-          label={`Total ${domain.terms.ruling}s`}
+          label={t('referee.dashboard.totalRulings')}
           value={data.total_rulings.toLocaleString()}
           accent="text-blue-400"
         />
         <KPICard
-          label={`Avg ${domain.terms.confidence}`}
+          label={t('referee.dashboard.avgConfidence')}
           value={`${(data.avg_confidence * 100).toFixed(1)}%`}
           accent="text-emerald-400"
         />
         <KPICard
-          label="Total Cost"
+          label={t('referee.dashboard.totalCost')}
           value={`$${data.total_cost_usd.toFixed(2)}`}
           accent="text-amber-400"
         />
         <KPICard
-          label="Avg Latency"
+          label={t('referee.dashboard.avgLatency')}
           value={`${(data.avg_latency_ms / 1000).toFixed(2)}s`}
           accent="text-violet-400"
         />
@@ -105,7 +107,7 @@ export default function DashboardPage() {
       <div className="mb-8 grid grid-cols-1 gap-6 lg:grid-cols-2">
         {/* Mode Distribution */}
         <div className="rounded-xl border border-zinc-800 bg-zinc-900/50 p-6">
-          <h2 className="mb-4 text-sm font-semibold text-zinc-300">Mode Distribution</h2>
+          <h2 className="mb-4 text-sm font-semibold text-zinc-300">{t('referee.dashboard.modeDistribution')}</h2>
           {/* Stacked bar */}
           <div className="mb-4 flex h-8 overflow-hidden rounded-lg">
             {Object.entries(data.mode_distribution).map(([mode, count]) => {
@@ -143,7 +145,7 @@ export default function DashboardPage() {
         {/* Confidence Buckets */}
         <div className="rounded-xl border border-zinc-800 bg-zinc-900/50 p-6">
           <h2 className="mb-4 text-sm font-semibold text-zinc-300">
-            {domain.terms.confidence} Distribution
+            {t('referee.dashboard.confidenceBuckets')}
           </h2>
           <div className="space-y-3">
             {Object.entries(data.confidence_buckets).map(([key, count]) => {
@@ -173,7 +175,7 @@ export default function DashboardPage() {
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
         {/* Model Usage */}
         <div className="rounded-xl border border-zinc-800 bg-zinc-900/50 p-6">
-          <h2 className="mb-4 text-sm font-semibold text-zinc-300">Model Usage</h2>
+          <h2 className="mb-4 text-sm font-semibold text-zinc-300">{t('referee.dashboard.modelUsage')}</h2>
           <div className="space-y-3">
             {Object.entries(data.model_usage).map(([model, count]) => {
               const pct = (count / maxModelUsage) * 100;
@@ -201,10 +203,10 @@ export default function DashboardPage() {
         {/* Recent Rulings */}
         <div className="rounded-xl border border-zinc-800 bg-zinc-900/50 p-6">
           <h2 className="mb-4 text-sm font-semibold text-zinc-300">
-            Recent {domain.terms.ruling}s
+            {t('referee.dashboard.recentRulings')}
           </h2>
           {data.recent_rulings.length === 0 ? (
-            <p className="text-sm text-zinc-500">No rulings yet.</p>
+            <p className="text-sm text-zinc-500">{t('referee.dashboard.noRulings')}</p>
           ) : (
             <div className="space-y-2">
               {data.recent_rulings.slice(0, 5).map((r) => (

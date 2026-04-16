@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { submitRuling } from '@/lib/referee-api';
 import { domain, type ModeKey } from '@/lib/referee-config';
 import type { RulingResult } from '@/types/referee';
+import { useI18n } from '@/lib/i18n';
 
 const modeBadgeMap: Record<string, string> = {
   A: 'text-emerald-400 bg-emerald-950/50 border-emerald-500/40',
@@ -13,6 +14,7 @@ const modeBadgeMap: Record<string, string> = {
 };
 
 export default function SubmitPage() {
+  const { t } = useI18n();
   const [dispute, setDispute] = useState('');
   const [contextValues, setContextValues] = useState<Record<string, string>>(() => {
     const init: Record<string, string> = {};
@@ -61,10 +63,10 @@ export default function SubmitPage() {
     <div className="p-8">
       <div className="mb-8">
         <h1 className="text-2xl font-bold tracking-tight text-zinc-100">
-          Submit {domain.terms.case}
+          {t('referee.submit.title')}
         </h1>
         <p className="mt-1 text-sm text-zinc-500">
-          Describe the situation and get an AI {domain.terms.ruling.toLowerCase()}
+          {t('referee.submit.disputePlaceholder')}
         </p>
       </div>
 
@@ -73,19 +75,19 @@ export default function SubmitPage() {
         <div className="lg:col-span-2 space-y-6">
           <div className="rounded-xl border border-zinc-800 bg-zinc-900/50 p-6">
             <h2 className="mb-4 text-sm font-semibold text-zinc-300">
-              {domain.terms.case} Details
+              {t('referee.submit.gameContext')}
             </h2>
 
             {/* Dispute textarea */}
             <div className="space-y-4">
               <div>
                 <label className="mb-1.5 block text-xs font-medium text-zinc-400">
-                  {domain.terms.case} Description
+                  {t('referee.submit.disputeLabel')}
                 </label>
                 <textarea
                   value={dispute}
                   onChange={(e) => setDispute(e.target.value)}
-                  placeholder="Describe what happened...\ne.g. Player pushed chips forward twice without verbal declaration"
+                  placeholder={t('referee.submit.disputePlaceholder')}
                   rows={5}
                   className="w-full rounded-lg border border-zinc-700 bg-zinc-950 px-4 py-3 text-sm placeholder-zinc-600 outline-none transition-colors focus:border-blue-500"
                 />
@@ -126,7 +128,7 @@ export default function SubmitPage() {
               {/* Model mode toggle */}
               <div>
                 <label className="mb-2 block text-xs font-medium text-zinc-400">
-                  Verification Mode
+                  {t('referee.submit.verificationMode')}
                 </label>
                 <div className="flex gap-2">
                   {(['single', 'dual', 'triple'] as const).map((mode) => (
@@ -140,10 +142,10 @@ export default function SubmitPage() {
                       }`}
                     >
                       {mode === 'single'
-                        ? 'Single Model'
+                        ? t('referee.submit.singleModel')
                         : mode === 'dual'
-                          ? 'Dual Model'
-                          : 'Triple Model'}
+                          ? t('referee.submit.dualModel')
+                          : t('referee.submit.tripleModel')}
                     </button>
                   ))}
                 </div>
@@ -165,10 +167,10 @@ export default function SubmitPage() {
                 {loading ? (
                   <span className="flex items-center justify-center gap-2">
                     <span className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-zinc-400 border-t-white" />
-                    Analyzing {domain.terms.case}...
+                    {t('referee.submit.analyzing')}
                   </span>
                 ) : (
-                  `Submit ${domain.terms.ruling} Request`
+                  t('referee.submit.submit')
                 )}
               </button>
             </div>
@@ -204,7 +206,7 @@ export default function SubmitPage() {
               {/* Decision */}
               <div className="rounded-xl border border-zinc-800 bg-zinc-900/50 p-6">
                 <div className="mb-3 flex items-start justify-between">
-                  <h2 className="text-lg font-bold text-zinc-100">{domain.terms.ruling}</h2>
+                  <h2 className="text-lg font-bold text-zinc-100">{t('referee.submit.decision')}</h2>
                   <span
                     className={`rounded-lg border px-3 py-1 text-xs font-medium ${
                       modeBadgeMap[result.confidence?.routing_mode] || ''
@@ -230,7 +232,7 @@ export default function SubmitPage() {
               {/* Confidence */}
               <div className="rounded-xl border border-zinc-800 bg-zinc-900/50 p-5">
                 <h3 className="mb-3 text-sm font-semibold text-zinc-300">
-                  {domain.terms.confidence}
+                  {t('referee.submit.confidence')}
                 </h3>
                 <div className="grid grid-cols-4 gap-3 text-center">
                   {(
@@ -275,7 +277,7 @@ export default function SubmitPage() {
 
               {/* Reasoning */}
               <div className="rounded-xl border border-zinc-800 bg-zinc-900/50 p-5">
-                <h3 className="mb-2 text-sm font-semibold text-zinc-300">Reasoning</h3>
+                <h3 className="mb-2 text-sm font-semibold text-zinc-300">{t('referee.submit.reasoning')}</h3>
                 <p className="whitespace-pre-wrap text-xs leading-relaxed text-zinc-400">
                   {result.reasoning}
                 </p>
@@ -284,7 +286,7 @@ export default function SubmitPage() {
               {/* Subsequent Steps */}
               {result.subsequent_steps?.length > 0 && (
                 <div className="rounded-xl border border-zinc-800 bg-zinc-900/50 p-5">
-                  <h3 className="mb-2 text-sm font-semibold text-zinc-300">Next Steps</h3>
+                  <h3 className="mb-2 text-sm font-semibold text-zinc-300">{t('referee.submit.nextSteps')}</h3>
                   <ol className="list-inside list-decimal space-y-1.5 text-xs text-zinc-400">
                     {result.subsequent_steps.map((s, i) => (
                       <li key={i}>{s}</li>
@@ -297,11 +299,11 @@ export default function SubmitPage() {
               {result.voting && (
                 <div className="rounded-xl border border-zinc-800 bg-zinc-900/50 p-5">
                   <h3 className="mb-3 text-sm font-semibold text-zinc-300">
-                    Multi-Model Verification:{' '}
+                    {t('referee.submit.voting')}:{' '}
                     {result.voting.agreement ? (
-                      <span className="text-emerald-400">Agreed</span>
+                      <span className="text-emerald-400">{t('referee.submit.agreed')}</span>
                     ) : (
-                      <span className="text-amber-400">Diverged</span>
+                      <span className="text-amber-400">{t('referee.submit.diverged')}</span>
                     )}
                   </h3>
                   <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
@@ -330,7 +332,7 @@ export default function SubmitPage() {
               {result.rules_retrieved?.length > 0 && (
                 <div className="rounded-xl border border-zinc-800 bg-zinc-900/50 p-5">
                   <h3 className="mb-3 text-sm font-semibold text-zinc-300">
-                    {domain.terms.rule}s Retrieved
+                    {t('referee.submit.rulesRetrieved')}
                   </h3>
                   <div className="space-y-2">
                     {result.rules_retrieved.map((rule, i) => (

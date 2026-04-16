@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { getRulingHistory } from '@/lib/referee-api';
 import { domain, type ModeKey } from '@/lib/referee-config';
+import { useI18n } from '@/lib/i18n';
 import type { RulingHistory } from '@/types/referee';
 
 const modeBadgeMap: Record<string, string> = {
@@ -41,6 +42,7 @@ function formatDate(dateStr: string): string {
 }
 
 export default function HistoryPage() {
+  const { t } = useI18n();
   const [rulings, setRulings] = useState<RulingHistory[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -57,7 +59,7 @@ export default function HistoryPage() {
       <div className="flex h-screen items-center justify-center">
         <div className="flex items-center gap-3 text-zinc-400">
           <div className="h-5 w-5 animate-spin rounded-full border-2 border-zinc-600 border-t-blue-500" />
-          Loading history...
+          {t('referee.history.loading')}
         </div>
       </div>
     );
@@ -67,10 +69,10 @@ export default function HistoryPage() {
     <div className="p-8">
       <div className="mb-8">
         <h1 className="text-2xl font-bold tracking-tight text-zinc-100">
-          {domain.terms.ruling} History
+          {t('referee.history.title')}
         </h1>
         <p className="mt-1 text-sm text-zinc-500">
-          Browse all past {domain.terms.ruling.toLowerCase()}s
+          {t('referee.history.desc')}
         </p>
       </div>
 
@@ -82,7 +84,7 @@ export default function HistoryPage() {
 
       {rulings.length === 0 && !error ? (
         <div className="flex items-center justify-center rounded-xl border border-dashed border-zinc-700 bg-zinc-900/20 p-16 text-sm text-zinc-500">
-          No {domain.terms.ruling.toLowerCase()}s found. Submit one to get started.
+          {t('referee.history.noRulings')}
         </div>
       ) : (
         <div className="rounded-xl border border-zinc-800 bg-zinc-900/50 overflow-hidden">
@@ -90,12 +92,12 @@ export default function HistoryPage() {
             <table className="w-full">
               <thead>
                 <tr className="border-b border-zinc-800 text-left text-xs font-medium uppercase tracking-wider text-zinc-500">
-                  <th className="px-4 py-3">Time</th>
-                  <th className="px-4 py-3">{domain.terms.case} Preview</th>
-                  <th className="px-4 py-3">{domain.terms.rule}s</th>
-                  <th className="px-4 py-3 text-center">{domain.terms.confidence}</th>
-                  <th className="px-4 py-3 text-center">Mode</th>
-                  <th className="px-4 py-3 text-right">Cost</th>
+                  <th className="px-4 py-3">{t('referee.history.time')}</th>
+                  <th className="px-4 py-3">{t('referee.history.casePreview')}</th>
+                  <th className="px-4 py-3">{t('referee.history.rules')}</th>
+                  <th className="px-4 py-3 text-center">{t('referee.history.confidence')}</th>
+                  <th className="px-4 py-3 text-center">{t('referee.history.mode')}</th>
+                  <th className="px-4 py-3 text-right">{t('referee.history.cost')}</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-zinc-800/50">
