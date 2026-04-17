@@ -707,14 +707,22 @@ class AgentOrchestrator:
         """建立新的訓練會話"""
         return crud.create_session(project_id, user_id, "freeform")
 
-    async def _load_history(self, session_id: str) -> list:
-        """載入對話歷史，轉為 LLM 格式"""
+    async def _load_history(self, session_id: str, exclude_last_user: bool = True) -> list:
+        """載入對話歷史，轉為 LLM 格式。
+
+        Args:
+            exclude_last_user: 排除最後一條 user message（避免與 messages.append 重複）
+        """
         messages = crud.list_messages(session_id)
-        return [
+        history = [
             {"role": m["role"], "content": m["content"]}
             for m in messages
             if m["role"] in ("user", "assistant")
         ]
+        # 排除最後一條 user message（因為 process_stream 會在之後手動 append）
+        if exclude_last_user and history and history[-1]["role"] == "user":
+            history = history[:-1]
+        return history
 
     async def _load_active_prompt(self, project_id: str) -> Optional[str]:
         """載入專案目前使用的系統提示詞"""

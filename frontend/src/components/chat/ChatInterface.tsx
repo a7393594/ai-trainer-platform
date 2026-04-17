@@ -44,9 +44,24 @@ export function ChatInterface({
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
   const [sessionId, setSessionId] = useState(initialSessionId)
+  const sessionIdRef = useRef(initialSessionId) // 即時追蹤最新 session_id
   const [onboardingProgress, setOnboardingProgress] = useState<{ current: number; total: number } | null>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
   const { t } = useI18n()
+
+  // 同步 ref 到最新 state
+  const updateSessionId = useCallback((sid: string) => {
+    sessionIdRef.current = sid
+    setSessionId(sid)
+  }, [])
+
+  // 同步外部 sessionId prop 到 ref
+  useEffect(() => {
+    if (initialSessionId) {
+      sessionIdRef.current = initialSessionId
+      setSessionId(initialSessionId)
+    }
+  }, [initialSessionId])
 
   // 自動滾到底
   useEffect(() => {
@@ -79,7 +94,7 @@ export function ChatInterface({
           metadata: m.metadata,
         }))
       setMessages(items)
-      setSessionId(sid)
+      updateSessionId(sid)
     } catch (err) {
       console.error('Failed to load session history:', err)
     }
@@ -90,7 +105,7 @@ export function ChatInterface({
     setLoading(true)
     try {
       const response = await startOnboarding(projectId, userId, 'poker')
-      setSessionId(response.session_id)
+      updateSessionId(response.session_id)
       const progress = response.metadata?.progress
       if (progress) {
         setOnboardingProgress({ current: progress.current, total: progress.total })
@@ -124,7 +139,7 @@ export function ChatInterface({
       await sendMessageStream(
         {
           project_id: projectId,
-          session_id: sessionId,
+          session_id: sessionIdRef.current, // 用 ref 確保最新值
           user_id: userId,
           message: userMsg.content,
           model,
@@ -137,9 +152,9 @@ export function ChatInterface({
             )
           )
         },
-        // onDone: 更新 message_id + session_id
+        // onDone: 更新 message_id + session_id（永遠更新，不只第一次）
         (sid, messageId) => {
-          if (!sessionId) setSessionId(sid)
+          if (sid) updateSessionId(sid)
           setMessages((prev) =>
             prev.map((m) =>
               m.id === streamingId ? { ...m, id: messageId } : m
@@ -170,7 +185,7 @@ export function ChatInterface({
 
   // 處理 AI 回覆
   const handleResponse = (response: ChatResponse) => {
-    if (!sessionId) setSessionId(response.session_id)
+    if (response.session_id) updateSessionId(response.session_id)
 
     // 更新 onboarding 進度
     const progress = response.metadata?.progress
