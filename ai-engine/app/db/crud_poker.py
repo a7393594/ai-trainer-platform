@@ -1,13 +1,17 @@
 """
 CRUD — Poker Coach 專用資料存取層
 
-Tables: ait_student_profiles, ait_concepts, ait_user_concept_mastery
+Tables: ait_student_profiles, ait_concepts, ait_user_concept_mastery,
+        ait_hand_histories, ait_upload_batches, ait_stats_snapshots
 """
 from typing import Optional
 from app.db.supabase import get_supabase
 
 T_PROFILES = "ait_student_profiles"
 T_CONCEPTS = "ait_concepts"
+T_HANDS = "ait_hand_histories"
+T_UPLOADS = "ait_upload_batches"
+T_STATS = "ait_stats_snapshots"
 T_MASTERY = "ait_user_concept_mastery"
 
 
@@ -158,3 +162,99 @@ def record_concept_exposure(user_id: str, concept_id: str, correct: bool) -> dic
     }).eq("id", r["id"]).execute()
 
     return updated.data[0] if updated.data else r
+
+
+# ============================================
+# Upload Batches
+# ============================================
+
+def create_upload_batch(user_id: str, project_id: str, filename: str, source: str = "pokerstars") -> dict:
+    return get_supabase().table(T_UPLOADS).insert({
+        "user_id": user_id, "project_id": project_id,
+        "filename": filename, "source": source,
+    }).execute().data[0]
+
+
+def update_upload_batch(batch_id: str, updates: dict) -> dict:
+    result = get_supabase().table(T_UPLOADS).update(updates).eq("id", batch_id).execute()
+    return result.data[0] if result.data else {}
+
+
+def list_upload_batches(user_id: str, project_id: str) -> list[dict]:
+    return (
+        get_supabase().table(T_UPLOADS).select("*")
+        .eq("user_id", user_id).eq("project_id", project_id)
+        .order("created_at", desc=True).limit(50).execute()
+    ).data
+
+
+# ============================================
+# Hand Histories
+# ============================================
+
+def create_hand_history(data: dict) -> Optional[dict]:
+    """Insert a single hand, skip on conflict (duplicate hand_id)."""
+    try:
+        result = get_supabase().table(T_HANDS).insert(data).execute()
+        return result.data[0] if result.data else None
+    except Exception:
+        return None  # duplicate or error
+
+
+def bulk_insert_hands(hands: list[dict]) -> int:
+    """Bulk insert hands, skip duplicates."""
+    if not hands:
+        return 0
+    inserted = 0
+    for h in hands:
+        if create_hand_history(h):
+            inserted += 1
+    return inserted
+
+
+def list_hand_histories(user_id: str, project_id: str, limit: int = 100, offset: int = 0) -> list[dict]:
+    return (
+        get_supabase().table(T_HANDS)
+        .select("id, hand_id, source, game_type, stakes, hero_position, hero_cards, board, hero_net_bb, played_at, created_at")
+        .eq("user_id", user_id).eq("project_id", project_id)
+        .order("played_at", desc=True)
+        .range(offset, offset + limit - 1)
+        .execute()
+    ).data
+
+
+def get_hand_history(hand_id: str) -> Optional[dict]:
+    result = get_supabase().table(T_HANDS).select("*").eq("id", hand_id).execute()
+    return result.data[0] if result.data else None
+
+
+def count_hands(user_id: str, project_id: str) -> int:
+    result = get_supabase().table(T_HANDS).select("id", count="exact").eq(
+        "user_id", user_id
+    ).eq("project_id", project_id).execute()
+    return len(result.data) if result.data else 0
+
+
+# ============================================
+# Stats Snapshots
+# ============================================
+
+def create_stats_snapshot(data: dict) -> dict:
+    return get_supabase().table(T_STATS).insert(data).execute().data[0]
+
+
+def get_latest_stats(user_id: str, project_id: str) -> Optional[dict]:
+    result = (
+        get_supabase().table(T_STATS).select("*")
+        .eq("user_id", user_id).eq("project_id", project_id)
+        .order("created_at", desc=True).limit(1).execute()
+    )
+    return result.data[0] if result.data else None
+
+
+def list_stats_snapshots(user_id: str, project_id: str, limit: int = 20) -> list[dict]:
+    return (
+        get_supabase().table(T_STATS).select("*")
+        .eq("user_id", user_id).eq("project_id", project_id)
+        .order("created_at", desc=True).limit(limit).execute()
+    ).data

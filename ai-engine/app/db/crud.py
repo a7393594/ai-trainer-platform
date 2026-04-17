@@ -104,13 +104,15 @@ DEFAULT_DOMAIN_CONFIGS: dict[str, dict] = {
     },
     "poker_coach": {
         "nav": [
-            {"href": "/overview",   "label": "nav.overview",          "icon": "📊"},
-            {"href": "/chat",       "label": "nav.train",             "icon": "💬"},
-            {"href": "/knowledge",  "label": "nav.knowledge",         "icon": "📚"},
-            {"href": "/comparison", "label": "nav.comparison",        "icon": "⚖️"},
-            {"href": "/prompts",    "label": "nav.prompts",           "icon": "✏️"},
-            {"href": "/studio",     "label": "nav.studio",            "icon": "🧬"},
-            {"href": "/settings",   "label": "nav.settings",          "icon": "⚙️"},
+            {"href": "/overview",      "label": "nav.overview",          "icon": "📊"},
+            {"href": "/chat",          "label": "nav.train",             "icon": "💬"},
+            {"href": "/poker-stats",   "label": "nav.poker.stats",      "icon": "📈"},
+            {"href": "/poker-upload",  "label": "nav.poker.upload",     "icon": "📥"},
+            {"href": "/knowledge",     "label": "nav.knowledge",        "icon": "📚"},
+            {"href": "/comparison",    "label": "nav.comparison",       "icon": "⚖️"},
+            {"href": "/prompts",       "label": "nav.prompts",          "icon": "✏️"},
+            {"href": "/studio",        "label": "nav.studio",           "icon": "🧬"},
+            {"href": "/settings",      "label": "nav.settings",         "icon": "⚙️"},
         ],
         "terms": {
             "session": "Training Session",

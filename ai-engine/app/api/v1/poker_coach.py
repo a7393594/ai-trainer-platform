@@ -104,3 +104,132 @@ async def seed_concepts_endpoint(project_id: str = Query(...)):
     """Seed 30 KC 到指定專案"""
     count = seed_concepts(project_id)
     return {"status": "seeded", "count": count}
+
+
+# ============================================
+# Hand History Upload & Management
+# ============================================
+
+@router.post("/upload/hh")
+async def upload_hand_history(data: dict):
+    """上傳手牌歷史（純文字）→ 解析 → 存入 DB → 計算統計"""
+    from app.core.poker.hh_parser import detect_and_parse
+    from app.core.poker.stats_engine import compute_stats
+    from datetime import datetime, timezone
+
+    user_id = data.get("user_id")
+    project_id = data.get("project_id")
+    raw_text = data.get("raw_text", "")
+    filename = data.get("filename", "upload.txt")
+
+    if not user_id or not project_id or not raw_text.strip():
+        raise HTTPException(400, "user_id, project_id, raw_text required")
+
+    # Create upload batch
+    batch = crud_poker.create_upload_batch(user_id, project_id, filename)
+    batch_id = batch["id"]
+
+    # Parse
+    try:
+        hands = detect_and_parse(raw_text)
+    except Exception as e:
+        crud_poker.update_upload_batch(batch_id, {
+            "status": "error",
+            "error_log": [{"error": str(e)}],
+        })
+        raise HTTPException(400, f"Parse failed: {e}")
+
+    # Insert hands
+    rows = [h.to_db_row(user_id, project_id, batch_id) for h in hands]
+    inserted = crud_poker.bulk_insert_hands(rows)
+    failed = len(hands) - inserted
+
+    # Update batch
+    crud_poker.update_upload_batch(batch_id, {
+        "status": "completed",
+        "total_hands": len(hands),
+        "parsed_hands": inserted,
+        "failed_hands": failed,
+    })
+
+    # Compute fresh stats snapshot
+    all_hands_data = [h.to_dict() for h in hands]
+    stats = compute_stats(all_hands_data)
+
+    if stats.get("sample_size", 0) > 0:
+        crud_poker.create_stats_snapshot({
+            "user_id": user_id,
+            "project_id": project_id,
+            "period_start": datetime.now(timezone.utc).isoformat(),
+            "period_end": datetime.now(timezone.utc).isoformat(),
+            "sample_size": stats["sample_size"],
+            "stats": stats,
+            "stats_by_position": stats.get("by_position", {}),
+            "game_type": hands[0].game_type if hands else "nlh",
+        })
+
+    return {
+        "status": "completed",
+        "batch_id": batch_id,
+        "total_hands": len(hands),
+        "inserted": inserted,
+        "failed": failed,
+        "stats_preview": {
+            k: stats.get(k) for k in ["sample_size", "vpip", "pfr", "three_bet", "bb_per_100"]
+        },
+    }
+
+
+@router.get("/hands")
+async def list_hands(
+    user_id: str = Query(...),
+    project_id: str = Query(...),
+    limit: int = Query(50, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+):
+    """列出已解析的手牌"""
+    hands = crud_poker.list_hand_histories(user_id, project_id, limit, offset)
+    total = crud_poker.count_hands(user_id, project_id)
+    return {"hands": hands, "total": total}
+
+
+@router.get("/hands/{hand_id}")
+async def get_hand(hand_id: str):
+    """取得單手完整資料（含 parsed_json）"""
+    hand = crud_poker.get_hand_history(hand_id)
+    if not hand:
+        raise HTTPException(404, "Hand not found")
+    return hand
+
+
+@router.get("/stats")
+async def get_stats(user_id: str = Query(...), project_id: str = Query(...)):
+    """取得最新統計快照"""
+    latest = crud_poker.get_latest_stats(user_id, project_id)
+    if not latest:
+        return {"stats": None, "message": "No stats yet. Upload hand histories first."}
+    return {
+        "stats": latest.get("stats", {}),
+        "by_position": latest.get("stats_by_position", {}),
+        "sample_size": latest.get("sample_size", 0),
+        "period_start": latest.get("period_start"),
+        "created_at": latest.get("created_at"),
+    }
+
+
+@router.get("/stats/history")
+async def get_stats_history(
+    user_id: str = Query(...),
+    project_id: str = Query(...),
+    limit: int = Query(20, ge=1, le=100),
+):
+    """取得統計快照歷史（用於趨勢圖）"""
+    snapshots = crud_poker.list_stats_snapshots(user_id, project_id, limit)
+    return {"snapshots": snapshots}
+
+
+@router.get("/uploads")
+async def list_uploads(user_id: str = Query(...), project_id: str = Query(...)):
+    """列出上傳批次"""
+    batches = crud_poker.list_upload_batches(user_id, project_id)
+    return {"batches": batches}
