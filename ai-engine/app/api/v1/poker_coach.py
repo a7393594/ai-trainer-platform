@@ -359,3 +359,111 @@ async def get_review_hands(report_id: str):
         .execute()
     ).data
     return {"analyses": analyses}
+
+
+# ============================================
+# Phase 5: Opponent Simulation
+# ============================================
+
+@router.get("/opponent/archetypes")
+async def list_opponent_archetypes():
+    """列出所有對手原型"""
+    from app.core.poker.opponent_sim import list_archetypes
+    return {"archetypes": list_archetypes()}
+
+
+@router.post("/opponent/simulate")
+async def simulate_opponent(data: dict):
+    """模擬對手動作"""
+    from app.core.poker.opponent_sim import simulate_opponent_action
+    archetype = data.get("archetype", "tag")
+    game_state = data.get("game_state", {})
+    result = await simulate_opponent_action(archetype, game_state)
+    return result
+
+
+# ============================================
+# Phase 5: Screenshot OCR
+# ============================================
+
+@router.post("/screenshot/analyze")
+async def analyze_screenshot(data: dict):
+    """分析撲克牌桌截圖"""
+    from app.core.poker.screenshot_ocr import parse_table_screenshot
+    image_b64 = data.get("image_base64", "")
+    image_type = data.get("image_type", "image/png")
+    if not image_b64:
+        raise HTTPException(400, "image_base64 required")
+    result = await parse_table_screenshot(image_b64, image_type)
+    return result
+
+
+# ============================================
+# Phase 5: Session Reports
+# ============================================
+
+@router.post("/session-report/{session_id}")
+async def create_session_report(session_id: str, data: dict):
+    """產生 session 總結卡"""
+    from app.core.poker.session_reporter import generate_session_report
+    user_id = data.get("user_id", "")
+    project_id = data.get("project_id", "")
+    report = await generate_session_report(session_id, user_id, project_id)
+    return report
+
+
+@router.get("/session-reports")
+async def list_session_reports(user_id: str = Query(...), project_id: str = Query(...)):
+    """列出 session 報告"""
+    from app.db.supabase import get_supabase
+    reports = (
+        get_supabase().table("ait_session_reports")
+        .select("id, session_id, report_json, created_at")
+        .eq("user_id", user_id).eq("project_id", project_id)
+        .order("created_at", desc=True).limit(20)
+        .execute()
+    ).data
+    return {"reports": reports}
+
+
+# ============================================
+# Phase 6: Cost Monitoring
+# ============================================
+
+@router.get("/admin/costs")
+async def get_costs(project_id: str = Query(...), days: int = Query(30)):
+    """取得成本摘要"""
+    from app.core.poker.cost_monitor import get_cost_summary
+    return get_cost_summary(project_id, days)
+
+
+@router.get("/admin/cache-stats")
+async def get_cache_stats_endpoint():
+    """取得快取統計"""
+    from app.core.poker.cache import get_cache_stats
+    return get_cache_stats()
+
+
+@router.post("/admin/cost-alert")
+async def create_cost_alert(data: dict):
+    """建立成本告警"""
+    from app.db.supabase import get_supabase
+    project_id = data.get("project_id")
+    alert_type = data.get("alert_type", "daily_limit")
+    threshold = data.get("threshold_usd", 50)
+    if not project_id:
+        raise HTTPException(400, "project_id required")
+    result = get_supabase().table("ait_cost_alerts").insert({
+        "project_id": project_id,
+        "alert_type": alert_type,
+        "threshold_usd": threshold,
+    }).execute()
+    return {"status": "created", "alert": result.data[0] if result.data else {}}
+
+
+@router.get("/admin/cost-alerts")
+async def list_cost_alerts(project_id: str = Query(...)):
+    """列出成本告警"""
+    from app.core.poker.cost_monitor import check_alerts
+    alerts = check_alerts(project_id)
+    return {"alerts": alerts}
