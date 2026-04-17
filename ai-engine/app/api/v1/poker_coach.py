@@ -233,3 +233,74 @@ async def list_uploads(user_id: str = Query(...), project_id: str = Query(...)):
     """列出上傳批次"""
     batches = crud_poker.list_upload_batches(user_id, project_id)
     return {"batches": batches}
+
+
+# ============================================
+# Deep Review
+# ============================================
+
+@router.post("/review/start")
+async def start_review(data: dict):
+    """啟動深度複盤分析"""
+    from app.core.poker.review.pipeline import run_review
+
+    user_id = data.get("user_id")
+    project_id = data.get("project_id")
+    hand_ids = data.get("hand_ids")
+    batch_id = data.get("batch_id")
+
+    if not user_id or not project_id:
+        raise HTTPException(400, "user_id and project_id required")
+
+    result = await run_review(user_id, project_id, hand_ids=hand_ids, batch_id=batch_id)
+    return result
+
+
+@router.get("/review/list")
+async def list_reviews(user_id: str = Query(...), project_id: str = Query(...)):
+    """列出所有複盤報告"""
+    from app.db.supabase import get_supabase
+    reports = (
+        get_supabase().table("ait_review_reports")
+        .select("id, hand_count, analyzed_count, status, summary, overall_ev_loss_mbb, top_weaknesses, created_at")
+        .eq("user_id", user_id).eq("project_id", project_id)
+        .order("created_at", desc=True).limit(20)
+        .execute()
+    ).data
+    return {"reports": reports}
+
+
+@router.get("/review/{report_id}")
+async def get_review(report_id: str):
+    """取得完整複盤報告"""
+    from app.db.supabase import get_supabase
+    report = (
+        get_supabase().table("ait_review_reports")
+        .select("*").eq("id", report_id).execute()
+    )
+    if not report.data:
+        raise HTTPException(404, "Report not found")
+
+    # Also load analyses for this report
+    analyses = (
+        get_supabase().table("ait_hand_analyses")
+        .select("*").eq("review_report_id", report_id)
+        .order("ev_loss_mbb", desc=True)
+        .execute()
+    ).data
+
+    return {"report": report.data[0], "analyses": analyses}
+
+
+@router.get("/review/{report_id}/hands")
+async def get_review_hands(report_id: str):
+    """取得複盤報告的手牌分析清單"""
+    from app.db.supabase import get_supabase
+    analyses = (
+        get_supabase().table("ait_hand_analyses")
+        .select("*, ait_hand_histories(hand_id, hero_cards, board, hero_position, hero_net_bb)")
+        .eq("review_report_id", report_id)
+        .order("ev_loss_mbb", desc=True)
+        .execute()
+    ).data
+    return {"analyses": analyses}

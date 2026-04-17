@@ -108,6 +108,7 @@ DEFAULT_DOMAIN_CONFIGS: dict[str, dict] = {
             {"href": "/chat",          "label": "nav.train",             "icon": "💬"},
             {"href": "/poker-stats",   "label": "nav.poker.stats",      "icon": "📈"},
             {"href": "/poker-upload",  "label": "nav.poker.upload",     "icon": "📥"},
+            {"href": "/poker-review",  "label": "nav.poker.review",    "icon": "🔍"},
             {"href": "/knowledge",     "label": "nav.knowledge",        "icon": "📚"},
             {"href": "/comparison",    "label": "nav.comparison",       "icon": "⚖️"},
             {"href": "/prompts",       "label": "nav.prompts",          "icon": "✏️"},
