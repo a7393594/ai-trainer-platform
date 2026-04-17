@@ -7,6 +7,7 @@ const AI = process.env.NEXT_PUBLIC_AI_ENGINE_URL || 'http://localhost:8000'
 
 interface ProfileData {
   profile: {
+    id: string
     level: string
     level_confidence: number
     scaffolding_stage: string
@@ -83,10 +84,29 @@ export function StudentProfilePanel({ userId, projectId }: { userId: string; pro
         <span className="text-[10px] text-zinc-500">({(p.level_confidence * 100).toFixed(0)}%)</span>
       </div>
 
-      {/* Scaffolding Stage */}
+      {/* Scaffolding Stage (編輯) */}
       <div className="rounded border border-zinc-700 bg-zinc-800/50 px-3 py-2">
-        <div className="text-[10px] text-zinc-500 mb-0.5">教學模式</div>
-        <div className="text-xs text-zinc-200">{stageLabels[p.scaffolding_stage] || p.scaffolding_stage}</div>
+        <div className="text-[10px] text-zinc-500 mb-1">教學模式</div>
+        <select
+          value={p.scaffolding_stage || 'modeling'}
+          onChange={async (e) => {
+            try {
+              await fetch(`${AI}/api/v1/poker/profile/update-scaffolding`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ profile_id: data?.profile?.id, scaffolding_stage: e.target.value }),
+              })
+              // Reload
+              const r = await fetch(`${AI}/api/v1/poker/profile?user_id=${userId}&project_id=${projectId}`)
+              setData(await r.json())
+            } catch {}
+          }}
+          className="w-full rounded border border-zinc-600 bg-zinc-900 px-2 py-1 text-xs text-zinc-200 outline-none focus:border-blue-500"
+        >
+          {Object.entries(stageLabels).map(([k, v]) => (
+            <option key={k} value={k}>{v}</option>
+          ))}
+        </select>
       </div>
 
       {/* Weaknesses */}

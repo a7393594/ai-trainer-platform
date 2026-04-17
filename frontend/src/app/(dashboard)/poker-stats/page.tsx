@@ -190,6 +190,57 @@ export default function PokerStatsPage() {
             )}
           </div>
         </div>
+
+        {/* Leak Severity Ranking (分析) */}
+        <div className="rounded-lg border border-zinc-700 bg-zinc-800/50 p-4 mt-6">
+          <h2 className="text-sm font-medium text-zinc-300 mb-3">Leak 嚴重度排名</h2>
+          <div className="space-y-2">
+            {(() => {
+              const leaks: { name: string; delta: number; severity: string }[] = []
+              for (const [key, ref] of Object.entries(GTO_REF)) {
+                const val = stats[key]
+                if (val == null) continue
+                const delta = val < ref.min ? ref.min - val : val > ref.max ? val - ref.max : 0
+                if (delta > 2) leaks.push({ name: ref.label, delta: Math.round(delta * 10) / 10, severity: delta > 10 ? 'critical' : delta > 5 ? 'major' : 'moderate' })
+              }
+              leaks.sort((a, b) => b.delta - a.delta)
+              if (leaks.length === 0) return <p className="text-xs text-emerald-400">所有指標均在 GTO 範圍內</p>
+              return leaks.map((l, i) => (
+                <div key={i} className="flex items-center justify-between rounded border border-zinc-700 px-3 py-2">
+                  <div className="flex items-center gap-2">
+                    <span className={`text-[10px] px-1.5 py-0.5 rounded border ${l.severity === 'critical' ? 'text-red-400 border-red-500/40 bg-red-950/50' : l.severity === 'major' ? 'text-amber-400 border-amber-500/40 bg-amber-950/50' : 'text-yellow-400 border-yellow-500/40 bg-yellow-950/50'}`}>{l.severity}</span>
+                    <span className="text-xs text-zinc-200">{l.name}</span>
+                  </div>
+                  <span className="text-xs font-mono text-red-400">偏差 {l.delta}%</span>
+                </div>
+              ))
+            })()}
+          </div>
+        </div>
+
+        {/* VPIP-PFR Gap Visual (觀察) */}
+        <div className="rounded-lg border border-zinc-700 bg-zinc-800/50 p-4 mt-4">
+          <h2 className="text-sm font-medium text-zinc-300 mb-3">翻前風格雷達</h2>
+          <div className="grid grid-cols-3 gap-4 text-center">
+            <div>
+              <div className="text-[10px] text-zinc-500 mb-1">緊度 (Tightness)</div>
+              <div className="text-lg font-bold font-mono text-blue-400">{(100 - stats.vpip).toFixed(0)}%</div>
+              <div className="text-[10px] text-zinc-600">{stats.vpip < 22 ? '偏緊' : stats.vpip > 28 ? '偏鬆' : '適中'}</div>
+            </div>
+            <div>
+              <div className="text-[10px] text-zinc-500 mb-1">侵略性 (Aggression)</div>
+              <div className="text-lg font-bold font-mono text-amber-400">{stats.af?.toFixed(1)}</div>
+              <div className="text-[10px] text-zinc-600">{stats.af < 2 ? '被動' : stats.af > 4 ? '超攻' : '均衡'}</div>
+            </div>
+            <div>
+              <div className="text-[10px] text-zinc-500 mb-1">VPIP-PFR Gap</div>
+              <div className={`text-lg font-bold font-mono ${stats.vpip - stats.pfr > 5 ? 'text-red-400' : 'text-emerald-400'}`}>
+                {(stats.vpip - stats.pfr).toFixed(1)}%
+              </div>
+              <div className="text-[10px] text-zinc-600">{stats.vpip - stats.pfr > 5 ? 'Limp 過多' : '健康'}</div>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
   )
