@@ -292,6 +292,61 @@ async def get_review(report_id: str):
     return {"report": report.data[0], "analyses": analyses}
 
 
+# ============================================
+# Learning Plan & FSRS
+# ============================================
+
+@router.get("/learning-plan")
+async def get_learning_plan(user_id: str = Query(...), project_id: str = Query(...)):
+    """取得學生的學習計畫"""
+    from app.core.poker.learning_plan import generate_plan
+    plan = generate_plan(user_id, project_id)
+    return plan
+
+
+@router.post("/mastery/review")
+async def record_review(data: dict):
+    """記錄一次概念複習結果（觸發 FSRS 排程更新）"""
+    from app.core.poker.fsrs import schedule_review
+    user_id = data.get("user_id")
+    concept_id = data.get("concept_id")
+    grade = data.get("grade", 3)  # 1=Again, 2=Hard, 3=Good, 4=Easy
+
+    if not user_id or not concept_id:
+        raise HTTPException(400, "user_id and concept_id required")
+
+    # Record exposure
+    correct = grade >= 3
+    crud_poker.record_concept_exposure(user_id, concept_id, correct)
+
+    # Get current FSRS state
+    from app.db.supabase import get_supabase
+    record = get_supabase().table("ait_user_concept_mastery").select("*").eq(
+        "user_id", user_id
+    ).eq("concept_id", concept_id).execute()
+
+    if record.data:
+        old_state = record.data[0].get("fsrs_state", {}) or {}
+        new_state = schedule_review(old_state, grade)
+        get_supabase().table("ait_user_concept_mastery").update({
+            "fsrs_state": new_state,
+            "next_review_at": new_state.get("next_review_at"),
+            "updated_at": "now()",
+        }).eq("id", record.data[0]["id"]).execute()
+        return {"status": "updated", "fsrs_state": new_state}
+
+    return {"status": "not_found"}
+
+
+@router.get("/due-reviews")
+async def get_due_reviews(user_id: str = Query(...), project_id: str = Query(...)):
+    """取得到期待複習的概念"""
+    from app.core.poker.fsrs import get_due_concepts
+    mastery = crud_poker.get_user_mastery(user_id, project_id)
+    due = get_due_concepts(mastery)
+    return {"due": due, "count": len(due)}
+
+
 @router.get("/review/{report_id}/hands")
 async def get_review_hands(report_id: str):
     """取得複盤報告的手牌分析清單"""
