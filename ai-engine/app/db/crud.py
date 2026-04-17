@@ -102,6 +102,28 @@ DEFAULT_DOMAIN_CONFIGS: dict[str, dict] = {
             "consistency_samples": 3,
         },
     },
+    "poker_coach": {
+        "nav": [
+            {"href": "/overview",   "label": "nav.overview",          "icon": "📊"},
+            {"href": "/chat",       "label": "nav.train",             "icon": "💬"},
+            {"href": "/knowledge",  "label": "nav.knowledge",         "icon": "📚"},
+            {"href": "/comparison", "label": "nav.comparison",        "icon": "⚖️"},
+            {"href": "/prompts",    "label": "nav.prompts",           "icon": "✏️"},
+            {"href": "/studio",     "label": "nav.studio",            "icon": "🧬"},
+            {"href": "/settings",   "label": "nav.settings",          "icon": "⚙️"},
+        ],
+        "terms": {
+            "session": "Training Session",
+            "knowledgeBase": "Knowledge Base",
+        },
+        "features": {
+            "eval": True, "finetune": True, "pipeline_studio": True,
+            "knowledge_rag": True, "student_model": True,
+            "hand_history": True, "solver": True,
+            "confidence_scoring": False, "multi_model_voting": False,
+        },
+        "chat": {"mode": "poker_coach", "streaming": True},
+    },
 }
 
 

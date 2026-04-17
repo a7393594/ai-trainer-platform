@@ -630,8 +630,24 @@ class AgentOrchestrator:
                     input_ref={"message": request.message},
                 )
                 messages: list[dict] = []
-                system_prompt = await self._load_active_prompt(request.project_id)
-                full_system = (system_prompt or "") + WIDGET_INSTRUCTION
+
+                # 檢查是否為 poker_coach 專案 → 使用三層 prompt
+                _project_check = crud.get_project(request.project_id)
+                _ptype = (_project_check or {}).get("project_type", "trainer")
+
+                if _ptype == "poker_coach":
+                    from app.core.poker.prompt_builder import build_system_prompt as poker_build
+                    from app.core.poker.student_model import get_profile_for_prompt
+                    _pdata = get_profile_for_prompt(request.user_id or "", request.project_id)
+                    _poker_sys = poker_build(
+                        profile=_pdata["profile"] if _pdata else None,
+                        mastery_summary=_pdata["mastery_summary"] if _pdata else None,
+                    )
+                    full_system = _poker_sys + WIDGET_INSTRUCTION
+                else:
+                    system_prompt = await self._load_active_prompt(request.project_id)
+                    full_system = (system_prompt or "") + WIDGET_INSTRUCTION
+
                 messages.append({"role": "system", "content": full_system})
 
                 rag_context = await self._search_knowledge(request.message, request.project_id)

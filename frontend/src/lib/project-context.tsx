@@ -11,7 +11,7 @@ const AI_ENGINE_URL = process.env.NEXT_PUBLIC_AI_ENGINE_URL || 'http://localhost
 
 export interface ProjectConfig {
   project_id: string
-  project_type: 'trainer' | 'referee'
+  project_type: 'trainer' | 'referee' | 'poker_coach'
   name: string
   description?: string
   domain_config: DomainConfig

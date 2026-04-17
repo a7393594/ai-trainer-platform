@@ -40,7 +40,7 @@ export interface ChatResponse {
 export interface ProjectSummary {
   id: string
   name: string
-  project_type: 'trainer' | 'referee'
+  project_type: 'trainer' | 'referee' | 'poker_coach'
   description?: string
 }
 

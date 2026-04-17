@@ -8,6 +8,7 @@ import { getDemoContext } from '@/lib/ai-engine'
 import { useAuth } from '@/lib/auth-context'
 import { useI18n } from '@/lib/i18n'
 import { useProject } from '@/lib/project-context'
+import { StudentProfilePanel } from '@/components/poker/StudentProfilePanel'
 import dynamic from 'next/dynamic'
 import type { DemoContext } from '@/types'
 
@@ -16,17 +17,18 @@ const RefereeSubmit = dynamic(() => import('../referee/submit/page'), { ssr: fal
 export default function ChatPage() {
   const { currentProject } = useProject()
 
-  // Referee projects: show Submit Ruling UI
   if (currentProject?.project_type === 'referee') {
     return <RefereeSubmit />
   }
 
+  // poker_coach 和 trainer 都用 TrainerChat，差別在 poker_coach 多顯示 StudentProfilePanel
   return <TrainerChat />
 }
 
 function TrainerChat() {
   const { user } = useAuth()
   const { t } = useI18n()
+  const { currentProject } = useProject()
   const [context, setContext] = useState<DemoContext | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [sessionId, setSessionId] = useState<string | undefined>()
@@ -108,6 +110,15 @@ function TrainerChat() {
           <ChatInterface key={sessionKey} projectId={context.project_id} userId={context.user_id} sessionId={sessionId} model={model} mode={mode} />
         </div>
       </div>
+      {/* Poker Coach: 右側學生檔案面板 */}
+      {currentProject?.project_type === 'poker_coach' && context && (
+        <aside className="w-52 flex-shrink-0 border-l border-zinc-800 bg-zinc-950 overflow-y-auto">
+          <div className="border-b border-zinc-800 px-3 py-2">
+            <h3 className="text-[10px] font-medium uppercase tracking-wider text-zinc-500">學生檔案</h3>
+          </div>
+          <StudentProfilePanel userId={context.user_id} projectId={context.project_id} />
+        </aside>
+      )}
     </div>
   )
 }
