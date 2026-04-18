@@ -5,11 +5,17 @@ Onboarding Manager -- 引導式建立 AI 基線
 1. 從領域模板載入問題
 2. 逐題引導使用者回答
 3. 彙整答案後用 LLM 產出 System Prompt
+4. 自動產出關鍵測試題（寫入 ait_eval_test_cases）
 """
+import json
+
 from app.models.schemas import ChatResponse, ChatMessage, OnboardingProgress, Role
 from app.core.prompt.templates import get_template
 from app.core.llm_router.router import chat_completion
 from app.db import crud
+
+
+DEFAULT_AUTO_QUESTION_COUNT = 12
 
 
 class OnboardingManager:
@@ -195,6 +201,18 @@ class OnboardingManager:
             change_notes=f"Onboarding ({template['id']}) auto-generated",
         )
 
+        # 自動產出測試題（失敗不阻斷主流程）
+        auto_tc_count = 0
+        try:
+            auto_tc_count = await self._generate_test_cases(
+                project_id=project_id,
+                prompt_content=prompt_content,
+                qa_summary=qa_summary,
+                count=DEFAULT_AUTO_QUESTION_COUNT,
+            )
+        except Exception as e:  # noqa: BLE001
+            print(f"[WARN] auto test case generation failed: {e}")
+
         # 存完成訊息
         crud.create_message(
             session_id=session_id,
@@ -204,6 +222,7 @@ class OnboardingManager:
                 "onboarding_complete": True,
                 "prompt_version_id": prompt_version["id"],
                 "prompt_version": version_num,
+                "auto_test_cases": auto_tc_count,
             },
         )
 
@@ -215,7 +234,8 @@ class OnboardingManager:
             message=ChatMessage(
                 role=Role.ASSISTANT,
                 content=(
-                    f"基線建立完成！已自動產出 System Prompt (v{version_num})。\n\n"
+                    f"基線建立完成！已自動產出 System Prompt (v{version_num})，"
+                    f"並自動建立 {auto_tc_count} 筆測試題。\n\n"
                     f"---\n\n{prompt_content[:500]}{'...' if len(prompt_content) > 500 else ''}"
                 ),
             ),
@@ -223,5 +243,59 @@ class OnboardingManager:
                 "onboarding_complete": True,
                 "prompt_version_id": prompt_version["id"],
                 "prompt_preview": prompt_content[:1000],
+                "auto_test_cases": auto_tc_count,
             },
         )
+
+    async def _generate_test_cases(
+        self,
+        project_id: str,
+        prompt_content: str,
+        qa_summary: str,
+        count: int,
+    ) -> int:
+        """以 Onboarding 收集到的背景 + 生成的 Prompt 為依據，產出測試題並寫入 DB。回傳寫入筆數。"""
+        system = (
+            "你是 AI 評估測試題產生器。根據下方提供的 System Prompt 與訪談摘要，"
+            f"產生 {count} 筆涵蓋核心能力的測試案例。每筆含：\n"
+            "  - input: 使用者會問的真實問題\n"
+            "  - expected: AI 應如何回答的理想答案（簡短指導原則即可，不必完整回答）\n"
+            "  - category: 能力分類（如 accuracy / empathy / boundary / format 等）\n"
+            "\n只回傳 JSON 陣列，格式：[{\"input\":\"...\",\"expected\":\"...\",\"category\":\"...\"}]"
+        )
+        user = (
+            f"=== System Prompt ===\n{prompt_content[:3000]}\n\n"
+            f"=== 訪談摘要 ===\n{qa_summary[:2000]}"
+        )
+        resp = await chat_completion(
+            messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
+            model="claude-sonnet-4-20250514",
+            max_tokens=2500,
+            temperature=0.3,
+        )
+        raw = (resp.choices[0].message.content or "").strip()
+        # 取出 JSON 陣列
+        start = raw.find("[")
+        end = raw.rfind("]")
+        if start < 0 or end <= start:
+            return 0
+        try:
+            items = json.loads(raw[start : end + 1])
+        except json.JSONDecodeError:
+            return 0
+
+        saved = 0
+        for it in items:
+            if not isinstance(it, dict):
+                continue
+            inp = (it.get("input") or "").strip()
+            exp = (it.get("expected") or "").strip()
+            if not inp or not exp:
+                continue
+            category = (it.get("category") or "onboarding_auto")[:50]
+            try:
+                crud.create_test_case(project_id, inp, exp, category)
+                saved += 1
+            except Exception:
+                continue
+        return saved

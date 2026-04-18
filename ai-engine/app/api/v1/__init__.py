@@ -499,6 +499,17 @@ async def get_eval_run_details(run_id: str):
     return details
 
 
+@router.post("/eval/runs/{run_id}/ai-review")
+async def ai_review_eval_run(run_id: str, data: dict = {}):
+    """用更強的 judge 模型對既有 run 重新打分（AI 輔助評審）"""
+    from app.core.eval.engine import eval_engine
+    judge_model = (data or {}).get("judge_model") or "claude-opus-4-20250514"
+    result = await eval_engine.ai_review_run(run_id, judge_model=judge_model)
+    if result.get("status") == "no_results":
+        raise HTTPException(status_code=404, detail="No results for this run")
+    return result
+
+
 # ============================================
 # 評估分析
 # ============================================
@@ -855,6 +866,16 @@ async def complete_finetune_job(job_id: str, data: dict):
     from app.core.finetune.pipeline import finetune_pipeline
     result = await finetune_pipeline.complete_job(job_id, data.get("result_model_id", ""))
     return {"status": "completed", "job": result}
+
+
+@router.post("/finetune/job/{job_id}/poll")
+async def poll_finetune_job(job_id: str):
+    """輪詢 provider 狀態（OpenAI）。完成時會自動寫回 result_model_id。"""
+    from app.core.finetune.pipeline import finetune_pipeline
+    result = await finetune_pipeline.poll_job(job_id)
+    if result.get("status") == "error":
+        raise HTTPException(status_code=404, detail=result.get("message", "error"))
+    return result
 
 
 # ============================================

@@ -753,7 +753,62 @@ def list_eval_runs(project_id: str) -> list[dict]:
 def get_eval_run_details(run_id: str) -> dict:
     run = get_supabase().table(T_EVAL_RUNS).select("*").eq("id", run_id).execute()
     results = get_supabase().table(T_EVAL_RESULTS).select("*").eq("run_id", run_id).execute()
-    return {"run": run.data[0] if run.data else None, "results": results.data}
+    results_data = results.data or []
+    # 附上 test_case 詳情（input/expected/category）
+    if results_data:
+        tc_ids = list({r["test_case_id"] for r in results_data if r.get("test_case_id")})
+        if tc_ids:
+            tcs = (
+                get_supabase().table(T_TEST_CASES)
+                .select("id,input_text,expected_output,category").in_("id", tc_ids).execute()
+            ).data or []
+            tc_map = {tc["id"]: tc for tc in tcs}
+            for r in results_data:
+                r["test_case"] = tc_map.get(r.get("test_case_id"))
+    return {"run": run.data[0] if run.data else None, "results": results_data}
+
+
+def get_eval_run(run_id: str) -> Optional[dict]:
+    r = get_supabase().table(T_EVAL_RUNS).select("*").eq("id", run_id).execute()
+    return r.data[0] if r.data else None
+
+
+def update_eval_result(
+    result_id: str,
+    score: Optional[float] = None,
+    passed: Optional[bool] = None,
+    details: Optional[dict] = None,
+) -> dict:
+    data: dict = {}
+    if score is not None:
+        data["score"] = score
+    if passed is not None:
+        data["passed"] = passed
+    if details is not None:
+        data["details"] = details
+    if not data:
+        return {}
+    r = get_supabase().table(T_EVAL_RESULTS).update(data).eq("id", result_id).execute()
+    return r.data[0] if r.data else {}
+
+
+def update_eval_run_scores(
+    run_id: str,
+    total_score: Optional[float] = None,
+    passed_count: Optional[int] = None,
+    failed_count: Optional[int] = None,
+) -> dict:
+    data: dict = {}
+    if total_score is not None:
+        data["total_score"] = total_score
+    if passed_count is not None:
+        data["passed_count"] = passed_count
+    if failed_count is not None:
+        data["failed_count"] = failed_count
+    if not data:
+        return {}
+    r = get_supabase().table(T_EVAL_RUNS).update(data).eq("id", run_id).execute()
+    return r.data[0] if r.data else {}
 
 
 def get_eval_score_trend(project_id: str, limit: int = 20) -> list[dict]:

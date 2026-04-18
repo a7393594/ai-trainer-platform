@@ -192,6 +192,123 @@ class EvalEngine:
             return 50, f"judge failed: {e}", judge_model
 
 
+    async def ai_review_run(
+        self,
+        run_id: str,
+        judge_model: str = "claude-opus-4-20250514",
+    ) -> dict:
+        """用強模型對既有 eval_run 的每筆結果重新打分，寫回 eval_results。
+
+        - 不改動原始 actual_output，僅更新 score/passed/details.ai_review
+        - 回傳 {run_id, reviewed, updated_score, deltas}
+        """
+        run = crud.get_eval_run(run_id) if hasattr(crud, "get_eval_run") else None
+        results = crud.get_eval_run_details(run_id)
+        if not results:
+            return {"status": "no_results", "run_id": run_id}
+
+        items = results.get("results") if isinstance(results, dict) else results
+        if not items:
+            return {"status": "no_results", "run_id": run_id}
+
+        reviewed = 0
+        new_total = 0.0
+        passed_cnt = 0
+        deltas: list[dict] = []
+        for r in items:
+            tc = r.get("test_case") or {}
+            input_text = tc.get("input_text") or r.get("input") or ""
+            expected = tc.get("expected_output") or r.get("expected") or ""
+            actual = r.get("actual_output") or r.get("actual") or ""
+            try:
+                score, is_passed, reason = await self._judge_with_model(
+                    input_text, expected, actual, judge_model
+                )
+            except Exception as e:  # noqa: BLE001
+                score, is_passed, reason = r.get("score", 0), r.get("passed", False), f"judge failed: {e}"
+
+            prev_score = r.get("score") or 0
+            deltas.append({"result_id": r.get("id"), "prev": prev_score, "new": score})
+            new_total += score
+            if is_passed:
+                passed_cnt += 1
+
+            details = r.get("details") or {}
+            details["ai_review"] = {
+                "judge_model": judge_model,
+                "score": score,
+                "passed": is_passed,
+                "reason": reason,
+                "prev_score": prev_score,
+            }
+            try:
+                if hasattr(crud, "update_eval_result"):
+                    crud.update_eval_result(
+                        result_id=r.get("id"),
+                        score=score,
+                        passed=is_passed,
+                        details=details,
+                    )
+                reviewed += 1
+            except Exception:
+                pass
+
+        avg = new_total / len(items) if items else 0
+        try:
+            if hasattr(crud, "update_eval_run_scores"):
+                crud.update_eval_run_scores(
+                    run_id=run_id,
+                    total_score=avg,
+                    passed_count=passed_cnt,
+                    failed_count=len(items) - passed_cnt,
+                )
+        except Exception:
+            pass
+
+        return {
+            "status": "completed",
+            "run_id": run_id,
+            "reviewed": reviewed,
+            "judge_model": judge_model,
+            "updated_score": avg,
+            "passed_count": passed_cnt,
+            "failed_count": len(items) - passed_cnt,
+            "deltas": deltas,
+        }
+
+    async def _judge_with_model(
+        self, input_text: str, expected: str, actual: str, model: str
+    ) -> tuple[int, bool, str]:
+        try:
+            resp = await chat_completion(
+                messages=[
+                    {
+                        "role": "system",
+                        "content": (
+                            "You are a strict evaluation judge. Compare actual vs expected.\n"
+                            "Score 0-100. Pass ≥ 70.\n"
+                            "Reply JSON only: {\"score\":85,\"passed\":true,\"reason\":\"...\"}"
+                        ),
+                    },
+                    {
+                        "role": "user",
+                        "content": f"Input: {input_text}\n\nExpected: {expected}\n\nActual: {actual}",
+                    },
+                ],
+                model=model,
+                max_tokens=250,
+                temperature=0,
+            )
+            raw = (resp.choices[0].message.content or "").strip()
+            s = raw.find("{")
+            e = raw.rfind("}")
+            data = json.loads(raw[s : e + 1]) if s >= 0 and e > s else {}
+            score = int(data.get("score", 0))
+            passed = bool(data.get("passed", score >= 70))
+            return max(0, min(100, score)), passed, str(data.get("reason", ""))[:500]
+        except Exception as e:  # noqa: BLE001
+            return 50, False, f"judge failed: {e}"
+
     def compare_runs(self, project_id: str, run_id: str) -> dict:
         """Compare a run with its predecessor, with threshold-based regression detection"""
         data = crud.get_regression_comparison(project_id, run_id)
