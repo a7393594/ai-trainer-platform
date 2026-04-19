@@ -392,6 +392,27 @@ async def test_tool(tool_id: str):
     return result
 
 
+@router.get("/audit/{tenant_id}")
+async def list_audit_logs_api(
+    tenant_id: str,
+    action_type: str | None = None,
+    tool_id: str | None = None,
+    status: str | None = None,
+    limit: int = 100,
+    offset: int = 0,
+):
+    """租戶稽核日誌查詢（支援 action_type / tool_id / status 過濾與分頁）"""
+    logs = crud.list_audit_logs(
+        tenant_id,
+        action_type=action_type,
+        tool_id=tool_id,
+        status=status,
+        limit=limit,
+        offset=offset,
+    )
+    return {"logs": logs, "count": len(logs), "limit": limit, "offset": offset}
+
+
 # ============================================
 # 能力規則
 # ============================================
@@ -521,6 +542,21 @@ async def cluster_eval_gaps(run_id: str, data: dict = {}):
     max_clusters = int((data or {}).get("max_clusters", 6))
     judge_model = (data or {}).get("judge_model") or "claude-sonnet-4-20250514"
     return await eval_engine.cluster_gaps(run_id, max_clusters=max_clusters, judge_model=judge_model)
+
+
+@router.post("/eval/before-after/{project_id}")
+async def eval_before_after(project_id: str, data: dict):
+    """對同一測試集跑兩個 prompt 版本並回傳逐題 delta。
+
+    Body: {"before_version_id": "...", "after_version_id": "...", "model": "..."}
+    """
+    from app.core.eval.engine import eval_engine
+    before_id = (data or {}).get("before_version_id")
+    after_id = (data or {}).get("after_version_id")
+    if not before_id or not after_id:
+        raise HTTPException(status_code=400, detail="before_version_id and after_version_id required")
+    model = (data or {}).get("model")
+    return await eval_engine.before_after_eval(project_id, before_id, after_id, model=model)
 
 
 # ============================================

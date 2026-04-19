@@ -524,6 +524,11 @@ def get_active_prompt(project_id: str) -> Optional[dict]:
     return result.data[0] if result.data else None
 
 
+def get_prompt_version(version_id: str) -> Optional[dict]:
+    r = get_supabase().table(T_PROMPTS).select("*").eq("id", version_id).execute()
+    return r.data[0] if r.data else None
+
+
 def list_prompt_versions(project_id: str) -> list[dict]:
     result = (
         get_supabase().table(T_PROMPTS)
@@ -1115,6 +1120,32 @@ def create_audit_log(tenant_id: str, user_id: Optional[str] = None, action_type:
     if duration_ms is not None:
         data["duration_ms"] = duration_ms
     return get_supabase().table(T_AUDIT).insert(data).execute().data[0]
+
+
+def list_audit_logs(
+    tenant_id: str,
+    action_type: Optional[str] = None,
+    tool_id: Optional[str] = None,
+    status: Optional[str] = None,
+    limit: int = 100,
+    offset: int = 0,
+) -> list[dict]:
+    q = (
+        get_supabase().table(T_AUDIT)
+        .select("id,tenant_id,user_id,action_type,tool_id,status,duration_ms,request_data,response_data,created_at")
+        .eq("tenant_id", tenant_id)
+    )
+    if action_type:
+        q = q.eq("action_type", action_type)
+    if tool_id:
+        q = q.eq("tool_id", tool_id)
+    if status:
+        q = q.eq("status", status)
+    return (
+        q.order("created_at", desc=True)
+        .range(offset, offset + min(limit, 500) - 1)
+        .execute()
+    ).data or []
 
 
 def get_tool_call_stats(tenant_id: str, since_iso: Optional[str] = None) -> dict:

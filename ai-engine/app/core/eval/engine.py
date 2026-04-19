@@ -12,13 +12,23 @@ REGRESSION_THRESHOLD_OVERALL = 5    # overall avg score drop
 
 class EvalEngine:
 
-    async def run_eval(self, project_id: str, model: str = None) -> dict:
-        """Run all test cases against current prompt"""
+    async def run_eval(
+        self,
+        project_id: str,
+        model: str = None,
+        prompt_version_id: str | None = None,
+    ) -> dict:
+        """Run all test cases against a given (or active) prompt."""
         test_cases = crud.list_test_cases(project_id)
         if not test_cases:
             return {"status": "no_test_cases", "message": "No test cases found"}
 
-        prompt = crud.get_active_prompt(project_id)
+        if prompt_version_id:
+            prompt = crud.get_prompt_version(prompt_version_id)
+            if not prompt or prompt.get("project_id") != project_id:
+                return {"status": "no_prompt", "message": "Prompt version not found"}
+        else:
+            prompt = crud.get_active_prompt(project_id)
         if not prompt:
             return {"status": "no_prompt", "message": "No active prompt"}
 
@@ -308,6 +318,67 @@ class EvalEngine:
             return max(0, min(100, score)), passed, str(data.get("reason", ""))[:500]
         except Exception as e:  # noqa: BLE001
             return 50, False, f"judge failed: {e}"
+
+    async def before_after_eval(
+        self,
+        project_id: str,
+        before_version_id: str,
+        after_version_id: str,
+        model: str | None = None,
+    ) -> dict:
+        """用同一組測試集跑兩個 prompt 版本，回傳前後對比。
+
+        用途：Prompt 優化後自動跑前後比分，看每個 test case 的 delta。
+        """
+        before = await self.run_eval(project_id, model=model, prompt_version_id=before_version_id)
+        after = await self.run_eval(project_id, model=model, prompt_version_id=after_version_id)
+
+        if before.get("status") != "completed" or after.get("status") != "completed":
+            return {
+                "status": "incomplete",
+                "before": before,
+                "after": after,
+            }
+
+        before_map = {r["test_case_id"]: r for r in before.get("results", [])}
+        after_map = {r["test_case_id"]: r for r in after.get("results", [])}
+
+        deltas = []
+        improved = regressed = unchanged = 0
+        for tc_id, a in after_map.items():
+            b = before_map.get(tc_id)
+            if not b:
+                continue
+            delta = (a.get("score") or 0) - (b.get("score") or 0)
+            if delta > 0:
+                improved += 1
+            elif delta < 0:
+                regressed += 1
+            else:
+                unchanged += 1
+            deltas.append({
+                "test_case_id": tc_id,
+                "input": a.get("input"),
+                "before_score": b.get("score"),
+                "after_score": a.get("score"),
+                "before_passed": b.get("passed"),
+                "after_passed": a.get("passed"),
+                "delta": delta,
+            })
+
+        deltas.sort(key=lambda x: x["delta"])
+        return {
+            "status": "completed",
+            "before_run_id": before.get("run_id"),
+            "after_run_id": after.get("run_id"),
+            "before_score": before.get("total_score"),
+            "after_score": after.get("total_score"),
+            "overall_delta": (after.get("total_score") or 0) - (before.get("total_score") or 0),
+            "improved": improved,
+            "regressed": regressed,
+            "unchanged": unchanged,
+            "deltas": deltas,
+        }
 
     async def cluster_gaps(
         self,
