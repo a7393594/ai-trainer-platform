@@ -36,7 +36,37 @@ def detect_format(webhook_url: str, explicit: Optional[str] = None) -> str:
 def format_payload(event: str, data: dict, fmt: str) -> dict:
     if fmt == "slack":
         return _format_slack(event, data)
+    if fmt == "email":
+        return _format_email(event, data)
     return {"event": event, **data}
+
+
+def _format_email(event: str, data: dict) -> dict:
+    """Resend-compatible payload (also works for most email-forwarding webhooks).
+
+    Produces {from, to, subject, text, html}. Caller must supply recipient via
+    `data["email_to"]`; `data["email_from"]` optional (defaults to a sentinel).
+    """
+    title, summary, fields, _ = _render_for_event(event, data)
+    to = data.get("email_to") or "alerts@example.invalid"
+    sender = data.get("email_from") or "ait-notifier@example.invalid"
+    lines = [summary] if summary else []
+    for k, v in fields.items():
+        lines.append(f"- {k}: {v}")
+    text = "\n".join(lines)
+    list_items = "".join(f"<li><strong>{k}:</strong> {v}</li>" for k, v in fields.items())
+    html = (
+        f"<h2>{title}</h2>"
+        + (f"<p>{summary}</p>" if summary else "")
+        + (f"<ul>{list_items}</ul>" if list_items else "")
+    )
+    return {
+        "from": sender,
+        "to": [to] if isinstance(to, str) else list(to),
+        "subject": title[:200],
+        "text": text,
+        "html": html,
+    }
 
 
 def _format_slack(event: str, data: dict) -> dict:
@@ -81,6 +111,21 @@ def _render_for_event(event: str, data: dict) -> Tuple[str, str, dict, str]:
             "Threshold": f"{data.get('threshold', 0):.0%}",
             "Spent": f"${spent:.2f}",
             "Budget": f"${budget:.2f}",
+        }
+        return title, summary, fields, color
+
+    if event == "ait.quality_alert":
+        level = data.get("level", "?")
+        color = "#E01E5A" if level == "wrong_high" else "#ECB22E"
+        wr = float(data.get("wrong_ratio", 0))
+        nr = float(data.get("negative_ratio", 0))
+        title = f"Quality {level.replace('_', ' ').upper()} — {data.get('project_id', '?')[:8]}"
+        summary = f"Last {data.get('window_hours', 0)}h · {data.get('total', 0)} feedbacks · wrong {wr:.0%} · neg {nr:.0%}"
+        fields = {
+            "Level": level,
+            "Total feedbacks": data.get("total", 0),
+            "Wrong ratio": f"{wr:.1%} (thr {float(data.get('wrong_threshold', 0)):.0%})",
+            "Negative ratio": f"{nr:.1%} (thr {float(data.get('negative_threshold', 0)):.0%})",
         }
         return title, summary, fields, color
 

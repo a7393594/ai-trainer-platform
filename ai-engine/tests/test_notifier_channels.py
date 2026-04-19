@@ -71,6 +71,47 @@ def test_format_payload_slack_unknown_event_generic_fallback():
     assert payload["blocks"][0]["type"] == "header"
 
 
+def test_format_payload_email_budget_includes_html_list():
+    payload = channels.format_payload(
+        "ait.budget_alert",
+        {
+            "tenant_id": "t1", "level": "exceeded", "month": "2025-04",
+            "budget_usd": 50.0, "spent_usd": 75.0, "pct": 1.5, "threshold": 0.8,
+            "email_to": "ops@example.com",
+        },
+        "email",
+    )
+    assert payload["to"] == ["ops@example.com"]
+    assert "Budget EXCEEDED" in payload["subject"]
+    assert "<ul>" in payload["html"] and "<li>" in payload["html"]
+    assert "Level" in payload["text"]
+
+
+def test_format_payload_email_defaults_to_sentinel_recipient():
+    payload = channels.format_payload("ait.x", {}, "email")
+    assert payload["to"] == ["alerts@example.invalid"]
+
+
+def test_format_payload_slack_quality_alert():
+    payload = channels.format_payload(
+        "ait.quality_alert",
+        {
+            "project_id": "p1234567",
+            "level": "wrong_high",
+            "window_hours": 24,
+            "total": 50,
+            "wrong_ratio": 0.35,
+            "negative_ratio": 0.42,
+            "wrong_threshold": 0.3,
+            "negative_threshold": 0.5,
+        },
+        "slack",
+    )
+    header = payload["blocks"][0]["text"]["text"]
+    assert "QUALITY" in header.upper()
+    assert payload["attachments"][0]["color"] == "#E01E5A"
+
+
 @pytest.mark.asyncio
 async def test_send_returns_false_when_no_url():
     ok, detail = await channels.send("", "ait.x", {})

@@ -518,6 +518,34 @@ def get_feedback_stats(project_id: str) -> dict:
     return stats
 
 
+def get_feedback_stats_window(project_id: str, since_iso: str) -> dict:
+    """取得指定時間窗內的回饋統計（不受 1000 筆 cap）。"""
+    db = get_supabase()
+    sessions = db.table(T_SESSIONS).select("id").eq("project_id", project_id).execute().data or []
+    sids = [s["id"] for s in sessions]
+    if not sids:
+        return {"correct": 0, "partial": 0, "wrong": 0, "total": 0}
+    stats = {"correct": 0, "partial": 0, "wrong": 0, "total": 0}
+    for i in range(0, len(sids), 50):
+        chunk = sids[i : i + 50]
+        msgs = db.table(T_MESSAGES).select("id").in_("session_id", chunk).eq("role", "assistant").execute().data or []
+        mids = [m["id"] for m in msgs]
+        for j in range(0, len(mids), 50):
+            mchunk = mids[j : j + 50]
+            fbs = (
+                db.table(T_FEEDBACKS).select("rating")
+                .in_("message_id", mchunk)
+                .gte("created_at", since_iso)
+                .execute()
+            ).data or []
+            for fb in fbs:
+                r = fb.get("rating") or ""
+                if r in stats:
+                    stats[r] += 1
+                stats["total"] += 1
+    return stats
+
+
 # ============================================
 # Prompt Version
 # ============================================

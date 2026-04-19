@@ -522,6 +522,121 @@ async def check_budget_and_notify(tenant_id: str):
     return await budget_service.check_and_notify(tenant_id)
 
 
+@router.get("/quality/{project_id}")
+async def get_quality_status(project_id: str):
+    """當前對話品質指標與告警等級。"""
+    from app.core.quality.monitor import quality_monitor
+    status = await quality_monitor.get_status(project_id)
+    if status.get("status") == "error":
+        raise HTTPException(status_code=404, detail=status.get("message"))
+    return status
+
+
+@router.patch("/quality/{project_id}")
+async def update_quality_config(project_id: str, data: dict):
+    """設定對話品質告警（存於 projects.domain_config.quality_alert）。"""
+    from app.core.quality.monitor import quality_monitor
+    updated = await quality_monitor.update_config(
+        project_id,
+        enabled=data.get("enabled"),
+        window_hours=data.get("window_hours"),
+        min_samples=data.get("min_samples"),
+        wrong_ratio_threshold=data.get("wrong_ratio_threshold"),
+        negative_ratio_threshold=data.get("negative_ratio_threshold"),
+        webhook=data.get("webhook"),
+    )
+    if not updated:
+        raise HTTPException(status_code=400, detail="No valid fields or project not found")
+    return {"status": "updated", "project": updated}
+
+
+@router.post("/quality/{project_id}/check")
+async def check_quality_and_notify(project_id: str):
+    """強制檢查品質，必要時 POST webhook 通知。"""
+    from app.core.quality.monitor import quality_monitor
+    return await quality_monitor.check_and_notify(project_id)
+
+
+@router.get("/workflow-templates")
+async def list_workflow_templates():
+    """取得內建工作流樣板清單。"""
+    from app.core.workflow_templates.library import list_templates
+    return {"templates": list_templates()}
+
+
+@router.get("/workflow-templates/{template_id}")
+async def get_workflow_template(template_id: str):
+    """取得單一樣板詳情（含 steps）。"""
+    from app.core.workflow_templates.library import get_template
+    tpl = get_template(template_id)
+    if not tpl:
+        raise HTTPException(status_code=404, detail="Template not found")
+    return tpl
+
+
+@router.post("/workflow-templates/{template_id}/instantiate")
+async def instantiate_workflow_template(template_id: str, data: dict):
+    """從樣板建立 workflow。Body: {project_id, name?, trigger?}"""
+    from app.core.workflow_templates.library import instantiate
+    project_id = (data or {}).get("project_id")
+    if not project_id:
+        raise HTTPException(status_code=400, detail="project_id required")
+    wf = instantiate(
+        project_id,
+        template_id,
+        name_override=(data or {}).get("name"),
+        trigger_override=(data or {}).get("trigger"),
+    )
+    if not wf:
+        raise HTTPException(status_code=404, detail="Template not found")
+    return {"status": "created", "workflow": wf}
+
+
+@router.post("/alerts/run-all")
+async def run_all_alert_checks(data: dict = {}):
+    """Cron-friendly：對所有租戶/專案跑 budget + quality 檢查。
+
+    Body 可選 `tenant_ids` 或 `project_ids` 限縮範圍；留空則全掃。
+    """
+    from app.core.budget.service import budget_service
+    from app.core.quality.monitor import quality_monitor
+    from app.db.supabase import get_supabase
+
+    db = get_supabase()
+    data = data or {}
+
+    tenant_ids: list[str] = data.get("tenant_ids") or []
+    if not tenant_ids:
+        tenants = db.table("ait_tenants").select("id").execute().data or []
+        tenant_ids = [t["id"] for t in tenants]
+    budget_results = []
+    for tid in tenant_ids:
+        try:
+            r = await budget_service.check_and_notify(tid)
+            budget_results.append({"tenant_id": tid, "level": r.get("level"), "notified": r.get("notified")})
+        except Exception as e:  # noqa: BLE001
+            budget_results.append({"tenant_id": tid, "error": str(e)})
+
+    project_ids: list[str] = data.get("project_ids") or []
+    if not project_ids:
+        projects = db.table("ait_projects").select("id").in_("tenant_id", tenant_ids).execute().data if tenant_ids else []
+        project_ids = [p["id"] for p in (projects or [])]
+    quality_results = []
+    for pid in project_ids:
+        try:
+            r = await quality_monitor.check_and_notify(pid)
+            quality_results.append({"project_id": pid, "level": r.get("level"), "notified": r.get("notified")})
+        except Exception as e:  # noqa: BLE001
+            quality_results.append({"project_id": pid, "error": str(e)})
+
+    return {
+        "tenants_checked": len(budget_results),
+        "projects_checked": len(quality_results),
+        "budget": budget_results,
+        "quality": quality_results,
+    }
+
+
 @router.get("/audit/{tenant_id}")
 async def list_audit_logs_api(
     tenant_id: str,
