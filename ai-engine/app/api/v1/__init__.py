@@ -457,6 +457,60 @@ async def test_tool(tool_id: str):
     return result
 
 
+@router.post("/chat/{session_id}/summarize")
+async def summarize_session(session_id: str, data: dict = {}):
+    """將 session 的對話壓成摘要。可選 persist=True 寫入為 system 訊息。"""
+    from app.core.summarizer.service import conversation_summarizer
+    result = await conversation_summarizer.summarize_session(
+        session_id,
+        threshold=int((data or {}).get("threshold", 20)),
+        model=(data or {}).get("model") or "claude-haiku-4-5-20251001",
+        persist=bool((data or {}).get("persist", False)),
+    )
+    if result.get("status") == "error":
+        raise HTTPException(status_code=404, detail=result.get("message"))
+    return result
+
+
+@router.get("/ab-test/{project_id}")
+async def get_ab_test_status(project_id: str):
+    """取得專案 A/B 測試狀態。"""
+    from app.core.ab_test.service import ab_test_service
+    return await ab_test_service.get_status(project_id)
+
+
+@router.put("/ab-test/{project_id}")
+async def configure_ab_test(project_id: str, data: dict):
+    """設定 A/B 測試：variants=[{prompt_version_id, weight, label}]"""
+    from app.core.ab_test.service import ab_test_service
+    variants = (data or {}).get("variants") or []
+    enabled = bool((data or {}).get("enabled", True))
+    updated = await ab_test_service.configure(project_id, variants, enabled=enabled)
+    if not updated:
+        raise HTTPException(status_code=400, detail="Invalid variants or project not found")
+    return {"status": "configured", "project": updated}
+
+
+@router.get("/ab-test/{project_id}/results")
+async def get_ab_test_results(project_id: str):
+    """聚合每個變體的 session/回饋統計。"""
+    from app.core.ab_test.service import ab_test_service
+    return await ab_test_service.summarize(project_id)
+
+
+@router.post("/ab-test/{project_id}/conclude")
+async def conclude_ab_test(project_id: str, data: dict):
+    """標記獲勝變體，啟用該 prompt 版本並停用 A/B 測試。"""
+    from app.core.ab_test.service import ab_test_service
+    label = (data or {}).get("winner_label")
+    if not label:
+        raise HTTPException(status_code=400, detail="winner_label required")
+    result = await ab_test_service.conclude(project_id, label)
+    if result.get("status") == "error":
+        raise HTTPException(status_code=400, detail=result.get("message"))
+    return result
+
+
 @router.post("/chat/{session_id}/handoff")
 async def request_handoff(session_id: str, data: dict = {}):
     """把對話升級到真人客服。支援 webhook 通知。"""

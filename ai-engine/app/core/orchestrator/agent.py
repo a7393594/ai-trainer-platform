@@ -774,8 +774,19 @@ class AgentOrchestrator:
             history = history[:-1]
         return history
 
-    async def _load_active_prompt(self, project_id: str) -> Optional[str]:
-        """載入專案目前使用的系統提示詞"""
+    async def _load_active_prompt(self, project_id: str, session_id: Optional[str] = None) -> Optional[str]:
+        """載入專案目前使用的系統提示詞。若有 A/B test 啟用，依 session 決定變體。"""
+        if session_id:
+            try:
+                from app.core.ab_test.service import ab_test_service
+
+                variant = await ab_test_service.pick_variant(project_id, session_id)
+                if variant and variant.get("prompt_version_id"):
+                    pv = crud.get_prompt_version(variant["prompt_version_id"])
+                    if pv and pv.get("content"):
+                        return pv["content"]
+            except Exception as e:  # noqa: BLE001
+                print(f"[WARN] ab_test lookup failed: {e}")
         prompt = crud.get_active_prompt(project_id)
         return prompt["content"] if prompt else None
 

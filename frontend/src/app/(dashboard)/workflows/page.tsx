@@ -81,6 +81,9 @@ export default function WorkflowsPage() {
   const [testRun, setTestRun] = useState<any>(null)
   const [autoRunningWf, setAutoRunningWf] = useState<string | null>(null)
   const [autoRunResult, setAutoRunResult] = useState<any>(null)
+  const [templates, setTemplates] = useState<any[]>([])
+  const [showTemplates, setShowTemplates] = useState(false)
+  const [instantiatingId, setInstantiatingId] = useState<string | null>(null)
   const { t } = useI18n()
 
   useEffect(() => {
@@ -129,6 +132,30 @@ export default function WorkflowsPage() {
     } else {
       setSteps([...steps, { id, type: 'loop', mode: 'while', condition: 'i < 3', max_iterations: 10, body: [] }])
     }
+  }
+
+  const loadTemplates = async () => {
+    if (templates.length > 0) return
+    try {
+      const r = await fetch(`${AI}/api/v1/workflow-templates`)
+      const d = await r.json()
+      setTemplates(d.templates || [])
+    } catch {}
+  }
+
+  const handleInstantiateTemplate = async (templateId: string) => {
+    if (!projectId) return
+    setInstantiatingId(templateId)
+    try {
+      await fetch(`${AI}/api/v1/workflow-templates/${templateId}/instantiate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ project_id: projectId }),
+      })
+      await loadWorkflows(projectId)
+      setShowTemplates(false)
+    } catch {}
+    setInstantiatingId(null)
   }
 
   const handleAutoRun = async (wfId: string) => {
@@ -210,8 +237,41 @@ export default function WorkflowsPage() {
             <h1 className="text-lg font-medium text-zinc-200">{t('workflows.title')}</h1>
             <p className="text-xs text-zinc-500">{t('workflows.desc')}</p>
           </div>
-          <button onClick={() => setShowCreate(true)} className="rounded bg-blue-600 px-4 py-2 text-sm text-white hover:bg-blue-500">{t('workflows.create')}</button>
+          <div className="flex gap-2">
+            <button
+              onClick={() => { setShowTemplates(!showTemplates); if (!showTemplates) loadTemplates() }}
+              className="rounded border border-zinc-600 px-3 py-2 text-xs text-zinc-300 hover:bg-zinc-800"
+            >
+              {showTemplates ? 'Hide templates' : 'From template'}
+            </button>
+            <button onClick={() => setShowCreate(true)} className="rounded bg-blue-600 px-4 py-2 text-sm text-white hover:bg-blue-500">{t('workflows.create')}</button>
+          </div>
         </div>
+
+        {showTemplates && (
+          <div className="mb-4 rounded-lg border border-zinc-700 bg-zinc-800 p-4">
+            <h3 className="text-sm font-medium text-zinc-200 mb-3">內建樣板</h3>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+              {templates.map((t: any) => (
+                <div key={t.id} className="rounded border border-zinc-700 bg-zinc-900/40 p-3 flex flex-col gap-2">
+                  <div>
+                    <p className="text-sm text-zinc-200">{t.name}</p>
+                    <p className="text-[11px] text-zinc-500">{t.description}</p>
+                    <p className="text-[10px] text-zinc-600 mt-1">{t.step_count} steps</p>
+                  </div>
+                  <button
+                    onClick={() => handleInstantiateTemplate(t.id)}
+                    disabled={instantiatingId === t.id}
+                    className="self-end rounded bg-blue-600 px-3 py-1 text-[11px] text-white hover:bg-blue-500 disabled:opacity-50"
+                  >
+                    {instantiatingId === t.id ? 'Creating…' : 'Use template'}
+                  </button>
+                </div>
+              ))}
+              {templates.length === 0 && <p className="text-xs text-zinc-500 col-span-2 text-center py-4">Loading templates…</p>}
+            </div>
+          </div>
+        )}
 
         {/* Create Form with Step Builder */}
         {showCreate && (
