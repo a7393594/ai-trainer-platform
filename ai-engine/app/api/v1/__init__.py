@@ -292,6 +292,52 @@ async def upload_document(request: DocumentUploadRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.post("/knowledge/batch-upload")
+async def batch_upload_documents(data: dict):
+    """批次上傳文件。
+
+    Body: {"project_id": "...", "documents": [{"title": "...", "content": "...",
+           "source_type": "upload|url|auto_extract"}]}
+
+    成功與失敗逐筆回報，不因單一失敗中斷整批。
+    """
+    from app.core.rag.pipeline import rag_pipeline
+
+    project_id = (data or {}).get("project_id")
+    documents = (data or {}).get("documents") or []
+    if not project_id or not isinstance(documents, list) or not documents:
+        raise HTTPException(status_code=400, detail="project_id and documents[] required")
+
+    results: list[dict] = []
+    ok = err = 0
+    for i, item in enumerate(documents):
+        if not isinstance(item, dict):
+            results.append({"index": i, "status": "error", "detail": "not a dict"})
+            err += 1
+            continue
+        title = (item.get("title") or f"Untitled {i+1}").strip()
+        content = (item.get("content") or "").strip()
+        source_type = item.get("source_type") or "upload"
+        if not content:
+            results.append({"index": i, "title": title, "status": "error", "detail": "empty content"})
+            err += 1
+            continue
+        try:
+            doc = await rag_pipeline.upload_document(project_id, title, content, source_type)
+            results.append({"index": i, "title": title, "status": "ready", "doc_id": doc.get("id"), "chunk_count": doc.get("chunk_count", 0)})
+            ok += 1
+        except Exception as e:  # noqa: BLE001
+            results.append({"index": i, "title": title, "status": "error", "detail": str(e)[:300]})
+            err += 1
+
+    return {
+        "total": len(documents),
+        "success": ok,
+        "failed": err,
+        "results": results,
+    }
+
+
 @router.get("/knowledge/{project_id}")
 async def list_knowledge(project_id: str):
     """列出專案的知識庫內容"""
@@ -390,6 +436,71 @@ async def test_tool(tool_id: str):
     from app.core.tools.registry import tool_registry
     result = await tool_registry.test_tool(tool_id)
     return result
+
+
+@router.post("/chat/{session_id}/handoff")
+async def request_handoff(session_id: str, data: dict = {}):
+    """把對話升級到真人客服。支援 webhook 通知。"""
+    from app.core.handoff.service import handoff_service
+    reason = (data or {}).get("reason", "")
+    triggered_by = (data or {}).get("triggered_by", "user")
+    urgency = (data or {}).get("urgency", "normal")
+    result = await handoff_service.request(session_id, reason, triggered_by, urgency)
+    if result.get("status") == "error":
+        raise HTTPException(status_code=404, detail=result.get("message"))
+    return result
+
+
+@router.get("/handoff/pending/{tenant_id}")
+async def list_pending_handoffs(tenant_id: str, limit: int = 50):
+    """列出租戶尚未解決的 handoff（給真人客服儀表板輪詢）。"""
+    from app.core.handoff.service import handoff_service
+    items = await handoff_service.list_pending(tenant_id, limit=limit)
+    return {"pending": items, "count": len(items)}
+
+
+@router.post("/handoff/{handoff_id}/resolve")
+async def resolve_handoff(handoff_id: str, data: dict):
+    """標記 handoff 已被真人處理完成。"""
+    from app.core.handoff.service import handoff_service
+    resolved_by = (data or {}).get("resolved_by", "agent")
+    note = (data or {}).get("note", "")
+    result = await handoff_service.resolve(handoff_id, resolved_by, note)
+    if result.get("status") == "error":
+        raise HTTPException(status_code=404, detail=result.get("message"))
+    return result
+
+
+@router.get("/budget/{tenant_id}")
+async def get_budget_status(tenant_id: str):
+    """取得租戶當月預算狀態 + 告警等級。"""
+    from app.core.budget.service import budget_service
+    status = await budget_service.get_status(tenant_id)
+    if status.get("status") == "error":
+        raise HTTPException(status_code=404, detail=status.get("message"))
+    return status
+
+
+@router.patch("/budget/{tenant_id}")
+async def update_budget_config(tenant_id: str, data: dict):
+    """設定租戶月預算 / 告警門檻 / webhook。"""
+    from app.core.budget.service import budget_service
+    updated = await budget_service.update_config(
+        tenant_id,
+        monthly_budget_usd=data.get("monthly_budget_usd"),
+        budget_alert_threshold=data.get("budget_alert_threshold"),
+        budget_alert_webhook=data.get("budget_alert_webhook"),
+    )
+    if not updated:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+    return {"status": "updated", "tenant": updated}
+
+
+@router.post("/budget/{tenant_id}/check")
+async def check_budget_and_notify(tenant_id: str):
+    """強制檢查預算，必要時 POST webhook 通知。回傳發送結果。"""
+    from app.core.budget.service import budget_service
+    return await budget_service.check_and_notify(tenant_id)
 
 
 @router.get("/audit/{tenant_id}")
@@ -763,6 +874,42 @@ async def get_project_cost(project_id: str, days: int = 30):
         "daily_trend": [{"date": k, **v, "cost": round(v["cost"], 4)} for k, v in sorted(daily.items())],
         "period_days": days,
     }
+
+
+@router.get("/analytics/{project_id}/csv")
+async def get_project_analytics_csv(project_id: str, days: int = 30):
+    """匯出分析資料為 CSV。"""
+    import csv
+    import io
+    from fastapi.responses import Response
+
+    data = await get_project_analytics(project_id, days=days)  # type: ignore[misc]
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(["section", "key", "value"])
+    overview = data.get("overview", {})
+    for k, v in overview.items():
+        w.writerow(["overview", k, v])
+    fb = data.get("feedback", {})
+    for k, v in fb.items():
+        w.writerow(["feedback", k, v])
+    tools = data.get("tools", {})
+    w.writerow(["tools", "registered", tools.get("registered", 0)])
+    w.writerow(["tools", "total_calls", tools.get("total_calls", 0)])
+    for tid, bucket in (tools.get("by_tool") or {}).items():
+        name = bucket.get("name", tid)
+        for k in ("calls", "success", "error", "avg_latency_ms", "success_rate"):
+            w.writerow([f"tool:{name}", k, bucket.get(k, 0)])
+    for day in data.get("daily_activity", []) or []:
+        w.writerow(["daily_activity", day.get("date"), day.get("sessions", 0)])
+
+    csv_text = buf.getvalue()
+    filename = f"analytics-{project_id[:8]}-{days}d.csv"
+    return Response(
+        content=csv_text,
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @router.get("/analytics/{project_id}")

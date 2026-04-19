@@ -162,6 +162,44 @@ def get_tenant(tenant_id: str) -> Optional[dict]:
     return result.data[0] if result.data else None
 
 
+def update_tenant_settings(tenant_id: str, settings_patch: dict) -> Optional[dict]:
+    """Merge-patch tenant.settings JSONB field."""
+    tenant = get_tenant(tenant_id)
+    if not tenant:
+        return None
+    merged = {**(tenant.get("settings") or {}), **(settings_patch or {})}
+    r = get_supabase().table(T_TENANTS).update({"settings": merged}).eq("id", tenant_id).execute()
+    return r.data[0] if r.data else None
+
+
+def get_tenant_monthly_cost(tenant_id: str) -> float:
+    """Sum cost_usd for the current calendar month across all projects of tenant."""
+    from datetime import datetime, timezone
+
+    now = datetime.now(tz=timezone.utc)
+    month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0).isoformat()
+    # Projects under this tenant
+    projects = (
+        get_supabase().table("ait_projects").select("id").eq("tenant_id", tenant_id).execute()
+    ).data or []
+    if not projects:
+        return 0.0
+    pids = [p["id"] for p in projects]
+    total = 0.0
+    # Batch in chunks
+    for i in range(0, len(pids), 50):
+        chunk = pids[i : i + 50]
+        rows = (
+            get_supabase().table("ait_llm_usage")
+            .select("cost_usd")
+            .in_("project_id", chunk)
+            .gte("created_at", month_start)
+            .execute()
+        ).data or []
+        total += sum(r.get("cost_usd") or 0 for r in rows)
+    return float(total)
+
+
 # ============================================
 # User
 # ============================================

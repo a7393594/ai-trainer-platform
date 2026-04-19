@@ -47,12 +47,21 @@ export default function AnalyticsPage() {
             <h1 className="text-lg font-medium text-zinc-200">{t('analytics.title')}</h1>
             <p className="text-xs text-zinc-500">{t('analytics.desc')}</p>
           </div>
-          <div className="flex gap-1">
+          <div className="flex gap-1 items-center">
             {[7, 30, 90].map(d => (
               <button key={d} onClick={() => changePeriod(d)} className={`rounded px-3 py-1 text-xs ${days === d ? 'bg-blue-600 text-white' : 'bg-zinc-800 text-zinc-400'}`}>
                 {d}D
               </button>
             ))}
+            {projectId && (
+              <a
+                href={`${AI}/api/v1/analytics/${projectId}/csv?days=${days}`}
+                className="ml-2 rounded border border-zinc-700 px-3 py-1 text-xs text-zinc-300 hover:bg-zinc-800"
+                download
+              >
+                Export CSV
+              </a>
+            )}
           </div>
         </div>
 
