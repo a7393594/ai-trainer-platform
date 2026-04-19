@@ -754,25 +754,90 @@ class AgentOrchestrator:
     # ========================================
 
     async def _create_session(self, project_id: str, user_id: str) -> dict:
-        """建立新的訓練會話"""
+        """建立新的訓練會話。超過方案上限時會丟 LimitExceeded。"""
+        from app.core.plan.limits import plan_limits_service
+
+        project = crud.get_project(project_id)
+        tenant_id = (project or {}).get("tenant_id")
+        if tenant_id:
+            try:
+                plan_limits_service.enforce_session_create(tenant_id)
+            except Exception as e:  # LimitExceeded 或 DB 錯誤都不阻斷到崩潰
+                if e.__class__.__name__ == "LimitExceeded":
+                    raise
         return crud.create_session(project_id, user_id, "freeform")
+
+    # 歷史超過此長度時壓縮前段成摘要，保留尾端原始訊息
+    HISTORY_COMPRESS_THRESHOLD = 30
+    HISTORY_KEEP_RECENT = 8
 
     async def _load_history(self, session_id: str, exclude_last_user: bool = True) -> list:
         """載入對話歷史，轉為 LLM 格式。
 
+        若長度超過 `HISTORY_COMPRESS_THRESHOLD`，把最前段壓縮成 system 摘要，
+        只保留最後 `HISTORY_KEEP_RECENT` 條原始訊息，降低 token 成本。
+
         Args:
             exclude_last_user: 排除最後一條 user message（避免與 messages.append 重複）
         """
-        messages = crud.list_messages(session_id)
-        history = [
-            {"role": m["role"], "content": m["content"]}
-            for m in messages
-            if m["role"] in ("user", "assistant")
-        ]
-        # 排除最後一條 user message（因為 process_stream 會在之後手動 append）
+        messages = crud.list_messages(session_id) or []
+
+        # 如果之前已 persist 過 summary，優先使用（metadata.summary==True）
+        pre_summary: Optional[str] = None
+        last_summary_idx = -1
+        for idx, m in enumerate(messages):
+            if m.get("role") == "system" and (m.get("metadata") or {}).get("summary"):
+                pre_summary = m.get("content") or pre_summary
+                last_summary_idx = idx
+
+        # 只取 summary 之後的對話訊息
+        tail = messages[last_summary_idx + 1 :] if last_summary_idx >= 0 else messages
+        dialogue = [m for m in tail if m.get("role") in ("user", "assistant")]
+
+        history: list[dict] = []
+        if pre_summary:
+            history.append({"role": "system", "content": f"[Earlier conversation summary]\n{pre_summary}"})
+
+        # 動態壓縮：尾端仍很長時，嘗試用 LLM 壓前段
+        if len(dialogue) > self.HISTORY_COMPRESS_THRESHOLD:
+            compressed = await self._compress_history_head(dialogue[: -self.HISTORY_KEEP_RECENT])
+            if compressed:
+                history.append({"role": "system", "content": f"[Auto-compressed earlier turns]\n{compressed}"})
+                dialogue = dialogue[-self.HISTORY_KEEP_RECENT :]
+
+        history.extend(
+            {"role": m["role"], "content": m["content"]} for m in dialogue
+        )
         if exclude_last_user and history and history[-1]["role"] == "user":
             history = history[:-1]
         return history
+
+    async def _compress_history_head(self, head: list[dict]) -> Optional[str]:
+        """用 summarizer 把較早的歷史壓成幾行。失敗回 None。"""
+        if not head:
+            return None
+        try:
+            from app.core.llm_router.router import chat_completion
+
+            transcript = "\n".join(
+                f"{m.get('role','?')}: {(m.get('content') or '')[:400]}" for m in head
+            )
+            resp = await chat_completion(
+                messages=[
+                    {"role": "system", "content": (
+                        "Compress the following dialogue into 5-10 concise bullet points in the "
+                        "original language, preserving key facts, decisions, and unresolved items."
+                    )},
+                    {"role": "user", "content": transcript[:10000]},
+                ],
+                model="claude-haiku-4-5-20251001",
+                max_tokens=600,
+                temperature=0.2,
+            )
+            return (resp.choices[0].message.content or "").strip() or None
+        except Exception as e:  # noqa: BLE001
+            print(f"[WARN] _compress_history_head failed: {e}")
+            return None
 
     async def _load_active_prompt(self, project_id: str, session_id: Optional[str] = None) -> Optional[str]:
         """載入專案目前使用的系統提示詞。若有 A/B test 啟用，依 session 決定變體。"""

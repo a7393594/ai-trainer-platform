@@ -544,6 +544,13 @@ async def resolve_handoff(handoff_id: str, data: dict):
     return result
 
 
+@router.get("/plan/{tenant_id}")
+async def get_plan_limits(tenant_id: str):
+    """回傳租戶目前方案 + 當月使用量 + 是否超限。"""
+    from app.core.plan.limits import plan_limits_service
+    return plan_limits_service.check_usage(tenant_id)
+
+
 @router.get("/budget/{tenant_id}")
 async def get_budget_status(tenant_id: str):
     """取得租戶當月預算狀態 + 告警等級。"""
