@@ -222,7 +222,7 @@ class AgentOrchestrator:
             text_response = action_config.get("text", "")
             if not text_response:
                 # Generate contextual text with LLM
-                system_prompt = await self._load_active_prompt(request.project_id)
+                system_prompt = await self._load_active_prompt(request.project_id, session_id)
                 messages = []
                 if system_prompt:
                     messages.append({"role": "system", "content": system_prompt})
@@ -251,7 +251,7 @@ class AgentOrchestrator:
                 tool = crud.get_tool(tool_id)
                 if tool:
                     # For now, include tool info in LLM context
-                    system_prompt = await self._load_active_prompt(request.project_id)
+                    system_prompt = await self._load_active_prompt(request.project_id, session_id)
                     messages = []
                     if system_prompt:
                         messages.append({"role": "system", "content": system_prompt})
@@ -333,6 +333,36 @@ class AgentOrchestrator:
                 )
 
             return await self._general_chat(request, session_id, history)
+
+        elif action_type == "handoff":
+            # 自動升級至真人客服
+            from app.core.handoff.service import handoff_service
+
+            reason = action_config.get("reason") or "User triggered handoff capability"
+            urgency = action_config.get("urgency", "normal")
+            result = await handoff_service.request(
+                session_id, reason=reason, triggered_by="capability_rule", urgency=urgency,
+            )
+            reply = action_config.get("text") or "已為您轉接真人客服，稍後會有專員與您聯繫。"
+            assistant_msg = crud.create_message(
+                session_id=session_id, role="assistant", content=reply,
+                metadata={
+                    "capability_rule_id": rule["id"],
+                    "handoff_message_id": result.get("handoff_message_id"),
+                    "handoff_notified": result.get("notified"),
+                    "handoff_urgency": urgency,
+                },
+            )
+            return ChatResponse(
+                session_id=session_id,
+                message=ChatMessage(role=Role.ASSISTANT, content=reply),
+                message_id=assistant_msg["id"],
+                metadata={
+                    "handoff": True,
+                    "handoff_message_id": result.get("handoff_message_id"),
+                    "urgency": urgency,
+                },
+            )
 
         else:
             # composite or unknown — fallback to general chat
@@ -453,8 +483,8 @@ class AgentOrchestrator:
         )
         messages = []
 
-        # System prompt + widget instruction
-        system_prompt = await self._load_active_prompt(request.project_id)
+        # System prompt + widget instruction (may apply A/B variant when session_id present)
+        system_prompt = await self._load_active_prompt(request.project_id, session_id)
         full_system = (system_prompt or "") + WIDGET_INSTRUCTION
         messages.append({"role": "system", "content": full_system})
 
@@ -679,7 +709,7 @@ class AgentOrchestrator:
                     )
                     full_system = _poker_sys + WIDGET_INSTRUCTION
                 else:
-                    system_prompt = await self._load_active_prompt(request.project_id)
+                    system_prompt = await self._load_active_prompt(request.project_id, session_id)
                     full_system = (system_prompt or "") + WIDGET_INSTRUCTION
 
                 messages.append({"role": "system", "content": full_system})
@@ -870,7 +900,20 @@ class AgentOrchestrator:
         return prompt["content"] if prompt else None
 
     async def _search_knowledge(self, query: str, project_id: str) -> Optional[str]:
-        """從知識庫搜尋相關內容（RAG — pgvector 或 keyword fallback）"""
+        """從知識庫搜尋相關內容（走 rag_pipeline：依 vector_backend 選 Qdrant / pgvector / keyword）。"""
+        # 先走完整 RAG pipeline（會依 feature flag 試 Qdrant → pgvector → keyword）
+        try:
+            from app.core.rag.pipeline import rag_pipeline
+
+            rag_results = await rag_pipeline.search(project_id, query, top_k=5)
+            if rag_results:
+                parts = [r["content"] for r in rag_results if r.get("content")]
+                if parts:
+                    return "\n\n---\n\n".join(parts)
+        except Exception as e:  # noqa: BLE001
+            print(f"[WARN] rag_pipeline.search failed, falling back to keyword: {e}")
+
+        # 最終 fallback：純 keyword（保留原有行為）
         try:
             results = crud.search_knowledge_chunks(project_id, query, limit=5)
             if results:

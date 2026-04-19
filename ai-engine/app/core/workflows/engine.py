@@ -74,7 +74,16 @@ async def _default_action_executor(step: dict, context: dict) -> dict:
         if tool_id:
             from app.core.tools.registry import tool_registry
 
-            return await tool_registry.execute_tool(tool_id, params=step.get("params", {}))
+            # Pull tenant / user from workflow context so audit logs are written
+            ctx_inner = context.get("_context") or {}
+            tenant_id = ctx_inner.get("tenant_id") if isinstance(ctx_inner, dict) else None
+            user_id = ctx_inner.get("user_id") if isinstance(ctx_inner, dict) else None
+            return await tool_registry.execute_tool(
+                tool_id,
+                params=step.get("params", {}),
+                tenant_id=tenant_id,
+                user_id=user_id,
+            )
         return {"status": "error", "detail": "tool_id required"}
 
     if kind == "set":
@@ -193,7 +202,23 @@ class WorkflowEngine:
             return {"status": "error", "detail": "Workflow has no steps"}
 
         run = crud.create_workflow_run(workflow_id, session_id, user_id or "")
-        context = {"vars": dict(initial_vars or {}), "_step_count": 0, "_trace": []}
+
+        # Resolve tenant_id so downstream tool calls can write audit_logs
+        tenant_id: str | None = None
+        try:
+            project = crud.get_project(workflow.get("project_id")) if workflow.get("project_id") else None
+            tenant_id = (project or {}).get("tenant_id")
+        except Exception:
+            tenant_id = None
+
+        context = {
+            "vars": dict(initial_vars or {}),
+            "_step_count": 0,
+            "_trace": [],
+            "tenant_id": tenant_id,
+            "user_id": user_id,
+            "session_id": session_id,
+        }
 
         try:
             await self._run_steps(steps, context)
