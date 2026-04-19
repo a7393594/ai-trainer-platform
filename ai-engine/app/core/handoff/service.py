@@ -17,8 +17,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Optional
 
-import httpx
-
+from app.core.notifier import send as notifier_send
 from app.db import crud
 
 
@@ -65,25 +64,22 @@ class HandoffService:
         project = crud.get_project(project_id) if project_id else None
         tenant_id = (project or {}).get("tenant_id")
         tenant = crud.get_tenant(tenant_id) if tenant_id else None
-        webhook = ((tenant or {}).get("settings") or {}).get("handoff_webhook") or ""
+        tenant_settings = (tenant or {}).get("settings") or {}
+        webhook = tenant_settings.get("handoff_webhook") or ""
         if not webhook:
             return False, "no webhook configured"
 
-        body = {
-            "event": "ait.handoff_requested",
+        data = {
             "tenant_id": tenant_id,
             "project_id": project_id,
             "session_id": session.get("id"),
             "handoff_message_id": message.get("id"),
             "handoff": handoff,
         }
-        try:
-            async with httpx.AsyncClient(timeout=10) as client:
-                resp = await client.post(webhook, json=body)
-            ok = 200 <= resp.status_code < 300
-            return ok, None if ok else f"HTTP {resp.status_code}: {resp.text[:300]}"
-        except Exception as e:  # noqa: BLE001
-            return False, str(e)
+        return await notifier_send(
+            webhook, "ait.handoff_requested", data,
+            fmt=tenant_settings.get("notification_format"),
+        )
 
     async def list_pending(self, tenant_id: str, limit: int = 50) -> list[dict]:
         """列出租戶底下所有未解決的 handoff (status == pending)。"""

@@ -8,6 +8,54 @@ const AI = process.env.NEXT_PUBLIC_AI_ENGINE_URL || 'http://localhost:8000'
 
 type TabKey = 'list' | 'runs'
 
+const TRACE_TYPE_COLOR: Record<string, string> = {
+  action: 'bg-zinc-600/30 text-zinc-300',
+  if: 'bg-amber-500/20 text-amber-300',
+  parallel: 'bg-cyan-500/20 text-cyan-300',
+  loop: 'bg-purple-500/20 text-purple-300',
+}
+
+function TraceView({ trace, vars, error }: { trace: any[]; vars: Record<string, any>; error?: string }) {
+  return (
+    <div className="border-t border-zinc-700 px-3 py-2 space-y-2">
+      {error && (
+        <div className="rounded border border-red-500/40 bg-red-500/5 px-2 py-1 text-[11px] text-red-300">
+          {error}
+        </div>
+      )}
+      <div>
+        <p className="text-[10px] text-zinc-500 mb-1">Trace ({trace.length} steps)</p>
+        {trace.length === 0 ? (
+          <p className="text-[11px] text-zinc-500">no steps recorded</p>
+        ) : (
+          <div className="space-y-0.5">
+            {trace.map((t, i) => (
+              <div key={i} className="flex items-center gap-2 text-[11px]">
+                <span className="text-zinc-600 font-mono w-6 text-right">{i + 1}.</span>
+                <span className={`rounded px-1.5 py-0 text-[10px] ${TRACE_TYPE_COLOR[t.type] || 'bg-zinc-600/20 text-zinc-400'}`}>
+                  {t.type}
+                </span>
+                <code className="text-zinc-300">{t.step}</code>
+                {typeof t.branch === 'number' && (
+                  <span className="text-cyan-400 text-[10px]">branch {t.branch}</span>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+      {vars && Object.keys(vars).length > 0 && (
+        <div>
+          <p className="text-[10px] text-zinc-500 mb-1">Final vars</p>
+          <pre className="max-h-40 overflow-auto rounded border border-zinc-700 bg-zinc-900/80 p-2 text-[10px] font-mono text-zinc-300">
+            {JSON.stringify(vars, null, 2)}
+          </pre>
+        </div>
+      )}
+    </div>
+  )
+}
+
 const STEP_TEMPLATES = [
   { id: '', action: 'show_widget', label: 'Show Widget', widget: { type: 'confirm', question: '' } },
   { id: '', action: 'collect_input', label: 'Collect Input', widget: { type: 'form', fields: [] } },
@@ -27,6 +75,8 @@ export default function WorkflowsPage() {
   const [loading, setLoading] = useState(true)
   const [expandedWf, setExpandedWf] = useState<string | null>(null)
   const [wfRuns, setWfRuns] = useState<any[]>([])
+  const [expandedRunId, setExpandedRunId] = useState<string | null>(null)
+  const [runDetails, setRunDetails] = useState<any>(null)
   const [testingWf, setTestingWf] = useState<string | null>(null)
   const [testRun, setTestRun] = useState<any>(null)
   const [autoRunningWf, setAutoRunningWf] = useState<string | null>(null)
@@ -113,6 +163,16 @@ export default function WorkflowsPage() {
     const d = await r.json()
     setWfRuns(d.runs || [])
     setExpandedWf(wfId)
+    setExpandedRunId(null)
+    setRunDetails(null)
+  }
+
+  const loadRunDetails = async (runId: string) => {
+    if (expandedRunId === runId) { setExpandedRunId(null); setRunDetails(null); return }
+    const r = await fetch(`${AI}/api/v1/workflows/runs/${runId}`)
+    const d = await r.json()
+    setRunDetails(d)
+    setExpandedRunId(runId)
   }
 
   const handleTestRun = async (wfId: string) => {
@@ -324,20 +384,36 @@ export default function WorkflowsPage() {
                 </div>
                 {/* Expanded: Run History */}
                 {expandedWf === wf.id && (
-                  <div className="border-t border-zinc-700 px-4 py-3">
-                    {wfRuns.length > 0 ? wfRuns.map((run) => (
-                      <div key={run.id} className="flex items-center justify-between py-1.5 border-b border-zinc-700/50 last:border-0">
-                        <div className="flex items-center gap-3">
-                          <span className="text-xs text-zinc-400">{new Date(run.started_at).toLocaleString('zh-TW')}</span>
-                          <span className={`rounded px-1.5 py-0.5 text-[10px] ${
-                            run.status === 'completed' ? 'bg-green-500/20 text-green-400' :
-                            run.status === 'running' || run.status === 'waiting_input' ? 'bg-blue-500/20 text-blue-400' :
-                            'bg-zinc-600/20 text-zinc-400'
-                          }`}>{run.status}</span>
+                  <div className="border-t border-zinc-700 px-4 py-3 space-y-1">
+                    {wfRuns.length > 0 ? wfRuns.map((run) => {
+                      const ctx = run.context_json || {}
+                      const trace = Array.isArray(ctx._trace) ? ctx._trace : []
+                      const vars = ctx.vars || {}
+                      const isOpen = expandedRunId === run.id
+                      return (
+                        <div key={run.id} className="rounded border border-zinc-700/60 bg-zinc-800/40">
+                          <button
+                            onClick={() => loadRunDetails(run.id)}
+                            className="w-full flex items-center justify-between py-1.5 px-2 text-left hover:bg-zinc-700/30"
+                          >
+                            <div className="flex items-center gap-3">
+                              <span className="text-xs text-zinc-400">{new Date(run.started_at).toLocaleString('zh-TW')}</span>
+                              <span className={`rounded px-1.5 py-0.5 text-[10px] ${
+                                run.status === 'completed' ? 'bg-green-500/20 text-green-400' :
+                                run.status === 'failed' ? 'bg-red-500/20 text-red-400' :
+                                run.status === 'running' || run.status === 'waiting_input' ? 'bg-blue-500/20 text-blue-400' :
+                                'bg-zinc-600/20 text-zinc-400'
+                              }`}>{run.status}</span>
+                              <span className="text-[10px] text-zinc-500">{trace.length || ctx._step_count || 0} steps</span>
+                            </div>
+                            <span className="text-zinc-600 text-[10px]">{isOpen ? '[-]' : '[+]'}</span>
+                          </button>
+                          {isOpen && runDetails?.id === run.id && (
+                            <TraceView trace={((runDetails.context_json || {})._trace) || []} vars={(runDetails.context_json || {}).vars || {}} error={(runDetails.context_json || {})._error} />
+                          )}
                         </div>
-                        <span className="text-[10px] text-zinc-500">{run.current_step || '-'}</span>
-                      </div>
-                    )) : (
+                      )
+                    }) : (
                       <p className="text-xs text-zinc-500 text-center py-4">{t('workflows.noRuns')}</p>
                     )}
                   </div>

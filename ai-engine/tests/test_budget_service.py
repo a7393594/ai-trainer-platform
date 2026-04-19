@@ -99,29 +99,19 @@ async def test_check_and_notify_posts_webhook_when_threshold_crossed(svc, monkey
     patched = {}
     monkeypatch.setattr("app.db.crud.update_tenant_settings", lambda tid, p: patched.update(p))
 
-    class _Resp:
-        status_code = 200
-        text = "ok"
+    called = {}
 
-    class _Client:
-        def __init__(self, *a, **kw):
-            pass
+    async def fake_send(url, event, data, fmt=None):
+        called["url"] = url
+        called["event"] = event
+        called["data"] = data
+        return True, None
 
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *a):
-            return False
-
-        async def post(self, url, json=None):
-            _Client.called = (url, json)
-            return _Resp()
-
-    import httpx as _httpx
-    monkeypatch.setattr(_httpx, "AsyncClient", _Client)
+    monkeypatch.setattr("app.core.budget.service.notifier_send", fake_send)
 
     result = await svc.check_and_notify("t1")
     assert result["notified"] is True
-    assert _Client.called[0] == "http://hook.test/notify"
-    assert _Client.called[1]["level"] == "threshold"
+    assert called["url"] == "http://hook.test/notify"
+    assert called["event"] == "ait.budget_alert"
+    assert called["data"]["level"] == "threshold"
     assert patched["budget_alert_sent_for"] == "threshold"

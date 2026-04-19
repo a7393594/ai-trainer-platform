@@ -17,8 +17,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any, Optional
 
-import httpx
-
+from app.core.notifier import send as notifier_send
 from app.db import crud
 
 
@@ -111,8 +110,7 @@ class BudgetService:
         ok = False
         detail: str | None = None
         if webhook:
-            payload = {
-                "event": "ait.budget_alert",
+            data = {
                 "tenant_id": tenant_id,
                 "level": current_level,
                 "month": current_month,
@@ -121,14 +119,10 @@ class BudgetService:
                 "pct": status["pct"],
                 "threshold": status["threshold"],
             }
-            try:
-                async with httpx.AsyncClient(timeout=10) as client:
-                    resp = await client.post(webhook, json=payload)
-                ok = 200 <= resp.status_code < 300
-                detail = None if ok else f"HTTP {resp.status_code}: {resp.text[:300]}"
-            except Exception as e:  # noqa: BLE001
-                ok = False
-                detail = str(e)
+            ok, detail = await notifier_send(
+                webhook, "ait.budget_alert", data,
+                fmt=settings.get("notification_format"),
+            )
         else:
             detail = "no webhook configured"
 
