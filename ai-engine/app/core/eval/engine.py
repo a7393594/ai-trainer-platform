@@ -309,6 +309,72 @@ class EvalEngine:
         except Exception as e:  # noqa: BLE001
             return 50, False, f"judge failed: {e}"
 
+    async def cluster_gaps(
+        self,
+        run_id: str,
+        max_clusters: int = 6,
+        judge_model: str = "claude-sonnet-4-20250514",
+    ) -> dict:
+        """將 run 中失敗的測試案例用 LLM 聚類為弱點類別。
+
+        回傳：
+          {
+            "run_id": ...,
+            "failure_count": N,
+            "clusters": [
+              {"name": "...", "description": "...", "test_case_ids": [...], "suggestion": "..."}
+            ]
+          }
+        """
+        details = crud.get_eval_run_details(run_id)
+        items = details.get("results", []) if isinstance(details, dict) else details
+        failed = [r for r in (items or []) if not r.get("passed")]
+        if not failed:
+            return {"run_id": run_id, "failure_count": 0, "clusters": []}
+
+        # 準備聚類輸入
+        lines = []
+        for r in failed[:40]:  # 控制 token；取前 40 筆
+            tc = r.get("test_case") or {}
+            inp = (tc.get("input_text") or r.get("input") or "")[:220]
+            exp = (tc.get("expected_output") or r.get("expected") or "")[:180]
+            act = (r.get("actual_output") or "")[:180]
+            lines.append(
+                f"- id={r.get('id')} | category={tc.get('category') or 'n/a'}\n"
+                f"  input: {inp}\n  expected: {exp}\n  actual: {act}"
+            )
+
+        sys_prompt = (
+            "你是 AI 測試失敗分析師。請把下列失敗案例聚類成最多 "
+            f"{max_clusters} 組弱點類別。回傳純 JSON：\n"
+            "{ \"clusters\": [ {\"name\": \"類別名\", \"description\": \"一句話說明共通失因\", "
+            "\"test_case_ids\": [\"id1\",\"id2\"], \"suggestion\": \"補救建議（Prompt/RAG/Eval 三選一）\"} ] }"
+        )
+        user = "失敗案例列表：\n" + "\n".join(lines)
+
+        try:
+            resp = await chat_completion(
+                messages=[{"role": "system", "content": sys_prompt}, {"role": "user", "content": user}],
+                model=judge_model,
+                max_tokens=1500,
+                temperature=0.2,
+            )
+            raw = (resp.choices[0].message.content or "").strip()
+            s = raw.find("{")
+            e = raw.rfind("}")
+            data = json.loads(raw[s : e + 1]) if s >= 0 and e > s else {}
+            clusters = data.get("clusters", []) if isinstance(data, dict) else []
+        except Exception as e:  # noqa: BLE001
+            return {"run_id": run_id, "failure_count": len(failed), "clusters": [], "error": str(e)}
+
+        return {
+            "run_id": run_id,
+            "failure_count": len(failed),
+            "analyzed": min(len(failed), 40),
+            "judge_model": judge_model,
+            "clusters": clusters,
+        }
+
     def compare_runs(self, project_id: str, run_id: str) -> dict:
         """Compare a run with its predecessor, with threshold-based regression detection"""
         data = crud.get_regression_comparison(project_id, run_id)

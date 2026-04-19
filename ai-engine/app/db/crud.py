@@ -1117,6 +1117,54 @@ def create_audit_log(tenant_id: str, user_id: Optional[str] = None, action_type:
     return get_supabase().table(T_AUDIT).insert(data).execute().data[0]
 
 
+def get_tool_call_stats(tenant_id: str, since_iso: Optional[str] = None) -> dict:
+    """按 tool 聚合呼叫統計（呼叫次數、成功率、平均延遲、錯誤筆數）。"""
+    q = (
+        get_supabase().table(T_AUDIT)
+        .select("tool_id, status, duration_ms, created_at")
+        .eq("tenant_id", tenant_id)
+        .eq("action_type", "tool_call")
+    )
+    if since_iso:
+        q = q.gte("created_at", since_iso)
+    rows = q.execute().data or []
+
+    by_tool: dict[str, dict] = {}
+    for r in rows:
+        tid = r.get("tool_id") or "unknown"
+        bucket = by_tool.setdefault(tid, {"calls": 0, "success": 0, "error": 0, "dry_run": 0, "total_latency": 0})
+        bucket["calls"] += 1
+        status = r.get("status") or "success"
+        if status in bucket:
+            bucket[status] += 1
+        else:
+            bucket.setdefault(status, 0)
+            bucket[status] += 1
+        bucket["total_latency"] += r.get("duration_ms") or 0
+
+    # 解析 tool name
+    ids = [k for k in by_tool.keys() if k != "unknown"]
+    name_map: dict[str, str] = {}
+    if ids:
+        for i in range(0, len(ids), 50):
+            chunk = ids[i : i + 50]
+            tools = get_supabase().table(T_TOOLS).select("id,name,tool_type").in_("id", chunk).execute().data or []
+            for t in tools:
+                name_map[t["id"]] = t.get("name") or t["id"][:8]
+
+    for tid, b in by_tool.items():
+        b["avg_latency_ms"] = round(b["total_latency"] / b["calls"]) if b["calls"] else 0
+        b["success_rate"] = round(b["success"] / b["calls"], 3) if b["calls"] else 0
+        b["name"] = name_map.get(tid, "unknown" if tid == "unknown" else tid[:8])
+
+    return {"total_calls": len(rows), "by_tool": by_tool}
+
+
+def update_project_default_model(project_id: str, default_model: str) -> Optional[dict]:
+    r = get_supabase().table("ait_projects").update({"default_model": default_model}).eq("id", project_id).execute()
+    return r.data[0] if r.data else None
+
+
 # ============================================
 # Capability Rules
 # ============================================

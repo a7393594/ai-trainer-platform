@@ -143,8 +143,13 @@ class FineTunePipeline:
             crud.update_finetune_job(job["id"], status="failed", error_message=str(e))
             return {"status": "failed", "job": job, "error": str(e)}
 
-    async def poll_job(self, job_id: str) -> dict:
-        """輪詢 provider 任務狀態，若完成則更新為 completed/failed。"""
+    async def poll_job(self, job_id: str, auto_switch: bool = True) -> dict:
+        """輪詢 provider 任務狀態，若完成則更新為 completed/failed。
+
+        完成（succeeded）時：
+          - result_model_id 覆寫為 provider 回傳的 fine-tuned model
+          - 若 auto_switch=True（預設），把 project.default_model 設為新模型
+        """
         job = crud.get_finetune_job(job_id)
         if not job:
             return {"status": "error", "message": "Job not found"}
@@ -160,10 +165,27 @@ class FineTunePipeline:
             if provider == "openai":
                 info = await self._poll_openai(external_id)
                 if info["status"] == "succeeded":
-                    crud.update_finetune_job(
-                        job_id, status="completed", result_model_id=info["fine_tuned_model"],
-                    )
-                elif info["status"] == "failed":
+                    new_model = info.get("fine_tuned_model") or ""
+                    crud.update_finetune_job(job_id, status="completed", result_model_id=new_model)
+                    switched_from = None
+                    if auto_switch and new_model:
+                        project_id = job.get("project_id")
+                        if project_id:
+                            try:
+                                project = crud.get_project(project_id)
+                                switched_from = (project or {}).get("default_model")
+                                crud.update_project_default_model(project_id, new_model)
+                            except Exception as e:  # noqa: BLE001
+                                print(f"[WARN] auto-switch default_model failed: {e}")
+                    return {
+                        "status": "succeeded",
+                        "job": crud.get_finetune_job(job_id),
+                        "external": info,
+                        "auto_switched": bool(auto_switch and new_model),
+                        "switched_from": switched_from,
+                        "switched_to": new_model if auto_switch else None,
+                    }
+                if info["status"] == "failed":
                     crud.update_finetune_job(job_id, status="failed", error_message=info.get("error") or "failed")
                 return {"status": info["status"], "job": crud.get_finetune_job(job_id), "external": info}
         except FineTuneSubmitError as e:

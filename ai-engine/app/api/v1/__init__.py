@@ -514,6 +514,15 @@ async def ai_review_eval_run(run_id: str, data: dict = {}):
     return result
 
 
+@router.post("/eval/runs/{run_id}/cluster-gaps")
+async def cluster_eval_gaps(run_id: str, data: dict = {}):
+    """把 run 內失敗案例聚類成弱點類別 + 補救建議。"""
+    from app.core.eval.engine import eval_engine
+    max_clusters = int((data or {}).get("max_clusters", 6))
+    judge_model = (data or {}).get("judge_model") or "claude-sonnet-4-20250514"
+    return await eval_engine.cluster_gaps(run_id, max_clusters=max_clusters, judge_model=judge_model)
+
+
 # ============================================
 # 評估分析
 # ============================================
@@ -756,10 +765,11 @@ async def get_project_analytics(project_id: str, days: int = 30):
         by_endpoint[ep]["calls"] += 1
         by_endpoint[ep]["cost"] += r.get("cost_usd", 0) or 0
 
-    # 5. Registered tools
+    # 5. Registered tools + 實際呼叫細分統計
     project_data = crud.get_project(project_id)
     tenant_id = project_data.get("tenant_id") if project_data else None
     tools = crud.list_tools(tenant_id) if tenant_id else []
+    tool_call_stats = crud.get_tool_call_stats(tenant_id, since) if tenant_id else {"total_calls": 0, "by_tool": {}}
 
     # 6. Prompt versions
     prompts = crud.list_prompt_versions(project_id)
@@ -788,6 +798,8 @@ async def get_project_analytics(project_id: str, days: int = 30):
         "tools": {
             "registered": len(tools),
             "tool_names": [t["name"] for t in tools],
+            "total_calls": tool_call_stats.get("total_calls", 0),
+            "by_tool": tool_call_stats.get("by_tool", {}),
         },
         "prompts": {
             "total_versions": len(prompts),
@@ -922,13 +934,28 @@ async def delete_workflow_api(workflow_id: str):
 
 @router.post("/workflows/{workflow_id}/start")
 async def start_workflow_api(workflow_id: str, data: dict):
-    """啟動工作流執行"""
+    """啟動工作流執行（步進式，需人工推進）"""
     from app.core.workflows.engine import workflow_engine
     result = await workflow_engine.start_workflow(
         workflow_id, data.get("session_id", ""), data.get("user_id", "")
     )
     if result.get("status") == "error":
         raise HTTPException(status_code=400, detail=result["detail"])
+    return result
+
+
+@router.post("/workflows/{workflow_id}/run")
+async def run_workflow_to_completion_api(workflow_id: str, data: dict = {}):
+    """從頭跑到尾（自動編排，支援 if/parallel/loop）"""
+    from app.core.workflows.engine import workflow_engine
+    result = await workflow_engine.run_to_completion(
+        workflow_id,
+        session_id=(data or {}).get("session_id"),
+        user_id=(data or {}).get("user_id"),
+        initial_vars=(data or {}).get("initial_vars") or {},
+    )
+    if result.get("status") == "error":
+        raise HTTPException(status_code=400, detail=result.get("detail", "error"))
     return result
 
 
