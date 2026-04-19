@@ -17,6 +17,7 @@ from typing import Optional
 
 from app.core.llm_router.router import chat_completion
 from app.db import crud
+from app.db.supabase import get_supabase
 
 
 DEFAULT_THRESHOLD = 20
@@ -95,6 +96,61 @@ class ConversationSummarizer:
             "summary": summary,
             "persisted_message_id": saved_id,
             "model": model,
+        }
+
+
+    async def batch_summarize_project(
+        self,
+        project_id: str,
+        threshold: int = DEFAULT_THRESHOLD,
+        model: str = DEFAULT_MODEL,
+        persist: bool = True,
+        skip_already_summarized: bool = True,
+        limit: int = 50,
+    ) -> dict:
+        """回頭把 project 內長 session 批次壓縮（cron-friendly）。
+
+        會跳過訊息數 < threshold、或已經有 summary 系統訊息的 session。
+        回傳 {total, summarized, skipped, errors}。
+        """
+        db = get_supabase()
+        sessions = (
+            db.table("ait_training_sessions").select("id")
+            .eq("project_id", project_id).order("created_at", desc=True)
+            .limit(min(max(1, limit), 500)).execute()
+        ).data or []
+
+        summarized = skipped = errors = 0
+        results: list[dict] = []
+        for s in sessions:
+            sid = s["id"]
+            try:
+                if skip_already_summarized:
+                    msgs = crud.list_messages(sid) or []
+                    has_summary = any(
+                        (m.get("metadata") or {}).get("summary") for m in msgs if m.get("role") == "system"
+                    )
+                    if has_summary:
+                        skipped += 1
+                        results.append({"session_id": sid, "status": "skipped_existing"})
+                        continue
+                r = await self.summarize_session(sid, threshold=threshold, model=model, persist=persist)
+                if r.get("status") == "summarized":
+                    summarized += 1
+                else:
+                    skipped += 1
+                results.append({"session_id": sid, "status": r.get("status")})
+            except Exception as e:  # noqa: BLE001
+                errors += 1
+                results.append({"session_id": sid, "status": "error", "detail": str(e)[:200]})
+
+        return {
+            "project_id": project_id,
+            "total": len(sessions),
+            "summarized": summarized,
+            "skipped": skipped,
+            "errors": errors,
+            "results": results,
         }
 
 

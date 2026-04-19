@@ -2,7 +2,7 @@
 API v1 路由 — 所有對外端點
 """
 import json
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from app.models.schemas import (
     ChatRequest, ChatResponse,
@@ -457,6 +457,52 @@ async def test_tool(tool_id: str):
     return result
 
 
+@router.post("/summarize/project/{project_id}")
+async def batch_summarize_sessions(project_id: str, data: dict = {}):
+    """批次壓縮此專案中較長的 sessions（cron-friendly）。"""
+    from app.core.summarizer.service import conversation_summarizer
+    result = await conversation_summarizer.batch_summarize_project(
+        project_id,
+        threshold=int((data or {}).get("threshold", 20)),
+        model=(data or {}).get("model") or "claude-haiku-4-5-20251001",
+        persist=bool((data or {}).get("persist", True)),
+        skip_already_summarized=bool((data or {}).get("skip_already_summarized", True)),
+        limit=int((data or {}).get("limit", 50)),
+    )
+    return result
+
+
+@router.get("/observability/trace/{project_id}")
+async def get_langfuse_links(project_id: str, limit: int = 20):
+    """從 ait_llm_usage.trace_id 推導 Langfuse UI 深連結（若已設定 host）。"""
+    from app.db.supabase import get_supabase
+    from app.config import settings
+    host = (settings.langfuse_host or "").rstrip("/")
+    if not host:
+        return {"enabled": False, "links": []}
+    rows = (
+        get_supabase().table("ait_llm_usage")
+        .select("id,trace_id,model,cost_usd,latency_ms,created_at")
+        .eq("project_id", project_id)
+        .order("created_at", desc=True)
+        .limit(min(max(1, limit), 200))
+        .execute()
+    ).data or []
+    links = [
+        {
+            "id": r["id"],
+            "model": r.get("model"),
+            "cost_usd": r.get("cost_usd"),
+            "latency_ms": r.get("latency_ms"),
+            "created_at": r.get("created_at"),
+            "trace_id": r.get("trace_id"),
+            "url": f"{host}/trace/{r['trace_id']}" if r.get("trace_id") else None,
+        }
+        for r in rows
+    ]
+    return {"enabled": True, "host": host, "links": links}
+
+
 @router.post("/chat/{session_id}/summarize")
 async def summarize_session(session_id: str, data: dict = {}):
     """將 session 的對話壓成摘要。可選 persist=True 寫入為 system 訊息。"""
@@ -549,6 +595,68 @@ async def get_plan_limits(tenant_id: str):
     """回傳租戶目前方案 + 當月使用量 + 是否超限。"""
     from app.core.plan.limits import plan_limits_service
     return plan_limits_service.check_usage(tenant_id)
+
+
+@router.post("/billing/{tenant_id}/checkout")
+async def create_billing_checkout(tenant_id: str, data: dict):
+    """建立 Stripe Checkout Session；無 Stripe config 時回 mock URL。"""
+    from app.core.billing.stripe_service import stripe_service, BillingError
+    plan = (data or {}).get("plan", "pro")
+    email = (data or {}).get("email")
+    try:
+        return await stripe_service.create_checkout_session(tenant_id, plan, user_email=email)
+    except BillingError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/billing/webhook")
+async def stripe_webhook(request: Request):
+    """接 Stripe webhook 事件（需驗 signature）。"""
+    from app.core.billing.stripe_service import stripe_service
+    import json as _json
+    body = await request.body()
+    signature = request.headers.get("stripe-signature", "")
+    if not stripe_service.verify_signature(body, signature):
+        raise HTTPException(status_code=400, detail="Invalid signature")
+    try:
+        event = _json.loads(body.decode("utf-8"))
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON")
+    return await stripe_service.handle_event(event)
+
+
+@router.get("/sso/{tenant_id}")
+async def get_sso_config(tenant_id: str):
+    """取得租戶的 SSO 設定。"""
+    from app.core.sso.service import sso_service
+    return sso_service.get_config(tenant_id)
+
+
+@router.patch("/sso/{tenant_id}")
+async def update_sso_config(tenant_id: str, data: dict):
+    """更新租戶的 SSO 設定。"""
+    from app.core.sso.service import sso_service
+    updated = sso_service.update_config(
+        tenant_id,
+        allowed_email_domains=data.get("allowed_email_domains"),
+        oauth_providers=data.get("oauth_providers"),
+        enforced=data.get("enforced"),
+        sso_entity_id=data.get("sso_entity_id"),
+        sso_metadata_url=data.get("sso_metadata_url"),
+    )
+    if not updated:
+        raise HTTPException(status_code=400, detail="No valid fields or tenant not found")
+    return {"status": "updated", "tenant": updated}
+
+
+@router.get("/sso/resolve")
+async def resolve_sso_by_email(email: str = Query(...)):
+    """依 email 的 domain 解析應該導向哪個租戶 / IdP。"""
+    from app.core.sso.service import sso_service
+    hint = sso_service.resolve_tenant_by_email(email)
+    if not hint:
+        return {"matched": False}
+    return {"matched": True, **hint}
 
 
 @router.get("/budget/{tenant_id}")
@@ -1165,12 +1273,31 @@ async def get_project_analytics(project_id: str, days: int = 30):
         daily_activity.setdefault(day, {"sessions": 0})
         daily_activity[day]["sessions"] += 1
 
+    # Compression metrics snapshot (since last ai-engine start)
+    from app.core.orchestrator.agent import AgentOrchestrator
+    comp = AgentOrchestrator.compression_stats
+    saved_chars = max(0, comp["chars_before"] - comp["chars_after"])
+    compression_ratio = round(comp["chars_after"] / comp["chars_before"], 4) if comp["chars_before"] else 0
+
+    # Langfuse trace URL base (if configured)
+    from app.config import settings as _settings
+    langfuse_host = (_settings.langfuse_host or "").rstrip("/")
+
     return {
         "overview": {
             "total_sessions": total_sessions,
             "total_messages": total_messages,
             "user_messages": user_messages,
             "avg_messages_per_session": round(total_messages / total_sessions, 1) if total_sessions else 0,
+        },
+        "context_compression": {
+            "sessions_compressed": comp["sessions_compressed"],
+            "turns_dropped": comp["turns_dropped"],
+            "chars_saved": saved_chars,
+            "compression_ratio": compression_ratio,
+        },
+        "observability": {
+            "langfuse_host": langfuse_host,
         },
         "feedback": feedbacks,
         "tools": {

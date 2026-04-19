@@ -771,6 +771,14 @@ class AgentOrchestrator:
     HISTORY_COMPRESS_THRESHOLD = 30
     HISTORY_KEEP_RECENT = 8
 
+    # 壓縮計數器（全域 in-memory；重啟歸零。Analytics 可讀取當前值作為 health metric）
+    compression_stats = {
+        "sessions_compressed": 0,
+        "turns_dropped": 0,
+        "chars_before": 0,
+        "chars_after": 0,
+    }
+
     async def _load_history(self, session_id: str, exclude_last_user: bool = True) -> list:
         """載入對話歷史，轉為 LLM 格式。
 
@@ -800,10 +808,16 @@ class AgentOrchestrator:
 
         # 動態壓縮：尾端仍很長時，嘗試用 LLM 壓前段
         if len(dialogue) > self.HISTORY_COMPRESS_THRESHOLD:
-            compressed = await self._compress_history_head(dialogue[: -self.HISTORY_KEEP_RECENT])
+            head = dialogue[: -self.HISTORY_KEEP_RECENT]
+            chars_before = sum(len(m.get("content") or "") for m in head)
+            compressed = await self._compress_history_head(head)
             if compressed:
                 history.append({"role": "system", "content": f"[Auto-compressed earlier turns]\n{compressed}"})
                 dialogue = dialogue[-self.HISTORY_KEEP_RECENT :]
+                self.compression_stats["sessions_compressed"] += 1
+                self.compression_stats["turns_dropped"] += len(head)
+                self.compression_stats["chars_before"] += chars_before
+                self.compression_stats["chars_after"] += len(compressed)
 
         history.extend(
             {"role": m["role"], "content": m["content"]} for m in dialogue

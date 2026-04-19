@@ -172,6 +172,11 @@ def update_tenant_settings(tenant_id: str, settings_patch: dict) -> Optional[dic
     return r.data[0] if r.data else None
 
 
+def update_tenant_plan(tenant_id: str, plan: str) -> Optional[dict]:
+    r = get_supabase().table(T_TENANTS).update({"plan": plan}).eq("id", tenant_id).execute()
+    return r.data[0] if r.data else None
+
+
 def get_tenant_monthly_cost(tenant_id: str) -> float:
     """Sum cost_usd for the current calendar month across all projects of tenant."""
     from datetime import datetime, timezone
