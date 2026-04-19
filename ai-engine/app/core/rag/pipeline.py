@@ -46,7 +46,29 @@ class RAGPipeline:
     ) -> dict:
         doc = crud.create_knowledge_doc(project_id, title, source_type, content)
         chunks = self.chunk_text(content)
+        return await self._ingest_chunks(project_id, doc, chunks, content)
 
+    async def upload_url(
+        self, project_id: str, url: str, title: str | None = None
+    ) -> dict:
+        """抓取 URL 內容，抽出純文字，進 RAG 管線。"""
+        text, extracted_title = await self._fetch_url_text(url)
+        doc = crud.create_knowledge_doc(
+            project_id,
+            title or extracted_title or url,
+            "url",
+            text,
+        )
+        chunks = self.chunk_text(text)
+        doc = await self._ingest_chunks(project_id, doc, chunks, text)
+        doc["source_url"] = url
+        return doc
+
+    async def _ingest_chunks(
+        self, project_id: str, doc: dict, chunks: list[str], content: str
+    ) -> dict:
+        """Shared chunk persistence + embedding logic."""
+        _ = content  # currently only used for sizing; kept for future signal
         for i, chunk_text in enumerate(chunks):
             crud.create_knowledge_chunk(
                 doc_id=doc["id"],
@@ -54,7 +76,6 @@ class RAGPipeline:
                 chunk_index=i,
                 qdrant_point_id=f"{doc['id']}_{i}",
             )
-
         try:
             await self._create_embeddings(project_id, doc["id"], chunks)
         except Exception as e:  # noqa: BLE001
@@ -64,6 +85,45 @@ class RAGPipeline:
         doc["status"] = "ready"
         doc["chunk_count"] = len(chunks)
         return doc
+
+    async def _fetch_url_text(self, url: str) -> tuple[str, str | None]:
+        """Download URL and return (text, extracted_title). Falls back to raw text."""
+        import httpx  # lazy
+
+        headers = {"User-Agent": "ait-knowledge-bot/1.0"}
+        async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+            resp = await client.get(url, headers=headers)
+        resp.raise_for_status()
+        ctype = (resp.headers.get("content-type") or "").lower()
+        body = resp.text
+        if "html" in ctype or body.lstrip().startswith("<"):
+            return self._html_to_text(body)
+        # Plain text / markdown: use directly
+        return body.strip(), None
+
+    @staticmethod
+    def _html_to_text(html: str) -> tuple[str, str | None]:
+        """Extract readable text + <title> from HTML without external deps."""
+        import re
+
+        # Title
+        title: str | None = None
+        m = re.search(r"<title[^>]*>(.*?)</title>", html, re.IGNORECASE | re.DOTALL)
+        if m:
+            title = re.sub(r"\s+", " ", m.group(1)).strip()[:300] or None
+
+        # Drop script/style blocks
+        cleaned = re.sub(r"<(script|style|noscript)[^>]*>.*?</\1>", " ", html, flags=re.IGNORECASE | re.DOTALL)
+        # Strip tags
+        cleaned = re.sub(r"<[^>]+>", " ", cleaned)
+        # Decode common entities
+        cleaned = (
+            cleaned.replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">")
+            .replace("&quot;", '"').replace("&#39;", "'").replace("&nbsp;", " ")
+        )
+        # Collapse whitespace
+        cleaned = re.sub(r"\s+", " ", cleaned).strip()
+        return cleaned, title
 
     # --------------------------
     # 搜尋（依 backend 分派，失敗 fallback）

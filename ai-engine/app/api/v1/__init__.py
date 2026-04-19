@@ -281,13 +281,20 @@ async def get_onboarding_progress(session_id: str):
 
 @router.post("/knowledge/upload")
 async def upload_document(request: DocumentUploadRequest):
-    """上傳文件到知識庫"""
+    """上傳文件到知識庫（支援 upload / url / auto_extract）"""
     from app.core.rag.pipeline import rag_pipeline
     try:
-        doc = await rag_pipeline.upload_document(
-            request.project_id, request.title, request.content or "", request.source_type
-        )
+        if request.source_type == "url":
+            if not request.url:
+                raise HTTPException(status_code=400, detail="url required for source_type=url")
+            doc = await rag_pipeline.upload_url(request.project_id, request.url, request.title)
+        else:
+            doc = await rag_pipeline.upload_document(
+                request.project_id, request.title, request.content or "", request.source_type
+            )
         return {"status": "ready", "document": doc}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -317,14 +324,26 @@ async def batch_upload_documents(data: dict):
             continue
         title = (item.get("title") or f"Untitled {i+1}").strip()
         content = (item.get("content") or "").strip()
-        source_type = item.get("source_type") or "upload"
-        if not content:
+        url = (item.get("url") or "").strip()
+        source_type = item.get("source_type") or ("url" if url else "upload")
+        if source_type != "url" and not content:
             results.append({"index": i, "title": title, "status": "error", "detail": "empty content"})
             err += 1
             continue
+        if source_type == "url" and not url:
+            results.append({"index": i, "title": title, "status": "error", "detail": "missing url"})
+            err += 1
+            continue
         try:
-            doc = await rag_pipeline.upload_document(project_id, title, content, source_type)
-            results.append({"index": i, "title": title, "status": "ready", "doc_id": doc.get("id"), "chunk_count": doc.get("chunk_count", 0)})
+            if source_type == "url":
+                doc = await rag_pipeline.upload_url(project_id, url, title)
+            else:
+                doc = await rag_pipeline.upload_document(project_id, title, content, source_type)
+            results.append({
+                "index": i, "title": title, "status": "ready",
+                "doc_id": doc.get("id"), "chunk_count": doc.get("chunk_count", 0),
+                "source_type": source_type,
+            })
             ok += 1
         except Exception as e:  # noqa: BLE001
             results.append({"index": i, "title": title, "status": "error", "detail": str(e)[:300]})

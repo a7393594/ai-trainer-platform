@@ -194,9 +194,9 @@ class AgentOrchestrator:
     # ========================================
 
     async def _classify_intent(self, message: str, project_id: str) -> dict:
-        """意圖分類 — 語意比對能力規則"""
+        """意圖分類 — keyword + 語意 embedding (hybrid) 比對能力規則"""
         from app.core.intent.classifier import intent_classifier
-        result = intent_classifier.classify(message, project_id)
+        result = await intent_classifier.classify_async(message, project_id, mode="hybrid")
 
         # Check for active workflow (Phase 5)
         # TODO: check if user has an active workflow_run in waiting_input state
@@ -276,27 +276,61 @@ class AgentOrchestrator:
             return await self._general_chat(request, session_id, history)
 
         elif action_type == "workflow":
-            # Start a workflow
+            # Trigger a workflow. `run_mode: auto` 一次跑到結束（適合純自動化流程）；
+            # 其它值走步進式，讓使用者逐步推進（含 widget 互動）。
             from app.core.workflows.engine import workflow_engine
             workflow_id = action_config.get("workflow_id")
-            if workflow_id:
-                user_id = request.user_id or "anonymous"
-                result = await workflow_engine.start_workflow(workflow_id, session_id, user_id)
-                if result.get("status") == "started":
-                    text = f"已啟動工作流：{result.get('workflow_name', '')}。\n\n當前步驟：{result.get('current_step', {}).get('id', '')}"
-                    assistant_msg = crud.create_message(
-                        session_id=session_id, role="assistant", content=text,
-                        metadata={"workflow_run_id": result.get("run_id"), "capability_rule_id": rule["id"]},
-                    )
-                    # If first step has a widget, include it
-                    step = result.get("current_step", {})
-                    widgets = [step.get("widget")] if step.get("widget") else []
-                    return ChatResponse(
-                        session_id=session_id,
-                        message=ChatMessage(role=Role.ASSISTANT, content=text),
-                        message_id=assistant_msg["id"],
-                        widgets=widgets,
-                    )
+            run_mode = action_config.get("run_mode", "step")
+            if not workflow_id:
+                return await self._general_chat(request, session_id, history)
+
+            user_id = request.user_id or "anonymous"
+
+            if run_mode == "auto":
+                result = await workflow_engine.run_to_completion(
+                    workflow_id,
+                    session_id=session_id,
+                    user_id=user_id,
+                    initial_vars={"message": request.message},
+                )
+                status = result.get("status")
+                trace_len = len(result.get("trace") or [])
+                if status == "completed":
+                    text = f"工作流已自動執行完成（{trace_len} 個步驟）。"
+                else:
+                    text = f"工作流執行失敗：{result.get('error', 'unknown')}"
+                assistant_msg = crud.create_message(
+                    session_id=session_id, role="assistant", content=text,
+                    metadata={
+                        "workflow_run_id": result.get("run_id"),
+                        "capability_rule_id": rule["id"],
+                        "workflow_status": status,
+                        "workflow_vars": result.get("vars"),
+                    },
+                )
+                return ChatResponse(
+                    session_id=session_id,
+                    message=ChatMessage(role=Role.ASSISTANT, content=text),
+                    message_id=assistant_msg["id"],
+                    metadata={"workflow_status": status, "workflow_run_id": result.get("run_id")},
+                )
+
+            # 步進式（原本行為）
+            result = await workflow_engine.start_workflow(workflow_id, session_id, user_id)
+            if result.get("status") == "started":
+                text = f"已啟動工作流：{result.get('workflow_name', '')}。\n\n當前步驟：{result.get('current_step', {}).get('id', '')}"
+                assistant_msg = crud.create_message(
+                    session_id=session_id, role="assistant", content=text,
+                    metadata={"workflow_run_id": result.get("run_id"), "capability_rule_id": rule["id"]},
+                )
+                step = result.get("current_step", {})
+                widgets = [step.get("widget")] if step.get("widget") else []
+                return ChatResponse(
+                    session_id=session_id,
+                    message=ChatMessage(role=Role.ASSISTANT, content=text),
+                    message_id=assistant_msg["id"],
+                    widgets=widgets,
+                )
 
             return await self._general_chat(request, session_id, history)
 
