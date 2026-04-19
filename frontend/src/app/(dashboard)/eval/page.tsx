@@ -23,6 +23,8 @@ export default function EvalPage() {
   const [runDetails, setRunDetails] = useState<any>(null)
   const [loading, setLoading] = useState(true)
   const [lastEvalResult, setLastEvalResult] = useState<any>(null)
+  const [reviewingRunId, setReviewingRunId] = useState<string | null>(null)
+  const [lastAiReview, setLastAiReview] = useState<any>(null)
 
   // Analytics state
   const [trend, setTrend] = useState<EvalTrendPoint[]>([])
@@ -89,6 +91,28 @@ export default function EvalPage() {
     const r = await fetch(`${AI}/api/v1/eval/runs/${runId}/details`)
     setRunDetails(await r.json())
     setExpandedRun(runId)
+  }
+
+  const handleAiReview = async (runId: string) => {
+    setReviewingRunId(runId)
+    setLastAiReview(null)
+    try {
+      const r = await fetch(`${AI}/api/v1/eval/runs/${runId}/ai-review`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ judge_model: 'claude-opus-4-20250514' }),
+      })
+      const d = await r.json()
+      setLastAiReview(d)
+      if (projectId) await loadRuns(projectId)
+      if (expandedRun === runId) {
+        const dr = await fetch(`${AI}/api/v1/eval/runs/${runId}/details`)
+        setRunDetails(await dr.json())
+      }
+    } catch {
+      /* ignore */
+    }
+    setReviewingRunId(null)
   }
 
   // Analytics loaders
@@ -256,9 +280,24 @@ export default function EvalPage() {
                       <div className="flex items-center gap-2">
                         <span className="text-xs text-green-400">{run.passed_count} {t('eval.passed')}</span>
                         <span className="text-xs text-red-400">{run.failed_count} {t('eval.failed')}</span>
+                        <span
+                          role="button"
+                          onClick={(e) => { e.stopPropagation(); handleAiReview(run.id) }}
+                          className={`rounded px-2 py-0.5 text-[10px] border ${reviewingRunId === run.id ? 'border-purple-500 text-purple-300 bg-purple-500/10' : 'border-zinc-600 text-zinc-400 hover:border-purple-500 hover:text-purple-300'} cursor-pointer`}
+                          title="用 Opus 重新評審此次 run"
+                        >
+                          {reviewingRunId === run.id ? 'Reviewing…' : 'AI Review'}
+                        </span>
                         <span className="text-zinc-600">{expandedRun === run.id ? '[-]' : '[+]'}</span>
                       </div>
                     </button>
+                    {lastAiReview?.run_id === run.id && (
+                      <div className="mx-4 mb-2 rounded border border-purple-500/30 bg-purple-500/5 px-3 py-2 text-[11px] text-purple-200">
+                        AI Review 完成 · 新均分 <strong>{Math.round(lastAiReview.updated_score)}</strong>
+                        · 通過 {lastAiReview.passed_count}/{lastAiReview.passed_count + lastAiReview.failed_count}
+                        · judge <code className="text-purple-300">{lastAiReview.judge_model}</code>
+                      </div>
+                    )}
                     {expandedRun === run.id && runDetails && (
                       <div className="border-t border-zinc-700 px-4 py-3 space-y-2">
                         {runDetails.results?.map((r: any, i: number) => (

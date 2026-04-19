@@ -13,6 +13,8 @@ class Settings(BaseSettings):
     # Qdrant
     qdrant_url: str = "http://localhost:6333"
     qdrant_api_key: Optional[str] = None
+    # Vector backend: "pgvector" (Supabase) or "qdrant"
+    vector_backend: str = "pgvector"
 
     # LLM API Keys
     openai_api_key: Optional[str] = None

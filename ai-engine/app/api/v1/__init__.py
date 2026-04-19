@@ -437,13 +437,17 @@ async def delete_capability(rule_id: str):
 
 @router.post("/capabilities/classify")
 async def classify_intent(data: dict):
-    """測試意圖分類"""
+    """測試意圖分類。`mode` ∈ {keyword,semantic,hybrid}（預設 hybrid）"""
     from app.core.intent.classifier import intent_classifier
     project_id = data.get("project_id", "")
     message = data.get("message", "")
+    mode = data.get("mode", "hybrid")
+    threshold = float(data.get("threshold", 0.3))
     if not project_id or not message:
         raise HTTPException(status_code=400, detail="project_id and message required")
-    result = intent_classifier.classify(message, project_id)
+    result = await intent_classifier.classify_async(
+        message, project_id, mode=mode, threshold=threshold,
+    )
     return result
 
 
