@@ -197,7 +197,13 @@ class WorkflowEngine:
         if not workflow:
             return {"status": "error", "detail": "Workflow not found"}
 
-        steps = self._normalize_steps(workflow.get("steps_json", []))
+        # Lab experiment hook: allow callers to override steps for a single run
+        # without mutating the workflow definition. `_steps_override` in
+        # initial_vars takes precedence; invalid overrides fall back to the
+        # stored workflow to avoid aborting the run.
+        override_steps = (initial_vars or {}).get("_steps_override") if initial_vars else None
+        steps_source = override_steps if isinstance(override_steps, list) and override_steps else workflow.get("steps_json", [])
+        steps = self._normalize_steps(steps_source)
         if not steps:
             return {"status": "error", "detail": "Workflow has no steps"}
 

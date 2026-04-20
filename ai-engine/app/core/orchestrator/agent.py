@@ -883,8 +883,21 @@ class AgentOrchestrator:
             print(f"[WARN] _compress_history_head failed: {e}")
             return None
 
-    async def _load_active_prompt(self, project_id: str, session_id: Optional[str] = None) -> Optional[str]:
-        """載入專案目前使用的系統提示詞。若有 A/B test 啟用，依 session 決定變體。"""
+    async def _load_active_prompt(
+        self,
+        project_id: str,
+        session_id: Optional[str] = None,
+        prompt_override: Optional[str] = None,
+    ) -> Optional[str]:
+        """載入專案目前使用的系統提示詞。
+
+        優先序：
+          1) prompt_override（Lab 實驗用 — 最高優先）
+          2) A/B test 變體
+          3) 專案 active prompt
+        """
+        if prompt_override:
+            return prompt_override
         if session_id:
             try:
                 from app.core.ab_test.service import ab_test_service

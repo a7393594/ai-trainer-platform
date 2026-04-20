@@ -512,3 +512,13 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_pipeline_cmp_selected
 -- migrates to user-scoped tokens, matching the pattern used for other ait_ tables)
 ALTER TABLE ait_pipeline_runs ENABLE ROW LEVEL SECURITY;
 ALTER TABLE ait_pipeline_node_comparisons ENABLE ROW LEVEL SECURITY;
+
+-- ================================================================
+-- Experiment Studio (Lab) — metadata bag for lab runs
+-- Stores {source_type, source_id, overrides:{...}, demo_inputs:[...]}
+-- Additive only; safe to re-run.
+-- ================================================================
+ALTER TABLE ait_pipeline_runs
+  ADD COLUMN IF NOT EXISTS metadata JSONB NOT NULL DEFAULT '{}'::jsonb;
+CREATE INDEX IF NOT EXISTS idx_pipeline_runs_metadata_source
+  ON ait_pipeline_runs((metadata->>'source_type'));

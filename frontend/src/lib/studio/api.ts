@@ -2,6 +2,11 @@
  * Pipeline Studio — API Client
  */
 import type {
+  CaseSummary,
+  LabBatchRerunResponse,
+  LabOverrides,
+  LabRerunResponse,
+  LabSourceType,
   PipelineComparison,
   PipelineRunDetail,
   RunDetailResponse,
@@ -180,5 +185,58 @@ export async function deletePipelineRun(
 ): Promise<{ deleted: string }> {
   return request<{ deleted: string }>(`/api/v1/pipeline/runs/${runId}`, {
     method: 'DELETE',
+  })
+}
+
+// ============================================================================
+// Experiment Studio (Lab)
+// ============================================================================
+
+export async function listCases(
+  projectId: string,
+  opts: { sourceType?: LabSourceType; limit?: number } = {}
+): Promise<{ items: CaseSummary[] }> {
+  const params = new URLSearchParams()
+  if (opts.sourceType) params.set('source_type', opts.sourceType)
+  if (opts.limit) params.set('limit', String(opts.limit))
+  const qs = params.toString()
+  return request<{ items: CaseSummary[] }>(
+    `/api/v1/lab/cases/by-project/${projectId}${qs ? `?${qs}` : ''}`
+  )
+}
+
+export async function labRerun(body: {
+  source_type: LabSourceType
+  source_id: string
+  input?: string
+  overrides?: LabOverrides
+  lab_run_id?: string
+}): Promise<LabRerunResponse> {
+  return request<LabRerunResponse>('/api/v1/lab/rerun', {
+    method: 'POST',
+    body: JSON.stringify(body),
+  })
+}
+
+export async function labBatchRerun(body: {
+  source_type: LabSourceType
+  source_id: string
+  inputs: string[]
+  overrides?: LabOverrides
+  lab_run_id?: string
+}): Promise<LabBatchRerunResponse> {
+  return request<LabBatchRerunResponse>('/api/v1/lab/batch-rerun', {
+    method: 'POST',
+    body: JSON.stringify(body),
+  })
+}
+
+export async function saveLabOverrides(
+  labRunId: string,
+  body: { overrides?: LabOverrides; demo_inputs?: string[] }
+): Promise<{ run: unknown }> {
+  return request<{ run: unknown }>(`/api/v1/lab/runs/${labRunId}/overrides`, {
+    method: 'PUT',
+    body: JSON.stringify(body),
   })
 }
