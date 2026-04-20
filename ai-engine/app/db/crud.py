@@ -47,6 +47,7 @@ DEFAULT_DOMAIN_CONFIGS: dict[str, dict] = {
             {"href": "/behavior",     "label": "nav.behavior",  "icon": "🧠"},
             {"href": "/enhance",      "label": "nav.enhance",   "icon": "🧰"},
             {"href": "/studio",       "label": "nav.studio",    "icon": "🧬"},
+            {"href": "/lab",          "label": "nav.lab",       "icon": "🧪"},
             {"href": "/knowledge",    "label": "nav.knowledge", "icon": "📚"},
             {"href": "/integrations", "label": "nav.deploy",    "icon": "🔌"},
             {"href": "/settings",     "label": "nav.settings",  "icon": "⚙️"},
@@ -122,6 +123,7 @@ DEFAULT_DOMAIN_CONFIGS: dict[str, dict] = {
             {"href": "/knowledge",      "label": "nav.knowledge",       "icon": "📚"},
             {"href": "/prompts",        "label": "nav.prompts",         "icon": "✏️"},
             {"href": "/studio",         "label": "nav.studio",          "icon": "🧬"},
+            {"href": "/lab",            "label": "nav.lab",             "icon": "🧪"},
             {"href": "/tools",          "label": "nav.tools",           "icon": "🔧"},
             {"href": "/capabilities",   "label": "nav.capabilities",   "icon": "⚡"},
             {"href": "/workflows",      "label": "nav.workflows",      "icon": "🔄"},
@@ -160,6 +162,49 @@ def create_tenant(name: str, plan: str = "free") -> dict:
 def get_tenant(tenant_id: str) -> Optional[dict]:
     result = get_supabase().table(T_TENANTS).select("*").eq("id", tenant_id).execute()
     return result.data[0] if result.data else None
+
+
+def update_tenant_settings(tenant_id: str, settings_patch: dict) -> Optional[dict]:
+    """Merge-patch tenant.settings JSONB field."""
+    tenant = get_tenant(tenant_id)
+    if not tenant:
+        return None
+    merged = {**(tenant.get("settings") or {}), **(settings_patch or {})}
+    r = get_supabase().table(T_TENANTS).update({"settings": merged}).eq("id", tenant_id).execute()
+    return r.data[0] if r.data else None
+
+
+def update_tenant_plan(tenant_id: str, plan: str) -> Optional[dict]:
+    r = get_supabase().table(T_TENANTS).update({"plan": plan}).eq("id", tenant_id).execute()
+    return r.data[0] if r.data else None
+
+
+def get_tenant_monthly_cost(tenant_id: str) -> float:
+    """Sum cost_usd for the current calendar month across all projects of tenant."""
+    from datetime import datetime, timezone
+
+    now = datetime.now(tz=timezone.utc)
+    month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0).isoformat()
+    # Projects under this tenant
+    projects = (
+        get_supabase().table("ait_projects").select("id").eq("tenant_id", tenant_id).execute()
+    ).data or []
+    if not projects:
+        return 0.0
+    pids = [p["id"] for p in projects]
+    total = 0.0
+    # Batch in chunks
+    for i in range(0, len(pids), 50):
+        chunk = pids[i : i + 50]
+        rows = (
+            get_supabase().table("ait_llm_usage")
+            .select("cost_usd")
+            .in_("project_id", chunk)
+            .gte("created_at", month_start)
+            .execute()
+        ).data or []
+        total += sum(r.get("cost_usd") or 0 for r in rows)
+    return float(total)
 
 
 # ============================================
@@ -480,6 +525,34 @@ def get_feedback_stats(project_id: str) -> dict:
     return stats
 
 
+def get_feedback_stats_window(project_id: str, since_iso: str) -> dict:
+    """取得指定時間窗內的回饋統計（不受 1000 筆 cap）。"""
+    db = get_supabase()
+    sessions = db.table(T_SESSIONS).select("id").eq("project_id", project_id).execute().data or []
+    sids = [s["id"] for s in sessions]
+    if not sids:
+        return {"correct": 0, "partial": 0, "wrong": 0, "total": 0}
+    stats = {"correct": 0, "partial": 0, "wrong": 0, "total": 0}
+    for i in range(0, len(sids), 50):
+        chunk = sids[i : i + 50]
+        msgs = db.table(T_MESSAGES).select("id").in_("session_id", chunk).eq("role", "assistant").execute().data or []
+        mids = [m["id"] for m in msgs]
+        for j in range(0, len(mids), 50):
+            mchunk = mids[j : j + 50]
+            fbs = (
+                db.table(T_FEEDBACKS).select("rating")
+                .in_("message_id", mchunk)
+                .gte("created_at", since_iso)
+                .execute()
+            ).data or []
+            for fb in fbs:
+                r = fb.get("rating") or ""
+                if r in stats:
+                    stats[r] += 1
+                stats["total"] += 1
+    return stats
+
+
 # ============================================
 # Prompt Version
 # ============================================
@@ -522,6 +595,11 @@ def get_active_prompt(project_id: str) -> Optional[dict]:
         .execute()
     )
     return result.data[0] if result.data else None
+
+
+def get_prompt_version(version_id: str) -> Optional[dict]:
+    r = get_supabase().table(T_PROMPTS).select("*").eq("id", version_id).execute()
+    return r.data[0] if r.data else None
 
 
 def list_prompt_versions(project_id: str) -> list[dict]:
@@ -753,7 +831,62 @@ def list_eval_runs(project_id: str) -> list[dict]:
 def get_eval_run_details(run_id: str) -> dict:
     run = get_supabase().table(T_EVAL_RUNS).select("*").eq("id", run_id).execute()
     results = get_supabase().table(T_EVAL_RESULTS).select("*").eq("run_id", run_id).execute()
-    return {"run": run.data[0] if run.data else None, "results": results.data}
+    results_data = results.data or []
+    # 附上 test_case 詳情（input/expected/category）
+    if results_data:
+        tc_ids = list({r["test_case_id"] for r in results_data if r.get("test_case_id")})
+        if tc_ids:
+            tcs = (
+                get_supabase().table(T_TEST_CASES)
+                .select("id,input_text,expected_output,category").in_("id", tc_ids).execute()
+            ).data or []
+            tc_map = {tc["id"]: tc for tc in tcs}
+            for r in results_data:
+                r["test_case"] = tc_map.get(r.get("test_case_id"))
+    return {"run": run.data[0] if run.data else None, "results": results_data}
+
+
+def get_eval_run(run_id: str) -> Optional[dict]:
+    r = get_supabase().table(T_EVAL_RUNS).select("*").eq("id", run_id).execute()
+    return r.data[0] if r.data else None
+
+
+def update_eval_result(
+    result_id: str,
+    score: Optional[float] = None,
+    passed: Optional[bool] = None,
+    details: Optional[dict] = None,
+) -> dict:
+    data: dict = {}
+    if score is not None:
+        data["score"] = score
+    if passed is not None:
+        data["passed"] = passed
+    if details is not None:
+        data["details"] = details
+    if not data:
+        return {}
+    r = get_supabase().table(T_EVAL_RESULTS).update(data).eq("id", result_id).execute()
+    return r.data[0] if r.data else {}
+
+
+def update_eval_run_scores(
+    run_id: str,
+    total_score: Optional[float] = None,
+    passed_count: Optional[int] = None,
+    failed_count: Optional[int] = None,
+) -> dict:
+    data: dict = {}
+    if total_score is not None:
+        data["total_score"] = total_score
+    if passed_count is not None:
+        data["passed_count"] = passed_count
+    if failed_count is not None:
+        data["failed_count"] = failed_count
+    if not data:
+        return {}
+    r = get_supabase().table(T_EVAL_RUNS).update(data).eq("id", run_id).execute()
+    return r.data[0] if r.data else {}
 
 
 def get_eval_score_trend(project_id: str, limit: int = 20) -> list[dict]:
@@ -1060,6 +1193,80 @@ def create_audit_log(tenant_id: str, user_id: Optional[str] = None, action_type:
     if duration_ms is not None:
         data["duration_ms"] = duration_ms
     return get_supabase().table(T_AUDIT).insert(data).execute().data[0]
+
+
+def list_audit_logs(
+    tenant_id: str,
+    action_type: Optional[str] = None,
+    tool_id: Optional[str] = None,
+    status: Optional[str] = None,
+    limit: int = 100,
+    offset: int = 0,
+) -> list[dict]:
+    q = (
+        get_supabase().table(T_AUDIT)
+        .select("id,tenant_id,user_id,action_type,tool_id,status,duration_ms,request_data,response_data,created_at")
+        .eq("tenant_id", tenant_id)
+    )
+    if action_type:
+        q = q.eq("action_type", action_type)
+    if tool_id:
+        q = q.eq("tool_id", tool_id)
+    if status:
+        q = q.eq("status", status)
+    return (
+        q.order("created_at", desc=True)
+        .range(offset, offset + min(limit, 500) - 1)
+        .execute()
+    ).data or []
+
+
+def get_tool_call_stats(tenant_id: str, since_iso: Optional[str] = None) -> dict:
+    """按 tool 聚合呼叫統計（呼叫次數、成功率、平均延遲、錯誤筆數）。"""
+    q = (
+        get_supabase().table(T_AUDIT)
+        .select("tool_id, status, duration_ms, created_at")
+        .eq("tenant_id", tenant_id)
+        .eq("action_type", "tool_call")
+    )
+    if since_iso:
+        q = q.gte("created_at", since_iso)
+    rows = q.execute().data or []
+
+    by_tool: dict[str, dict] = {}
+    for r in rows:
+        tid = r.get("tool_id") or "unknown"
+        bucket = by_tool.setdefault(tid, {"calls": 0, "success": 0, "error": 0, "dry_run": 0, "total_latency": 0})
+        bucket["calls"] += 1
+        status = r.get("status") or "success"
+        if status in bucket:
+            bucket[status] += 1
+        else:
+            bucket.setdefault(status, 0)
+            bucket[status] += 1
+        bucket["total_latency"] += r.get("duration_ms") or 0
+
+    # 解析 tool name
+    ids = [k for k in by_tool.keys() if k != "unknown"]
+    name_map: dict[str, str] = {}
+    if ids:
+        for i in range(0, len(ids), 50):
+            chunk = ids[i : i + 50]
+            tools = get_supabase().table(T_TOOLS).select("id,name,tool_type").in_("id", chunk).execute().data or []
+            for t in tools:
+                name_map[t["id"]] = t.get("name") or t["id"][:8]
+
+    for tid, b in by_tool.items():
+        b["avg_latency_ms"] = round(b["total_latency"] / b["calls"]) if b["calls"] else 0
+        b["success_rate"] = round(b["success"] / b["calls"], 3) if b["calls"] else 0
+        b["name"] = name_map.get(tid, "unknown" if tid == "unknown" else tid[:8])
+
+    return {"total_calls": len(rows), "by_tool": by_tool}
+
+
+def update_project_default_model(project_id: str, default_model: str) -> Optional[dict]:
+    r = get_supabase().table("ait_projects").update({"default_model": default_model}).eq("id", project_id).execute()
+    return r.data[0] if r.data else None
 
 
 # ============================================

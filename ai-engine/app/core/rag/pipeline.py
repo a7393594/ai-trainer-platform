@@ -1,19 +1,33 @@
 """
-RAG Pipeline -- Knowledge upload, chunking, and search
-Uses Supabase pgvector for vector search with keyword fallback
+RAG Pipeline — 文件切塊、embedding 入庫、向量搜尋
+
+後端抽象：
+  - pgvector  : Supabase `ait_knowledge_embeddings` + RPC `ait_search_knowledge`
+  - qdrant    : 每專案獨立 collection `ait_kb_{project_id}`
+
+由 `settings.vector_backend` 控制：
+  - 寫入：雙寫（pgvector 為主，Qdrant 可用時同步寫入）
+  - 查詢：依 backend 選擇，主要後端失敗時 fallback 到另一個，最後 fallback 到 keyword
 """
+from __future__ import annotations
+
 from typing import Optional
-from app.db import crud
+
+from app.config import settings
+from app.db import crud, qdrant as qdrant_db
 from app.db.supabase import get_supabase
 
 
 class RAGPipeline:
 
+    # --------------------------
+    # 切塊
+    # --------------------------
+
     def chunk_text(self, text: str, chunk_size: int = 500, overlap: int = 50) -> list[str]:
-        """Split text into overlapping chunks"""
         if len(text) <= chunk_size:
             return [text]
-        chunks = []
+        chunks: list[str] = []
         start = 0
         while start < len(text):
             end = start + chunk_size
@@ -23,17 +37,38 @@ class RAGPipeline:
             start = end - overlap
         return chunks
 
+    # --------------------------
+    # 上傳
+    # --------------------------
+
     async def upload_document(
         self, project_id: str, title: str, content: str, source_type: str = "upload"
     ) -> dict:
-        """Upload document: save, chunk, store"""
-        # 1. Save doc record
         doc = crud.create_knowledge_doc(project_id, title, source_type, content)
-
-        # 2. Chunk content
         chunks = self.chunk_text(content)
+        return await self._ingest_chunks(project_id, doc, chunks, content)
 
-        # 3. Save chunks
+    async def upload_url(
+        self, project_id: str, url: str, title: str | None = None
+    ) -> dict:
+        """抓取 URL 內容，抽出純文字，進 RAG 管線。"""
+        text, extracted_title = await self._fetch_url_text(url)
+        doc = crud.create_knowledge_doc(
+            project_id,
+            title or extracted_title or url,
+            "url",
+            text,
+        )
+        chunks = self.chunk_text(text)
+        doc = await self._ingest_chunks(project_id, doc, chunks, text)
+        doc["source_url"] = url
+        return doc
+
+    async def _ingest_chunks(
+        self, project_id: str, doc: dict, chunks: list[str], content: str
+    ) -> dict:
+        """Shared chunk persistence + embedding logic."""
+        _ = content  # currently only used for sizing; kept for future signal
         for i, chunk_text in enumerate(chunks):
             crud.create_knowledge_chunk(
                 doc_id=doc["id"],
@@ -41,77 +76,146 @@ class RAGPipeline:
                 chunk_index=i,
                 qdrant_point_id=f"{doc['id']}_{i}",
             )
-
-        # 4. Try to create embeddings (requires OpenAI key)
         try:
             await self._create_embeddings(project_id, doc["id"], chunks)
-        except Exception:
-            pass  # Embeddings optional, keyword search fallback
+        except Exception as e:  # noqa: BLE001
+            print(f"[WARN] embedding creation failed: {e}")
 
-        # 5. Update doc status
         crud.update_doc_status(doc["id"], "ready", len(chunks))
         doc["status"] = "ready"
         doc["chunk_count"] = len(chunks)
         return doc
 
+    async def _fetch_url_text(self, url: str) -> tuple[str, str | None]:
+        """Download URL and return (text, extracted_title). Falls back to raw text."""
+        import httpx  # lazy
+
+        headers = {"User-Agent": "ait-knowledge-bot/1.0"}
+        async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+            resp = await client.get(url, headers=headers)
+        resp.raise_for_status()
+        ctype = (resp.headers.get("content-type") or "").lower()
+        body = resp.text
+        if "html" in ctype or body.lstrip().startswith("<"):
+            return self._html_to_text(body)
+        # Plain text / markdown: use directly
+        return body.strip(), None
+
+    @staticmethod
+    def _html_to_text(html: str) -> tuple[str, str | None]:
+        """Extract readable text + <title> from HTML without external deps."""
+        import re
+
+        # Title
+        title: str | None = None
+        m = re.search(r"<title[^>]*>(.*?)</title>", html, re.IGNORECASE | re.DOTALL)
+        if m:
+            title = re.sub(r"\s+", " ", m.group(1)).strip()[:300] or None
+
+        # Drop script/style blocks
+        cleaned = re.sub(r"<(script|style|noscript)[^>]*>.*?</\1>", " ", html, flags=re.IGNORECASE | re.DOTALL)
+        # Strip tags
+        cleaned = re.sub(r"<[^>]+>", " ", cleaned)
+        # Decode common entities
+        cleaned = (
+            cleaned.replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">")
+            .replace("&quot;", '"').replace("&#39;", "'").replace("&nbsp;", " ")
+        )
+        # Collapse whitespace
+        cleaned = re.sub(r"\s+", " ", cleaned).strip()
+        return cleaned, title
+
+    # --------------------------
+    # 搜尋（依 backend 分派，失敗 fallback）
+    # --------------------------
+
     async def search(self, project_id: str, query: str, top_k: int = 5) -> list[dict]:
-        """Search knowledge base — vector search with keyword fallback"""
-        # Try vector search first
-        try:
-            results = await self._vector_search(project_id, query, top_k)
+        backend = (settings.vector_backend or "pgvector").lower()
+
+        # 先走主要 backend
+        if backend == "qdrant" and qdrant_db.is_qdrant_available():
+            results = await self._qdrant_search(project_id, query, top_k)
             if results:
                 return results
-        except Exception:
-            pass
 
-        # Keyword fallback
+        # pgvector（或 qdrant 失敗後的 fallback）
+        try:
+            results = await self._pgvector_search(project_id, query, top_k)
+            if results:
+                return results
+        except Exception as e:  # noqa: BLE001
+            print(f"[WARN] pgvector search failed: {e}")
+
+        # 最終 fallback：keyword search
         return crud.search_knowledge_chunks(project_id, query, limit=top_k)
 
-    async def _create_embeddings(self, project_id: str, doc_id: str, chunks: list[str]):
-        """Create embeddings for chunks using LiteLLM"""
-        import litellm
-        for i, chunk in enumerate(chunks):
-            response = await litellm.aembedding(
-                model="text-embedding-3-small",
-                input=[chunk],
-            )
-            embedding = response.data[0]["embedding"]
+    # --------------------------
+    # Embedding 寫入（雙寫）
+    # --------------------------
 
-            # Get chunk record
-            db = get_supabase()
-            chunk_records = (
-                db.table("ait_knowledge_chunks")
-                .select("id")
-                .eq("doc_id", doc_id)
-                .eq("chunk_index", i)
-                .execute()
-            )
-            if chunk_records.data:
-                chunk_id = chunk_records.data[0]["id"]
-                db.table("ait_knowledge_embeddings").insert({
-                    "chunk_id": chunk_id,
-                    "project_id": project_id,
-                    "content": chunk,
-                    "embedding": embedding,
-                }).execute()
+    async def _create_embeddings(self, project_id: str, doc_id: str, chunks: list[str]) -> None:
+        import litellm  # lazy
 
-    async def _vector_search(self, project_id: str, query: str, top_k: int) -> list[dict]:
-        """Vector similarity search using pgvector"""
-        import litellm
-        response = await litellm.aembedding(
-            model="text-embedding-3-small",
-            input=[query],
-        )
-        query_embedding = response.data[0]["embedding"]
+        use_qdrant = qdrant_db.is_qdrant_available()
+        if use_qdrant:
+            qdrant_db.ensure_collection(project_id)
 
         db = get_supabase()
-        result = db.rpc("ait_search_knowledge", {
-            "p_project_id": project_id,
-            "p_query_embedding": query_embedding,
-            "p_limit": top_k,
-        }).execute()
+        for i, chunk in enumerate(chunks):
+            resp = await litellm.aembedding(model=settings.embedding_model, input=[chunk])
+            embedding = resp.data[0]["embedding"]
 
+            # 1) pgvector
+            try:
+                chunk_records = (
+                    db.table("ait_knowledge_chunks")
+                    .select("id")
+                    .eq("doc_id", doc_id)
+                    .eq("chunk_index", i)
+                    .execute()
+                )
+                if chunk_records.data:
+                    chunk_id = chunk_records.data[0]["id"]
+                    db.table("ait_knowledge_embeddings").insert({
+                        "chunk_id": chunk_id,
+                        "project_id": project_id,
+                        "content": chunk,
+                        "embedding": embedding,
+                    }).execute()
+            except Exception as e:  # noqa: BLE001
+                print(f"[WARN] pgvector insert failed: {e}")
+
+            # 2) Qdrant（若啟用且可用）
+            if use_qdrant:
+                qdrant_db.upsert_chunk(
+                    project_id=project_id,
+                    point_id=f"{doc_id}_{i}",
+                    embedding=embedding,
+                    payload={"content": chunk, "doc_id": doc_id, "chunk_index": i},
+                )
+
+    # --------------------------
+    # 後端搜尋實作
+    # --------------------------
+
+    async def _pgvector_search(self, project_id: str, query: str, top_k: int) -> list[dict]:
+        import litellm  # lazy
+
+        resp = await litellm.aembedding(model=settings.embedding_model, input=[query])
+        query_embedding = resp.data[0]["embedding"]
+        db = get_supabase()
+        result = db.rpc(
+            "ait_search_knowledge",
+            {"p_project_id": project_id, "p_query_embedding": query_embedding, "p_limit": top_k},
+        ).execute()
         return [{"content": r["content"], "similarity": r["similarity"]} for r in result.data]
+
+    async def _qdrant_search(self, project_id: str, query: str, top_k: int) -> list[dict]:
+        import litellm  # lazy
+
+        resp = await litellm.aembedding(model=settings.embedding_model, input=[query])
+        query_embedding = resp.data[0]["embedding"]
+        return qdrant_db.search(project_id, query_embedding, limit=top_k)
 
 
 rag_pipeline = RAGPipeline()

@@ -15,7 +15,11 @@ function DashboardInner({ children }: { children: React.ReactNode }) {
   const { locale, setLocale, t } = useI18n()
   const { projects, currentProject, switchProject, loading: projectLoading } = useProject()
 
-  if (authLoading || projectLoading) {
+  // Only block on auth (we can't safely render dashboard chrome without knowing
+  // who the user is). Project config is fetched async in parallel and the
+  // children render as soon as auth resolves — pages handle their own
+  // loading states via useProject().
+  if (authLoading) {
     return (
       <div className="flex h-screen items-center justify-center bg-zinc-900">
         <div className="h-5 w-5 animate-spin rounded-full border-2 border-zinc-600 border-t-blue-500" />
@@ -68,25 +72,36 @@ function DashboardInner({ children }: { children: React.ReactNode }) {
 
         {/* ── 導覽（從 domain_config.nav 動態生成）── */}
         <nav className="flex-1 px-2 py-3 space-y-1">
-          {navItems.map((item) => {
-            const isActive = item.href === '/overview'
-              ? pathname === '/overview' || pathname === '/'
-              : pathname.startsWith(item.href)
-            return (
-              <Link
-                key={item.href}
-                href={item.href}
-                className={`flex items-center gap-3 rounded-lg px-3 py-2 text-sm transition-colors ${
-                  isActive
-                    ? 'bg-blue-600/20 text-blue-400'
-                    : 'text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200'
-                }`}
-              >
-                <span>{item.icon}</span>
-                <span>{resolveLabel(item.label)}</span>
-              </Link>
-            )
-          })}
+          {projectLoading && navItems.length === 0 ? (
+            // Skeleton rows while project config is loading — keeps the
+            // sidebar chrome stable and avoids a flash of "no nav".
+            Array.from({ length: 8 }).map((_, i) => (
+              <div
+                key={i}
+                className="mx-1 my-1 h-6 animate-pulse rounded bg-zinc-800/60"
+              />
+            ))
+          ) : (
+            navItems.map((item) => {
+              const isActive = item.href === '/overview'
+                ? pathname === '/overview' || pathname === '/'
+                : pathname.startsWith(item.href)
+              return (
+                <Link
+                  key={item.href}
+                  href={item.href}
+                  className={`flex items-center gap-3 rounded-lg px-3 py-2 text-sm transition-colors ${
+                    isActive
+                      ? 'bg-blue-600/20 text-blue-400'
+                      : 'text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200'
+                  }`}
+                >
+                  <span>{item.icon}</span>
+                  <span>{resolveLabel(item.label)}</span>
+                </Link>
+              )
+            })
+          )}
         </nav>
 
         {/* Language Switcher */}

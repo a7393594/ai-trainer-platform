@@ -83,3 +83,57 @@ export interface RunListResponse {
   runs: PipelineRunSummary[]
   next_cursor: string | null
 }
+
+// ============================================================================
+// Experiment Studio (Lab) types
+// ============================================================================
+
+export type LabSourceType = 'pipeline' | 'workflow' | 'session' | 'comparison'
+
+export interface CaseSummary {
+  source_type: LabSourceType
+  id: string
+  title: string
+  summary: string
+  created_at: string | null
+  total_cost_usd?: number | null
+  status?: string | null
+}
+
+export interface KnowledgeOverride {
+  doc_ids_include?: string[]
+  doc_ids_exclude?: string[]
+  backend?: 'pgvector' | 'qdrant' | 'keyword'
+}
+
+export interface LabOverrides {
+  prompt_override?: string
+  model_override?: string
+  tools_bundle?: string[]
+  knowledge_override?: KnowledgeOverride
+  workflow_steps_override?: Array<Record<string, unknown>>
+}
+
+export interface LabRerunResult {
+  source_type: LabSourceType
+  input: string
+  output: string
+  cost_usd?: number
+  latency_ms?: number
+  model?: string
+  comparison_id?: string
+  workflow_run_id?: string
+  trace?: Array<Record<string, unknown>>
+  status?: string
+  error?: string | null
+}
+
+export interface LabRerunResponse {
+  lab_run_id: string
+  result: LabRerunResult
+}
+
+export interface LabBatchRerunResponse {
+  lab_run_id: string
+  results: Array<LabRerunResult & { error?: string }>
+}

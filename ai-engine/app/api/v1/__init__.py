@@ -2,7 +2,7 @@
 API v1 路由 — 所有對外端點
 """
 import json
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from app.models.schemas import (
     ChatRequest, ChatResponse,
@@ -281,15 +281,80 @@ async def get_onboarding_progress(session_id: str):
 
 @router.post("/knowledge/upload")
 async def upload_document(request: DocumentUploadRequest):
-    """上傳文件到知識庫"""
+    """上傳文件到知識庫（支援 upload / url / auto_extract）"""
     from app.core.rag.pipeline import rag_pipeline
     try:
-        doc = await rag_pipeline.upload_document(
-            request.project_id, request.title, request.content or "", request.source_type
-        )
+        if request.source_type == "url":
+            if not request.url:
+                raise HTTPException(status_code=400, detail="url required for source_type=url")
+            doc = await rag_pipeline.upload_url(request.project_id, request.url, request.title)
+        else:
+            doc = await rag_pipeline.upload_document(
+                request.project_id, request.title, request.content or "", request.source_type
+            )
         return {"status": "ready", "document": doc}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/knowledge/batch-upload")
+async def batch_upload_documents(data: dict):
+    """批次上傳文件。
+
+    Body: {"project_id": "...", "documents": [{"title": "...", "content": "...",
+           "source_type": "upload|url|auto_extract"}]}
+
+    成功與失敗逐筆回報，不因單一失敗中斷整批。
+    """
+    from app.core.rag.pipeline import rag_pipeline
+
+    project_id = (data or {}).get("project_id")
+    documents = (data or {}).get("documents") or []
+    if not project_id or not isinstance(documents, list) or not documents:
+        raise HTTPException(status_code=400, detail="project_id and documents[] required")
+
+    results: list[dict] = []
+    ok = err = 0
+    for i, item in enumerate(documents):
+        if not isinstance(item, dict):
+            results.append({"index": i, "status": "error", "detail": "not a dict"})
+            err += 1
+            continue
+        title = (item.get("title") or f"Untitled {i+1}").strip()
+        content = (item.get("content") or "").strip()
+        url = (item.get("url") or "").strip()
+        source_type = item.get("source_type") or ("url" if url else "upload")
+        if source_type != "url" and not content:
+            results.append({"index": i, "title": title, "status": "error", "detail": "empty content"})
+            err += 1
+            continue
+        if source_type == "url" and not url:
+            results.append({"index": i, "title": title, "status": "error", "detail": "missing url"})
+            err += 1
+            continue
+        try:
+            if source_type == "url":
+                doc = await rag_pipeline.upload_url(project_id, url, title)
+            else:
+                doc = await rag_pipeline.upload_document(project_id, title, content, source_type)
+            results.append({
+                "index": i, "title": title, "status": "ready",
+                "doc_id": doc.get("id"), "chunk_count": doc.get("chunk_count", 0),
+                "source_type": source_type,
+            })
+            ok += 1
+        except Exception as e:  # noqa: BLE001
+            results.append({"index": i, "title": title, "status": "error", "detail": str(e)[:300]})
+            err += 1
+
+    return {
+        "total": len(documents),
+        "success": ok,
+        "failed": err,
+        "results": results,
+    }
 
 
 @router.get("/knowledge/{project_id}")
@@ -392,6 +457,376 @@ async def test_tool(tool_id: str):
     return result
 
 
+@router.post("/summarize/project/{project_id}")
+async def batch_summarize_sessions(project_id: str, data: dict = {}):
+    """批次壓縮此專案中較長的 sessions（cron-friendly）。"""
+    from app.core.summarizer.service import conversation_summarizer
+    result = await conversation_summarizer.batch_summarize_project(
+        project_id,
+        threshold=int((data or {}).get("threshold", 20)),
+        model=(data or {}).get("model") or "claude-haiku-4-5-20251001",
+        persist=bool((data or {}).get("persist", True)),
+        skip_already_summarized=bool((data or {}).get("skip_already_summarized", True)),
+        limit=int((data or {}).get("limit", 50)),
+    )
+    return result
+
+
+@router.get("/observability/trace/{project_id}")
+async def get_langfuse_links(project_id: str, limit: int = 20):
+    """從 ait_llm_usage.trace_id 推導 Langfuse UI 深連結（若已設定 host）。"""
+    from app.db.supabase import get_supabase
+    from app.config import settings
+    host = (settings.langfuse_host or "").rstrip("/")
+    if not host:
+        return {"enabled": False, "links": []}
+    rows = (
+        get_supabase().table("ait_llm_usage")
+        .select("id,trace_id,model,cost_usd,latency_ms,created_at")
+        .eq("project_id", project_id)
+        .order("created_at", desc=True)
+        .limit(min(max(1, limit), 200))
+        .execute()
+    ).data or []
+    links = [
+        {
+            "id": r["id"],
+            "model": r.get("model"),
+            "cost_usd": r.get("cost_usd"),
+            "latency_ms": r.get("latency_ms"),
+            "created_at": r.get("created_at"),
+            "trace_id": r.get("trace_id"),
+            "url": f"{host}/trace/{r['trace_id']}" if r.get("trace_id") else None,
+        }
+        for r in rows
+    ]
+    return {"enabled": True, "host": host, "links": links}
+
+
+@router.post("/chat/{session_id}/summarize")
+async def summarize_session(session_id: str, data: dict = {}):
+    """將 session 的對話壓成摘要。可選 persist=True 寫入為 system 訊息。"""
+    from app.core.summarizer.service import conversation_summarizer
+    result = await conversation_summarizer.summarize_session(
+        session_id,
+        threshold=int((data or {}).get("threshold", 20)),
+        model=(data or {}).get("model") or "claude-haiku-4-5-20251001",
+        persist=bool((data or {}).get("persist", False)),
+    )
+    if result.get("status") == "error":
+        raise HTTPException(status_code=404, detail=result.get("message"))
+    return result
+
+
+@router.get("/ab-test/{project_id}")
+async def get_ab_test_status(project_id: str):
+    """取得專案 A/B 測試狀態。"""
+    from app.core.ab_test.service import ab_test_service
+    return await ab_test_service.get_status(project_id)
+
+
+@router.put("/ab-test/{project_id}")
+async def configure_ab_test(project_id: str, data: dict):
+    """設定 A/B 測試：variants=[{prompt_version_id, weight, label}]"""
+    from app.core.ab_test.service import ab_test_service
+    variants = (data or {}).get("variants") or []
+    enabled = bool((data or {}).get("enabled", True))
+    updated = await ab_test_service.configure(project_id, variants, enabled=enabled)
+    if not updated:
+        raise HTTPException(status_code=400, detail="Invalid variants or project not found")
+    return {"status": "configured", "project": updated}
+
+
+@router.get("/ab-test/{project_id}/results")
+async def get_ab_test_results(project_id: str):
+    """聚合每個變體的 session/回饋統計。"""
+    from app.core.ab_test.service import ab_test_service
+    return await ab_test_service.summarize(project_id)
+
+
+@router.post("/ab-test/{project_id}/conclude")
+async def conclude_ab_test(project_id: str, data: dict):
+    """標記獲勝變體，啟用該 prompt 版本並停用 A/B 測試。"""
+    from app.core.ab_test.service import ab_test_service
+    label = (data or {}).get("winner_label")
+    if not label:
+        raise HTTPException(status_code=400, detail="winner_label required")
+    result = await ab_test_service.conclude(project_id, label)
+    if result.get("status") == "error":
+        raise HTTPException(status_code=400, detail=result.get("message"))
+    return result
+
+
+@router.post("/chat/{session_id}/handoff")
+async def request_handoff(session_id: str, data: dict = {}):
+    """把對話升級到真人客服。支援 webhook 通知。"""
+    from app.core.handoff.service import handoff_service
+    reason = (data or {}).get("reason", "")
+    triggered_by = (data or {}).get("triggered_by", "user")
+    urgency = (data or {}).get("urgency", "normal")
+    result = await handoff_service.request(session_id, reason, triggered_by, urgency)
+    if result.get("status") == "error":
+        raise HTTPException(status_code=404, detail=result.get("message"))
+    return result
+
+
+@router.get("/handoff/pending/{tenant_id}")
+async def list_pending_handoffs(tenant_id: str, limit: int = 50):
+    """列出租戶尚未解決的 handoff（給真人客服儀表板輪詢）。"""
+    from app.core.handoff.service import handoff_service
+    items = await handoff_service.list_pending(tenant_id, limit=limit)
+    return {"pending": items, "count": len(items)}
+
+
+@router.post("/handoff/{handoff_id}/resolve")
+async def resolve_handoff(handoff_id: str, data: dict):
+    """標記 handoff 已被真人處理完成。"""
+    from app.core.handoff.service import handoff_service
+    resolved_by = (data or {}).get("resolved_by", "agent")
+    note = (data or {}).get("note", "")
+    result = await handoff_service.resolve(handoff_id, resolved_by, note)
+    if result.get("status") == "error":
+        raise HTTPException(status_code=404, detail=result.get("message"))
+    return result
+
+
+@router.get("/plan/{tenant_id}")
+async def get_plan_limits(tenant_id: str):
+    """回傳租戶目前方案 + 當月使用量 + 是否超限。"""
+    from app.core.plan.limits import plan_limits_service
+    return plan_limits_service.check_usage(tenant_id)
+
+
+@router.post("/billing/{tenant_id}/checkout")
+async def create_billing_checkout(tenant_id: str, data: dict):
+    """建立 Stripe Checkout Session；無 Stripe config 時回 mock URL。"""
+    from app.core.billing.stripe_service import stripe_service, BillingError
+    plan = (data or {}).get("plan", "pro")
+    email = (data or {}).get("email")
+    try:
+        return await stripe_service.create_checkout_session(tenant_id, plan, user_email=email)
+    except BillingError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/billing/webhook")
+async def stripe_webhook(request: Request):
+    """接 Stripe webhook 事件（需驗 signature）。"""
+    from app.core.billing.stripe_service import stripe_service
+    import json as _json
+    body = await request.body()
+    signature = request.headers.get("stripe-signature", "")
+    if not stripe_service.verify_signature(body, signature):
+        raise HTTPException(status_code=400, detail="Invalid signature")
+    try:
+        event = _json.loads(body.decode("utf-8"))
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON")
+    return await stripe_service.handle_event(event)
+
+
+@router.get("/sso/{tenant_id}")
+async def get_sso_config(tenant_id: str):
+    """取得租戶的 SSO 設定。"""
+    from app.core.sso.service import sso_service
+    return sso_service.get_config(tenant_id)
+
+
+@router.patch("/sso/{tenant_id}")
+async def update_sso_config(tenant_id: str, data: dict):
+    """更新租戶的 SSO 設定。"""
+    from app.core.sso.service import sso_service
+    updated = sso_service.update_config(
+        tenant_id,
+        allowed_email_domains=data.get("allowed_email_domains"),
+        oauth_providers=data.get("oauth_providers"),
+        enforced=data.get("enforced"),
+        sso_entity_id=data.get("sso_entity_id"),
+        sso_metadata_url=data.get("sso_metadata_url"),
+    )
+    if not updated:
+        raise HTTPException(status_code=400, detail="No valid fields or tenant not found")
+    return {"status": "updated", "tenant": updated}
+
+
+@router.get("/sso/resolve")
+async def resolve_sso_by_email(email: str = Query(...)):
+    """依 email 的 domain 解析應該導向哪個租戶 / IdP。"""
+    from app.core.sso.service import sso_service
+    hint = sso_service.resolve_tenant_by_email(email)
+    if not hint:
+        return {"matched": False}
+    return {"matched": True, **hint}
+
+
+@router.get("/budget/{tenant_id}")
+async def get_budget_status(tenant_id: str):
+    """取得租戶當月預算狀態 + 告警等級。"""
+    from app.core.budget.service import budget_service
+    status = await budget_service.get_status(tenant_id)
+    if status.get("status") == "error":
+        raise HTTPException(status_code=404, detail=status.get("message"))
+    return status
+
+
+@router.patch("/budget/{tenant_id}")
+async def update_budget_config(tenant_id: str, data: dict):
+    """設定租戶月預算 / 告警門檻 / webhook。"""
+    from app.core.budget.service import budget_service
+    updated = await budget_service.update_config(
+        tenant_id,
+        monthly_budget_usd=data.get("monthly_budget_usd"),
+        budget_alert_threshold=data.get("budget_alert_threshold"),
+        budget_alert_webhook=data.get("budget_alert_webhook"),
+    )
+    if not updated:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+    return {"status": "updated", "tenant": updated}
+
+
+@router.post("/budget/{tenant_id}/check")
+async def check_budget_and_notify(tenant_id: str):
+    """強制檢查預算，必要時 POST webhook 通知。回傳發送結果。"""
+    from app.core.budget.service import budget_service
+    return await budget_service.check_and_notify(tenant_id)
+
+
+@router.get("/quality/{project_id}")
+async def get_quality_status(project_id: str):
+    """當前對話品質指標與告警等級。"""
+    from app.core.quality.monitor import quality_monitor
+    status = await quality_monitor.get_status(project_id)
+    if status.get("status") == "error":
+        raise HTTPException(status_code=404, detail=status.get("message"))
+    return status
+
+
+@router.patch("/quality/{project_id}")
+async def update_quality_config(project_id: str, data: dict):
+    """設定對話品質告警（存於 projects.domain_config.quality_alert）。"""
+    from app.core.quality.monitor import quality_monitor
+    updated = await quality_monitor.update_config(
+        project_id,
+        enabled=data.get("enabled"),
+        window_hours=data.get("window_hours"),
+        min_samples=data.get("min_samples"),
+        wrong_ratio_threshold=data.get("wrong_ratio_threshold"),
+        negative_ratio_threshold=data.get("negative_ratio_threshold"),
+        webhook=data.get("webhook"),
+    )
+    if not updated:
+        raise HTTPException(status_code=400, detail="No valid fields or project not found")
+    return {"status": "updated", "project": updated}
+
+
+@router.post("/quality/{project_id}/check")
+async def check_quality_and_notify(project_id: str):
+    """強制檢查品質，必要時 POST webhook 通知。"""
+    from app.core.quality.monitor import quality_monitor
+    return await quality_monitor.check_and_notify(project_id)
+
+
+@router.get("/workflow-templates")
+async def list_workflow_templates():
+    """取得內建工作流樣板清單。"""
+    from app.core.workflow_templates.library import list_templates
+    return {"templates": list_templates()}
+
+
+@router.get("/workflow-templates/{template_id}")
+async def get_workflow_template(template_id: str):
+    """取得單一樣板詳情（含 steps）。"""
+    from app.core.workflow_templates.library import get_template
+    tpl = get_template(template_id)
+    if not tpl:
+        raise HTTPException(status_code=404, detail="Template not found")
+    return tpl
+
+
+@router.post("/workflow-templates/{template_id}/instantiate")
+async def instantiate_workflow_template(template_id: str, data: dict):
+    """從樣板建立 workflow。Body: {project_id, name?, trigger?}"""
+    from app.core.workflow_templates.library import instantiate
+    project_id = (data or {}).get("project_id")
+    if not project_id:
+        raise HTTPException(status_code=400, detail="project_id required")
+    wf = instantiate(
+        project_id,
+        template_id,
+        name_override=(data or {}).get("name"),
+        trigger_override=(data or {}).get("trigger"),
+    )
+    if not wf:
+        raise HTTPException(status_code=404, detail="Template not found")
+    return {"status": "created", "workflow": wf}
+
+
+@router.post("/alerts/run-all")
+async def run_all_alert_checks(data: dict = {}):
+    """Cron-friendly：對所有租戶/專案跑 budget + quality 檢查。
+
+    Body 可選 `tenant_ids` 或 `project_ids` 限縮範圍；留空則全掃。
+    """
+    from app.core.budget.service import budget_service
+    from app.core.quality.monitor import quality_monitor
+    from app.db.supabase import get_supabase
+
+    db = get_supabase()
+    data = data or {}
+
+    tenant_ids: list[str] = data.get("tenant_ids") or []
+    if not tenant_ids:
+        tenants = db.table("ait_tenants").select("id").execute().data or []
+        tenant_ids = [t["id"] for t in tenants]
+    budget_results = []
+    for tid in tenant_ids:
+        try:
+            r = await budget_service.check_and_notify(tid)
+            budget_results.append({"tenant_id": tid, "level": r.get("level"), "notified": r.get("notified")})
+        except Exception as e:  # noqa: BLE001
+            budget_results.append({"tenant_id": tid, "error": str(e)})
+
+    project_ids: list[str] = data.get("project_ids") or []
+    if not project_ids:
+        projects = db.table("ait_projects").select("id").in_("tenant_id", tenant_ids).execute().data if tenant_ids else []
+        project_ids = [p["id"] for p in (projects or [])]
+    quality_results = []
+    for pid in project_ids:
+        try:
+            r = await quality_monitor.check_and_notify(pid)
+            quality_results.append({"project_id": pid, "level": r.get("level"), "notified": r.get("notified")})
+        except Exception as e:  # noqa: BLE001
+            quality_results.append({"project_id": pid, "error": str(e)})
+
+    return {
+        "tenants_checked": len(budget_results),
+        "projects_checked": len(quality_results),
+        "budget": budget_results,
+        "quality": quality_results,
+    }
+
+
+@router.get("/audit/{tenant_id}")
+async def list_audit_logs_api(
+    tenant_id: str,
+    action_type: str | None = None,
+    tool_id: str | None = None,
+    status: str | None = None,
+    limit: int = 100,
+    offset: int = 0,
+):
+    """租戶稽核日誌查詢（支援 action_type / tool_id / status 過濾與分頁）"""
+    logs = crud.list_audit_logs(
+        tenant_id,
+        action_type=action_type,
+        tool_id=tool_id,
+        status=status,
+        limit=limit,
+        offset=offset,
+    )
+    return {"logs": logs, "count": len(logs), "limit": limit, "offset": offset}
+
+
 # ============================================
 # 能力規則
 # ============================================
@@ -437,13 +872,17 @@ async def delete_capability(rule_id: str):
 
 @router.post("/capabilities/classify")
 async def classify_intent(data: dict):
-    """測試意圖分類"""
+    """測試意圖分類。`mode` ∈ {keyword,semantic,hybrid}（預設 hybrid）"""
     from app.core.intent.classifier import intent_classifier
     project_id = data.get("project_id", "")
     message = data.get("message", "")
+    mode = data.get("mode", "hybrid")
+    threshold = float(data.get("threshold", 0.3))
     if not project_id or not message:
         raise HTTPException(status_code=400, detail="project_id and message required")
-    result = intent_classifier.classify(message, project_id)
+    result = await intent_classifier.classify_async(
+        message, project_id, mode=mode, threshold=threshold,
+    )
     return result
 
 
@@ -497,6 +936,41 @@ async def get_eval_run_details(run_id: str):
     """取得評估詳細結果"""
     details = crud.get_eval_run_details(run_id)
     return details
+
+
+@router.post("/eval/runs/{run_id}/ai-review")
+async def ai_review_eval_run(run_id: str, data: dict = {}):
+    """用更強的 judge 模型對既有 run 重新打分（AI 輔助評審）"""
+    from app.core.eval.engine import eval_engine
+    judge_model = (data or {}).get("judge_model") or "claude-opus-4-20250514"
+    result = await eval_engine.ai_review_run(run_id, judge_model=judge_model)
+    if result.get("status") == "no_results":
+        raise HTTPException(status_code=404, detail="No results for this run")
+    return result
+
+
+@router.post("/eval/runs/{run_id}/cluster-gaps")
+async def cluster_eval_gaps(run_id: str, data: dict = {}):
+    """把 run 內失敗案例聚類成弱點類別 + 補救建議。"""
+    from app.core.eval.engine import eval_engine
+    max_clusters = int((data or {}).get("max_clusters", 6))
+    judge_model = (data or {}).get("judge_model") or "claude-sonnet-4-20250514"
+    return await eval_engine.cluster_gaps(run_id, max_clusters=max_clusters, judge_model=judge_model)
+
+
+@router.post("/eval/before-after/{project_id}")
+async def eval_before_after(project_id: str, data: dict):
+    """對同一測試集跑兩個 prompt 版本並回傳逐題 delta。
+
+    Body: {"before_version_id": "...", "after_version_id": "...", "model": "..."}
+    """
+    from app.core.eval.engine import eval_engine
+    before_id = (data or {}).get("before_version_id")
+    after_id = (data or {}).get("after_version_id")
+    if not before_id or not after_id:
+        raise HTTPException(status_code=400, detail="before_version_id and after_version_id required")
+    model = (data or {}).get("model")
+    return await eval_engine.before_after_eval(project_id, before_id, after_id, model=model)
 
 
 # ============================================
@@ -705,6 +1179,42 @@ async def get_project_cost(project_id: str, days: int = 30):
     }
 
 
+@router.get("/analytics/{project_id}/csv")
+async def get_project_analytics_csv(project_id: str, days: int = 30):
+    """匯出分析資料為 CSV。"""
+    import csv
+    import io
+    from fastapi.responses import Response
+
+    data = await get_project_analytics(project_id, days=days)  # type: ignore[misc]
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(["section", "key", "value"])
+    overview = data.get("overview", {})
+    for k, v in overview.items():
+        w.writerow(["overview", k, v])
+    fb = data.get("feedback", {})
+    for k, v in fb.items():
+        w.writerow(["feedback", k, v])
+    tools = data.get("tools", {})
+    w.writerow(["tools", "registered", tools.get("registered", 0)])
+    w.writerow(["tools", "total_calls", tools.get("total_calls", 0)])
+    for tid, bucket in (tools.get("by_tool") or {}).items():
+        name = bucket.get("name", tid)
+        for k in ("calls", "success", "error", "avg_latency_ms", "success_rate"):
+            w.writerow([f"tool:{name}", k, bucket.get(k, 0)])
+    for day in data.get("daily_activity", []) or []:
+        w.writerow(["daily_activity", day.get("date"), day.get("sessions", 0)])
+
+    csv_text = buf.getvalue()
+    filename = f"analytics-{project_id[:8]}-{days}d.csv"
+    return Response(
+        content=csv_text,
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 @router.get("/analytics/{project_id}")
 async def get_project_analytics(project_id: str, days: int = 30):
     """完整使用分析"""
@@ -741,10 +1251,11 @@ async def get_project_analytics(project_id: str, days: int = 30):
         by_endpoint[ep]["calls"] += 1
         by_endpoint[ep]["cost"] += r.get("cost_usd", 0) or 0
 
-    # 5. Registered tools
+    # 5. Registered tools + 實際呼叫細分統計
     project_data = crud.get_project(project_id)
     tenant_id = project_data.get("tenant_id") if project_data else None
     tools = crud.list_tools(tenant_id) if tenant_id else []
+    tool_call_stats = crud.get_tool_call_stats(tenant_id, since) if tenant_id else {"total_calls": 0, "by_tool": {}}
 
     # 6. Prompt versions
     prompts = crud.list_prompt_versions(project_id)
@@ -762,6 +1273,16 @@ async def get_project_analytics(project_id: str, days: int = 30):
         daily_activity.setdefault(day, {"sessions": 0})
         daily_activity[day]["sessions"] += 1
 
+    # Compression metrics snapshot (since last ai-engine start)
+    from app.core.orchestrator.agent import AgentOrchestrator
+    comp = AgentOrchestrator.compression_stats
+    saved_chars = max(0, comp["chars_before"] - comp["chars_after"])
+    compression_ratio = round(comp["chars_after"] / comp["chars_before"], 4) if comp["chars_before"] else 0
+
+    # Langfuse trace URL base (if configured)
+    from app.config import settings as _settings
+    langfuse_host = (_settings.langfuse_host or "").rstrip("/")
+
     return {
         "overview": {
             "total_sessions": total_sessions,
@@ -769,10 +1290,21 @@ async def get_project_analytics(project_id: str, days: int = 30):
             "user_messages": user_messages,
             "avg_messages_per_session": round(total_messages / total_sessions, 1) if total_sessions else 0,
         },
+        "context_compression": {
+            "sessions_compressed": comp["sessions_compressed"],
+            "turns_dropped": comp["turns_dropped"],
+            "chars_saved": saved_chars,
+            "compression_ratio": compression_ratio,
+        },
+        "observability": {
+            "langfuse_host": langfuse_host,
+        },
         "feedback": feedbacks,
         "tools": {
             "registered": len(tools),
             "tool_names": [t["name"] for t in tools],
+            "total_calls": tool_call_stats.get("total_calls", 0),
+            "by_tool": tool_call_stats.get("by_tool", {}),
         },
         "prompts": {
             "total_versions": len(prompts),
@@ -857,6 +1389,16 @@ async def complete_finetune_job(job_id: str, data: dict):
     return {"status": "completed", "job": result}
 
 
+@router.post("/finetune/job/{job_id}/poll")
+async def poll_finetune_job(job_id: str):
+    """輪詢 provider 狀態（OpenAI）。完成時會自動寫回 result_model_id。"""
+    from app.core.finetune.pipeline import finetune_pipeline
+    result = await finetune_pipeline.poll_job(job_id)
+    if result.get("status") == "error":
+        raise HTTPException(status_code=404, detail=result.get("message", "error"))
+    return result
+
+
 # ============================================
 # Workflows
 # ============================================
@@ -897,13 +1439,28 @@ async def delete_workflow_api(workflow_id: str):
 
 @router.post("/workflows/{workflow_id}/start")
 async def start_workflow_api(workflow_id: str, data: dict):
-    """啟動工作流執行"""
+    """啟動工作流執行（步進式，需人工推進）"""
     from app.core.workflows.engine import workflow_engine
     result = await workflow_engine.start_workflow(
         workflow_id, data.get("session_id", ""), data.get("user_id", "")
     )
     if result.get("status") == "error":
         raise HTTPException(status_code=400, detail=result["detail"])
+    return result
+
+
+@router.post("/workflows/{workflow_id}/run")
+async def run_workflow_to_completion_api(workflow_id: str, data: dict = {}):
+    """從頭跑到尾（自動編排，支援 if/parallel/loop）"""
+    from app.core.workflows.engine import workflow_engine
+    result = await workflow_engine.run_to_completion(
+        workflow_id,
+        session_id=(data or {}).get("session_id"),
+        user_id=(data or {}).get("user_id"),
+        initial_vars=(data or {}).get("initial_vars") or {},
+    )
+    if result.get("status") == "error":
+        raise HTTPException(status_code=400, detail=result.get("detail", "error"))
     return result
 
 

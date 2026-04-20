@@ -111,10 +111,30 @@ export async function submitFeedback(req: FeedbackRequest): Promise<void> {
 // Demo Context
 // ============================================
 
-/** 取得 demo 環境的 IDs */
+// Promise-level dedup so the many pages that currently call
+// `getDemoContext` on mount don't each fire their own round trip. Keyed by
+// email (empty string covers the "anonymous" case). Cached for 60s; that's
+// plenty for a navigation session without stale-ness surprises.
+const _ctxCache: Map<string, { at: number; promise: Promise<DemoContext> }> = new Map()
+const CTX_TTL_MS = 60_000
+
+/** 取得 demo 環境的 IDs（同 email 60s 內共用同一個 in-flight promise） */
 export async function getDemoContext(email?: string): Promise<DemoContext> {
+  const key = email || ''
+  const now = Date.now()
+  const hit = _ctxCache.get(key)
+  if (hit && now - hit.at < CTX_TTL_MS) return hit.promise
   const params = email ? `?email=${encodeURIComponent(email)}` : ''
-  return request<DemoContext>(`/api/v1/demo/context${params}`)
+  const promise = request<DemoContext>(`/api/v1/demo/context${params}`)
+  // If the request fails, drop the cache entry so the next call retries fresh.
+  promise.catch(() => _ctxCache.delete(key))
+  _ctxCache.set(key, { at: now, promise })
+  return promise
+}
+
+/** Clear cached demo context — call after login / logout. */
+export function clearDemoContextCache(): void {
+  _ctxCache.clear()
 }
 
 // ============================================

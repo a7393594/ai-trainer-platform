@@ -25,6 +25,7 @@ export default function FinetunePage() {
   const [creating, setCreating] = useState(false)
   const [jobProvider, setJobProvider] = useState('openai')
   const [jobModel, setJobModel] = useState('gpt-4o-mini')
+  const [pollingJobId, setPollingJobId] = useState<string | null>(null)
 
   const { t } = useI18n()
 
@@ -94,6 +95,17 @@ export default function FinetunePage() {
       await loadJobs(projectId)
     } catch {}
     setCreating(false)
+  }
+
+  const handlePollJob = async (jobId: string) => {
+    setPollingJobId(jobId)
+    try {
+      await fetch(`${AI}/api/v1/finetune/job/${jobId}/poll`, { method: 'POST' })
+      if (projectId) await loadJobs(projectId)
+    } catch {
+      /* ignore */
+    }
+    setPollingJobId(null)
   }
 
   if (loading) return <div className="flex h-full items-center justify-center bg-zinc-900"><div className="h-4 w-4 animate-spin rounded-full border-2 border-zinc-600 border-t-blue-500" /></div>
@@ -235,7 +247,19 @@ export default function FinetunePage() {
                       <span className="text-xs text-zinc-300">{job.provider} / {job.model_base}</span>
                       <span className="text-[10px] text-zinc-500">{job.training_data_count} pairs</span>
                     </div>
-                    <span className="text-xs text-zinc-400">{new Date(job.created_at).toLocaleString('zh-TW')}</span>
+                    <div className="flex items-center gap-3">
+                      {job.status === 'running' && job.provider === 'openai' && (
+                        <button
+                          onClick={() => handlePollJob(job.id)}
+                          disabled={pollingJobId === job.id}
+                          className="rounded border border-blue-500/60 px-2 py-0.5 text-[10px] text-blue-300 hover:bg-blue-500/10 disabled:opacity-50"
+                          title="向 OpenAI 查詢最新狀態"
+                        >
+                          {pollingJobId === job.id ? 'Polling…' : 'Poll'}
+                        </button>
+                      )}
+                      <span className="text-xs text-zinc-400">{new Date(job.created_at).toLocaleString('zh-TW')}</span>
+                    </div>
                   </div>
                   {job.result_model_id && (
                     <p className="text-xs text-green-400 mt-1">{t('finetune.resultModel')}: {job.result_model_id}</p>

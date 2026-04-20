@@ -194,9 +194,9 @@ class AgentOrchestrator:
     # ========================================
 
     async def _classify_intent(self, message: str, project_id: str) -> dict:
-        """意圖分類 — 語意比對能力規則"""
+        """意圖分類 — keyword + 語意 embedding (hybrid) 比對能力規則"""
         from app.core.intent.classifier import intent_classifier
-        result = intent_classifier.classify(message, project_id)
+        result = await intent_classifier.classify_async(message, project_id, mode="hybrid")
 
         # Check for active workflow (Phase 5)
         # TODO: check if user has an active workflow_run in waiting_input state
@@ -222,7 +222,7 @@ class AgentOrchestrator:
             text_response = action_config.get("text", "")
             if not text_response:
                 # Generate contextual text with LLM
-                system_prompt = await self._load_active_prompt(request.project_id)
+                system_prompt = await self._load_active_prompt(request.project_id, session_id)
                 messages = []
                 if system_prompt:
                     messages.append({"role": "system", "content": system_prompt})
@@ -251,7 +251,7 @@ class AgentOrchestrator:
                 tool = crud.get_tool(tool_id)
                 if tool:
                     # For now, include tool info in LLM context
-                    system_prompt = await self._load_active_prompt(request.project_id)
+                    system_prompt = await self._load_active_prompt(request.project_id, session_id)
                     messages = []
                     if system_prompt:
                         messages.append({"role": "system", "content": system_prompt})
@@ -276,29 +276,93 @@ class AgentOrchestrator:
             return await self._general_chat(request, session_id, history)
 
         elif action_type == "workflow":
-            # Start a workflow
+            # Trigger a workflow. `run_mode: auto` 一次跑到結束（適合純自動化流程）；
+            # 其它值走步進式，讓使用者逐步推進（含 widget 互動）。
             from app.core.workflows.engine import workflow_engine
             workflow_id = action_config.get("workflow_id")
-            if workflow_id:
-                user_id = request.user_id or "anonymous"
-                result = await workflow_engine.start_workflow(workflow_id, session_id, user_id)
-                if result.get("status") == "started":
-                    text = f"已啟動工作流：{result.get('workflow_name', '')}。\n\n當前步驟：{result.get('current_step', {}).get('id', '')}"
-                    assistant_msg = crud.create_message(
-                        session_id=session_id, role="assistant", content=text,
-                        metadata={"workflow_run_id": result.get("run_id"), "capability_rule_id": rule["id"]},
-                    )
-                    # If first step has a widget, include it
-                    step = result.get("current_step", {})
-                    widgets = [step.get("widget")] if step.get("widget") else []
-                    return ChatResponse(
-                        session_id=session_id,
-                        message=ChatMessage(role=Role.ASSISTANT, content=text),
-                        message_id=assistant_msg["id"],
-                        widgets=widgets,
-                    )
+            run_mode = action_config.get("run_mode", "step")
+            if not workflow_id:
+                return await self._general_chat(request, session_id, history)
+
+            user_id = request.user_id or "anonymous"
+
+            if run_mode == "auto":
+                result = await workflow_engine.run_to_completion(
+                    workflow_id,
+                    session_id=session_id,
+                    user_id=user_id,
+                    initial_vars={"message": request.message},
+                )
+                status = result.get("status")
+                trace_len = len(result.get("trace") or [])
+                if status == "completed":
+                    text = f"工作流已自動執行完成（{trace_len} 個步驟）。"
+                else:
+                    text = f"工作流執行失敗：{result.get('error', 'unknown')}"
+                assistant_msg = crud.create_message(
+                    session_id=session_id, role="assistant", content=text,
+                    metadata={
+                        "workflow_run_id": result.get("run_id"),
+                        "capability_rule_id": rule["id"],
+                        "workflow_status": status,
+                        "workflow_vars": result.get("vars"),
+                    },
+                )
+                return ChatResponse(
+                    session_id=session_id,
+                    message=ChatMessage(role=Role.ASSISTANT, content=text),
+                    message_id=assistant_msg["id"],
+                    metadata={"workflow_status": status, "workflow_run_id": result.get("run_id")},
+                )
+
+            # 步進式（原本行為）
+            result = await workflow_engine.start_workflow(workflow_id, session_id, user_id)
+            if result.get("status") == "started":
+                text = f"已啟動工作流：{result.get('workflow_name', '')}。\n\n當前步驟：{result.get('current_step', {}).get('id', '')}"
+                assistant_msg = crud.create_message(
+                    session_id=session_id, role="assistant", content=text,
+                    metadata={"workflow_run_id": result.get("run_id"), "capability_rule_id": rule["id"]},
+                )
+                step = result.get("current_step", {})
+                widgets = [step.get("widget")] if step.get("widget") else []
+                return ChatResponse(
+                    session_id=session_id,
+                    message=ChatMessage(role=Role.ASSISTANT, content=text),
+                    message_id=assistant_msg["id"],
+                    widgets=widgets,
+                )
 
             return await self._general_chat(request, session_id, history)
+
+        elif action_type == "handoff":
+            # 自動升級至真人客服
+            from app.core.handoff.service import handoff_service
+
+            reason = action_config.get("reason") or "User triggered handoff capability"
+            urgency = action_config.get("urgency", "normal")
+            result = await handoff_service.request(
+                session_id, reason=reason, triggered_by="capability_rule", urgency=urgency,
+            )
+            reply = action_config.get("text") or "已為您轉接真人客服，稍後會有專員與您聯繫。"
+            assistant_msg = crud.create_message(
+                session_id=session_id, role="assistant", content=reply,
+                metadata={
+                    "capability_rule_id": rule["id"],
+                    "handoff_message_id": result.get("handoff_message_id"),
+                    "handoff_notified": result.get("notified"),
+                    "handoff_urgency": urgency,
+                },
+            )
+            return ChatResponse(
+                session_id=session_id,
+                message=ChatMessage(role=Role.ASSISTANT, content=reply),
+                message_id=assistant_msg["id"],
+                metadata={
+                    "handoff": True,
+                    "handoff_message_id": result.get("handoff_message_id"),
+                    "urgency": urgency,
+                },
+            )
 
         else:
             # composite or unknown — fallback to general chat
@@ -419,8 +483,8 @@ class AgentOrchestrator:
         )
         messages = []
 
-        # System prompt + widget instruction
-        system_prompt = await self._load_active_prompt(request.project_id)
+        # System prompt + widget instruction (may apply A/B variant when session_id present)
+        system_prompt = await self._load_active_prompt(request.project_id, session_id)
         full_system = (system_prompt or "") + WIDGET_INSTRUCTION
         messages.append({"role": "system", "content": full_system})
 
@@ -645,7 +709,7 @@ class AgentOrchestrator:
                     )
                     full_system = _poker_sys + WIDGET_INSTRUCTION
                 else:
-                    system_prompt = await self._load_active_prompt(request.project_id)
+                    system_prompt = await self._load_active_prompt(request.project_id, session_id)
                     full_system = (system_prompt or "") + WIDGET_INSTRUCTION
 
                 messages.append({"role": "system", "content": full_system})
@@ -720,33 +784,149 @@ class AgentOrchestrator:
     # ========================================
 
     async def _create_session(self, project_id: str, user_id: str) -> dict:
-        """建立新的訓練會話"""
+        """建立新的訓練會話。超過方案上限時會丟 LimitExceeded。"""
+        from app.core.plan.limits import plan_limits_service
+
+        project = crud.get_project(project_id)
+        tenant_id = (project or {}).get("tenant_id")
+        if tenant_id:
+            try:
+                plan_limits_service.enforce_session_create(tenant_id)
+            except Exception as e:  # LimitExceeded 或 DB 錯誤都不阻斷到崩潰
+                if e.__class__.__name__ == "LimitExceeded":
+                    raise
         return crud.create_session(project_id, user_id, "freeform")
+
+    # 歷史超過此長度時壓縮前段成摘要，保留尾端原始訊息
+    HISTORY_COMPRESS_THRESHOLD = 30
+    HISTORY_KEEP_RECENT = 8
+
+    # 壓縮計數器（全域 in-memory；重啟歸零。Analytics 可讀取當前值作為 health metric）
+    compression_stats = {
+        "sessions_compressed": 0,
+        "turns_dropped": 0,
+        "chars_before": 0,
+        "chars_after": 0,
+    }
 
     async def _load_history(self, session_id: str, exclude_last_user: bool = True) -> list:
         """載入對話歷史，轉為 LLM 格式。
 
+        若長度超過 `HISTORY_COMPRESS_THRESHOLD`，把最前段壓縮成 system 摘要，
+        只保留最後 `HISTORY_KEEP_RECENT` 條原始訊息，降低 token 成本。
+
         Args:
             exclude_last_user: 排除最後一條 user message（避免與 messages.append 重複）
         """
-        messages = crud.list_messages(session_id)
-        history = [
-            {"role": m["role"], "content": m["content"]}
-            for m in messages
-            if m["role"] in ("user", "assistant")
-        ]
-        # 排除最後一條 user message（因為 process_stream 會在之後手動 append）
+        messages = crud.list_messages(session_id) or []
+
+        # 如果之前已 persist 過 summary，優先使用（metadata.summary==True）
+        pre_summary: Optional[str] = None
+        last_summary_idx = -1
+        for idx, m in enumerate(messages):
+            if m.get("role") == "system" and (m.get("metadata") or {}).get("summary"):
+                pre_summary = m.get("content") or pre_summary
+                last_summary_idx = idx
+
+        # 只取 summary 之後的對話訊息
+        tail = messages[last_summary_idx + 1 :] if last_summary_idx >= 0 else messages
+        dialogue = [m for m in tail if m.get("role") in ("user", "assistant")]
+
+        history: list[dict] = []
+        if pre_summary:
+            history.append({"role": "system", "content": f"[Earlier conversation summary]\n{pre_summary}"})
+
+        # 動態壓縮：尾端仍很長時，嘗試用 LLM 壓前段
+        if len(dialogue) > self.HISTORY_COMPRESS_THRESHOLD:
+            head = dialogue[: -self.HISTORY_KEEP_RECENT]
+            chars_before = sum(len(m.get("content") or "") for m in head)
+            compressed = await self._compress_history_head(head)
+            if compressed:
+                history.append({"role": "system", "content": f"[Auto-compressed earlier turns]\n{compressed}"})
+                dialogue = dialogue[-self.HISTORY_KEEP_RECENT :]
+                self.compression_stats["sessions_compressed"] += 1
+                self.compression_stats["turns_dropped"] += len(head)
+                self.compression_stats["chars_before"] += chars_before
+                self.compression_stats["chars_after"] += len(compressed)
+
+        history.extend(
+            {"role": m["role"], "content": m["content"]} for m in dialogue
+        )
         if exclude_last_user and history and history[-1]["role"] == "user":
             history = history[:-1]
         return history
 
-    async def _load_active_prompt(self, project_id: str) -> Optional[str]:
-        """載入專案目前使用的系統提示詞"""
+    async def _compress_history_head(self, head: list[dict]) -> Optional[str]:
+        """用 summarizer 把較早的歷史壓成幾行。失敗回 None。"""
+        if not head:
+            return None
+        try:
+            from app.core.llm_router.router import chat_completion
+
+            transcript = "\n".join(
+                f"{m.get('role','?')}: {(m.get('content') or '')[:400]}" for m in head
+            )
+            resp = await chat_completion(
+                messages=[
+                    {"role": "system", "content": (
+                        "Compress the following dialogue into 5-10 concise bullet points in the "
+                        "original language, preserving key facts, decisions, and unresolved items."
+                    )},
+                    {"role": "user", "content": transcript[:10000]},
+                ],
+                model="claude-haiku-4-5-20251001",
+                max_tokens=600,
+                temperature=0.2,
+            )
+            return (resp.choices[0].message.content or "").strip() or None
+        except Exception as e:  # noqa: BLE001
+            print(f"[WARN] _compress_history_head failed: {e}")
+            return None
+
+    async def _load_active_prompt(
+        self,
+        project_id: str,
+        session_id: Optional[str] = None,
+        prompt_override: Optional[str] = None,
+    ) -> Optional[str]:
+        """載入專案目前使用的系統提示詞。
+
+        優先序：
+          1) prompt_override（Lab 實驗用 — 最高優先）
+          2) A/B test 變體
+          3) 專案 active prompt
+        """
+        if prompt_override:
+            return prompt_override
+        if session_id:
+            try:
+                from app.core.ab_test.service import ab_test_service
+
+                variant = await ab_test_service.pick_variant(project_id, session_id)
+                if variant and variant.get("prompt_version_id"):
+                    pv = crud.get_prompt_version(variant["prompt_version_id"])
+                    if pv and pv.get("content"):
+                        return pv["content"]
+            except Exception as e:  # noqa: BLE001
+                print(f"[WARN] ab_test lookup failed: {e}")
         prompt = crud.get_active_prompt(project_id)
         return prompt["content"] if prompt else None
 
     async def _search_knowledge(self, query: str, project_id: str) -> Optional[str]:
-        """從知識庫搜尋相關內容（RAG — pgvector 或 keyword fallback）"""
+        """從知識庫搜尋相關內容（走 rag_pipeline：依 vector_backend 選 Qdrant / pgvector / keyword）。"""
+        # 先走完整 RAG pipeline（會依 feature flag 試 Qdrant → pgvector → keyword）
+        try:
+            from app.core.rag.pipeline import rag_pipeline
+
+            rag_results = await rag_pipeline.search(project_id, query, top_k=5)
+            if rag_results:
+                parts = [r["content"] for r in rag_results if r.get("content")]
+                if parts:
+                    return "\n\n---\n\n".join(parts)
+        except Exception as e:  # noqa: BLE001
+            print(f"[WARN] rag_pipeline.search failed, falling back to keyword: {e}")
+
+        # 最終 fallback：純 keyword（保留原有行為）
         try:
             results = crud.search_knowledge_chunks(project_id, query, limit=5)
             if results:

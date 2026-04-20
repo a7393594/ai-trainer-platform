@@ -12,13 +12,23 @@ REGRESSION_THRESHOLD_OVERALL = 5    # overall avg score drop
 
 class EvalEngine:
 
-    async def run_eval(self, project_id: str, model: str = None) -> dict:
-        """Run all test cases against current prompt"""
+    async def run_eval(
+        self,
+        project_id: str,
+        model: str = None,
+        prompt_version_id: str | None = None,
+    ) -> dict:
+        """Run all test cases against a given (or active) prompt."""
         test_cases = crud.list_test_cases(project_id)
         if not test_cases:
             return {"status": "no_test_cases", "message": "No test cases found"}
 
-        prompt = crud.get_active_prompt(project_id)
+        if prompt_version_id:
+            prompt = crud.get_prompt_version(prompt_version_id)
+            if not prompt or prompt.get("project_id") != project_id:
+                return {"status": "no_prompt", "message": "Prompt version not found"}
+        else:
+            prompt = crud.get_active_prompt(project_id)
         if not prompt:
             return {"status": "no_prompt", "message": "No active prompt"}
 
@@ -191,6 +201,250 @@ class EvalEngine:
         except Exception as e:
             return 50, f"judge failed: {e}", judge_model
 
+
+    async def ai_review_run(
+        self,
+        run_id: str,
+        judge_model: str = "claude-opus-4-20250514",
+    ) -> dict:
+        """用強模型對既有 eval_run 的每筆結果重新打分，寫回 eval_results。
+
+        - 不改動原始 actual_output，僅更新 score/passed/details.ai_review
+        - 回傳 {run_id, reviewed, updated_score, deltas}
+        """
+        run = crud.get_eval_run(run_id) if hasattr(crud, "get_eval_run") else None
+        results = crud.get_eval_run_details(run_id)
+        if not results:
+            return {"status": "no_results", "run_id": run_id}
+
+        items = results.get("results") if isinstance(results, dict) else results
+        if not items:
+            return {"status": "no_results", "run_id": run_id}
+
+        reviewed = 0
+        new_total = 0.0
+        passed_cnt = 0
+        deltas: list[dict] = []
+        for r in items:
+            tc = r.get("test_case") or {}
+            input_text = tc.get("input_text") or r.get("input") or ""
+            expected = tc.get("expected_output") or r.get("expected") or ""
+            actual = r.get("actual_output") or r.get("actual") or ""
+            try:
+                score, is_passed, reason = await self._judge_with_model(
+                    input_text, expected, actual, judge_model
+                )
+            except Exception as e:  # noqa: BLE001
+                score, is_passed, reason = r.get("score", 0), r.get("passed", False), f"judge failed: {e}"
+
+            prev_score = r.get("score") or 0
+            deltas.append({"result_id": r.get("id"), "prev": prev_score, "new": score})
+            new_total += score
+            if is_passed:
+                passed_cnt += 1
+
+            details = r.get("details") or {}
+            details["ai_review"] = {
+                "judge_model": judge_model,
+                "score": score,
+                "passed": is_passed,
+                "reason": reason,
+                "prev_score": prev_score,
+            }
+            try:
+                if hasattr(crud, "update_eval_result"):
+                    crud.update_eval_result(
+                        result_id=r.get("id"),
+                        score=score,
+                        passed=is_passed,
+                        details=details,
+                    )
+                reviewed += 1
+            except Exception:
+                pass
+
+        avg = new_total / len(items) if items else 0
+        try:
+            if hasattr(crud, "update_eval_run_scores"):
+                crud.update_eval_run_scores(
+                    run_id=run_id,
+                    total_score=avg,
+                    passed_count=passed_cnt,
+                    failed_count=len(items) - passed_cnt,
+                )
+        except Exception:
+            pass
+
+        return {
+            "status": "completed",
+            "run_id": run_id,
+            "reviewed": reviewed,
+            "judge_model": judge_model,
+            "updated_score": avg,
+            "passed_count": passed_cnt,
+            "failed_count": len(items) - passed_cnt,
+            "deltas": deltas,
+        }
+
+    async def _judge_with_model(
+        self, input_text: str, expected: str, actual: str, model: str
+    ) -> tuple[int, bool, str]:
+        try:
+            resp = await chat_completion(
+                messages=[
+                    {
+                        "role": "system",
+                        "content": (
+                            "You are a strict evaluation judge. Compare actual vs expected.\n"
+                            "Score 0-100. Pass ≥ 70.\n"
+                            "Reply JSON only: {\"score\":85,\"passed\":true,\"reason\":\"...\"}"
+                        ),
+                    },
+                    {
+                        "role": "user",
+                        "content": f"Input: {input_text}\n\nExpected: {expected}\n\nActual: {actual}",
+                    },
+                ],
+                model=model,
+                max_tokens=250,
+                temperature=0,
+            )
+            raw = (resp.choices[0].message.content or "").strip()
+            s = raw.find("{")
+            e = raw.rfind("}")
+            data = json.loads(raw[s : e + 1]) if s >= 0 and e > s else {}
+            score = int(data.get("score", 0))
+            passed = bool(data.get("passed", score >= 70))
+            return max(0, min(100, score)), passed, str(data.get("reason", ""))[:500]
+        except Exception as e:  # noqa: BLE001
+            return 50, False, f"judge failed: {e}"
+
+    async def before_after_eval(
+        self,
+        project_id: str,
+        before_version_id: str,
+        after_version_id: str,
+        model: str | None = None,
+    ) -> dict:
+        """用同一組測試集跑兩個 prompt 版本，回傳前後對比。
+
+        用途：Prompt 優化後自動跑前後比分，看每個 test case 的 delta。
+        """
+        before = await self.run_eval(project_id, model=model, prompt_version_id=before_version_id)
+        after = await self.run_eval(project_id, model=model, prompt_version_id=after_version_id)
+
+        if before.get("status") != "completed" or after.get("status") != "completed":
+            return {
+                "status": "incomplete",
+                "before": before,
+                "after": after,
+            }
+
+        before_map = {r["test_case_id"]: r for r in before.get("results", [])}
+        after_map = {r["test_case_id"]: r for r in after.get("results", [])}
+
+        deltas = []
+        improved = regressed = unchanged = 0
+        for tc_id, a in after_map.items():
+            b = before_map.get(tc_id)
+            if not b:
+                continue
+            delta = (a.get("score") or 0) - (b.get("score") or 0)
+            if delta > 0:
+                improved += 1
+            elif delta < 0:
+                regressed += 1
+            else:
+                unchanged += 1
+            deltas.append({
+                "test_case_id": tc_id,
+                "input": a.get("input"),
+                "before_score": b.get("score"),
+                "after_score": a.get("score"),
+                "before_passed": b.get("passed"),
+                "after_passed": a.get("passed"),
+                "delta": delta,
+            })
+
+        deltas.sort(key=lambda x: x["delta"])
+        return {
+            "status": "completed",
+            "before_run_id": before.get("run_id"),
+            "after_run_id": after.get("run_id"),
+            "before_score": before.get("total_score"),
+            "after_score": after.get("total_score"),
+            "overall_delta": (after.get("total_score") or 0) - (before.get("total_score") or 0),
+            "improved": improved,
+            "regressed": regressed,
+            "unchanged": unchanged,
+            "deltas": deltas,
+        }
+
+    async def cluster_gaps(
+        self,
+        run_id: str,
+        max_clusters: int = 6,
+        judge_model: str = "claude-sonnet-4-20250514",
+    ) -> dict:
+        """將 run 中失敗的測試案例用 LLM 聚類為弱點類別。
+
+        回傳：
+          {
+            "run_id": ...,
+            "failure_count": N,
+            "clusters": [
+              {"name": "...", "description": "...", "test_case_ids": [...], "suggestion": "..."}
+            ]
+          }
+        """
+        details = crud.get_eval_run_details(run_id)
+        items = details.get("results", []) if isinstance(details, dict) else details
+        failed = [r for r in (items or []) if not r.get("passed")]
+        if not failed:
+            return {"run_id": run_id, "failure_count": 0, "clusters": []}
+
+        # 準備聚類輸入
+        lines = []
+        for r in failed[:40]:  # 控制 token；取前 40 筆
+            tc = r.get("test_case") or {}
+            inp = (tc.get("input_text") or r.get("input") or "")[:220]
+            exp = (tc.get("expected_output") or r.get("expected") or "")[:180]
+            act = (r.get("actual_output") or "")[:180]
+            lines.append(
+                f"- id={r.get('id')} | category={tc.get('category') or 'n/a'}\n"
+                f"  input: {inp}\n  expected: {exp}\n  actual: {act}"
+            )
+
+        sys_prompt = (
+            "你是 AI 測試失敗分析師。請把下列失敗案例聚類成最多 "
+            f"{max_clusters} 組弱點類別。回傳純 JSON：\n"
+            "{ \"clusters\": [ {\"name\": \"類別名\", \"description\": \"一句話說明共通失因\", "
+            "\"test_case_ids\": [\"id1\",\"id2\"], \"suggestion\": \"補救建議（Prompt/RAG/Eval 三選一）\"} ] }"
+        )
+        user = "失敗案例列表：\n" + "\n".join(lines)
+
+        try:
+            resp = await chat_completion(
+                messages=[{"role": "system", "content": sys_prompt}, {"role": "user", "content": user}],
+                model=judge_model,
+                max_tokens=1500,
+                temperature=0.2,
+            )
+            raw = (resp.choices[0].message.content or "").strip()
+            s = raw.find("{")
+            e = raw.rfind("}")
+            data = json.loads(raw[s : e + 1]) if s >= 0 and e > s else {}
+            clusters = data.get("clusters", []) if isinstance(data, dict) else []
+        except Exception as e:  # noqa: BLE001
+            return {"run_id": run_id, "failure_count": len(failed), "clusters": [], "error": str(e)}
+
+        return {
+            "run_id": run_id,
+            "failure_count": len(failed),
+            "analyzed": min(len(failed), 40),
+            "judge_model": judge_model,
+            "clusters": clusters,
+        }
 
     def compare_runs(self, project_id: str, run_id: str) -> dict:
         """Compare a run with its predecessor, with threshold-based regression detection"""

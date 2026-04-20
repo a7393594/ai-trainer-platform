@@ -13,6 +13,8 @@ class Settings(BaseSettings):
     # Qdrant
     qdrant_url: str = "http://localhost:6333"
     qdrant_api_key: Optional[str] = None
+    # Vector backend: "pgvector" (Supabase) or "qdrant"
+    vector_backend: str = "pgvector"
 
     # LLM API Keys
     openai_api_key: Optional[str] = None
@@ -48,6 +50,14 @@ class Settings(BaseSettings):
     referee_enable_triple_model: bool = False
     referee_voting_temperature: float = 0.3
     referee_consistency_samples: int = 3
+
+    # Stripe (optional — plan upgrade checkout)
+    stripe_secret_key: Optional[str] = None
+    stripe_webhook_secret: Optional[str] = None
+    stripe_price_pro: Optional[str] = None
+    stripe_price_enterprise: Optional[str] = None
+    billing_success_url: str = "http://localhost:3000/billing/success"
+    billing_cancel_url: str = "http://localhost:3000/billing/cancel"
 
     # CORS — comma-separated list for internal /api/v1 routes
     cors_allowed_origins: str = "http://localhost:3000,http://localhost:3003,https://frontend-gray-three-14.vercel.app"

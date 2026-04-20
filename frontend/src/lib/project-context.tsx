@@ -3,7 +3,8 @@
 import { createContext, useContext, useState, useEffect, useCallback, type ReactNode } from 'react'
 import { useRouter } from 'next/navigation'
 import { useAuth } from '@/lib/auth-context'
-import type { ProjectSummary, DomainConfig } from '@/types'
+import { getDemoContext } from '@/lib/ai-engine'
+import type { DemoContext, ProjectSummary, DomainConfig } from '@/types'
 
 const AI_ENGINE_URL = process.env.NEXT_PUBLIC_AI_ENGINE_URL || 'http://localhost:8000'
 
@@ -20,6 +21,7 @@ export interface ProjectConfig {
 interface ProjectContextValue {
   projects: ProjectSummary[]
   currentProject: ProjectConfig | null
+  demoContext: DemoContext | null
   switchProject: (id: string) => void
   loading: boolean
 }
@@ -27,6 +29,7 @@ interface ProjectContextValue {
 const ProjectContext = createContext<ProjectContextValue>({
   projects: [],
   currentProject: null,
+  demoContext: null,
   switchProject: () => {},
   loading: true,
 })
@@ -46,31 +49,49 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
   const router = useRouter()
   const [projects, setProjects] = useState<ProjectSummary[]>([])
   const [currentProject, setCurrentProject] = useState<ProjectConfig | null>(null)
+  const [demoContext, setDemoContext] = useState<DemoContext | null>(null)
   const [loading, setLoading] = useState(true)
 
   // Fetch project list + current project config
   useEffect(() => {
     if (!user) return
 
+    let cancelled = false
+
     async function load() {
       try {
-        // 1. Get demo context (includes projects list)
+        // Speculatively start both fetches in parallel. We don't know the
+        // target project id until demo-context resolves, but the saved
+        // localStorage id is usually correct — fire that config fetch
+        // immediately and re-fetch only if demo-context disagrees.
         const email = user!.email || ''
-        const params = email ? `?email=${encodeURIComponent(email)}` : ''
-        const ctx = await fetch(`${AI_ENGINE_URL}/api/v1/demo/context${params}`).then(r => r.json())
+        const savedId = typeof window !== 'undefined' ? localStorage.getItem(STORAGE_KEY) : null
+
+        const ctxPromise = getDemoContext(email)
+        const speculativeConfigPromise = savedId
+          ? fetch(`${AI_ENGINE_URL}/api/v1/projects/${savedId}`).then((r) => (r.ok ? r.json() : null)).catch(() => null)
+          : Promise.resolve(null)
+
+        const [ctx, speculativeConfig] = await Promise.all([ctxPromise, speculativeConfigPromise])
+        if (cancelled) return
 
         const projectList: ProjectSummary[] = ctx.projects || []
         setProjects(projectList)
+        setDemoContext(ctx)
 
-        // 2. Determine which project to load
-        const savedId = typeof window !== 'undefined' ? localStorage.getItem(STORAGE_KEY) : null
-        const targetId = (savedId && projectList.some(p => p.id === savedId))
+        const targetId = (savedId && projectList.some((p) => p.id === savedId))
           ? savedId
-          : ctx.project_id  // default from API
+          : ctx.project_id
 
-        // 3. Fetch full config for target project
-        if (targetId) {
-          const config = await fetch(`${AI_ENGINE_URL}/api/v1/projects/${targetId}`).then(r => r.json())
+        // Use speculative config if it matches the resolved target id;
+        // otherwise fetch the correct one.
+        let config = speculativeConfig && speculativeConfig.id === targetId ? speculativeConfig : null
+        if (!config && targetId) {
+          config = await fetch(`${AI_ENGINE_URL}/api/v1/projects/${targetId}`).then((r) => r.json())
+        }
+        if (cancelled) return
+
+        if (config) {
           setCurrentProject({
             project_id: config.id,
             project_type: config.project_type || 'trainer',
@@ -85,11 +106,14 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
       } catch (err) {
         console.error('[ProjectContext] Failed to load projects:', err)
       } finally {
-        setLoading(false)
+        if (!cancelled) setLoading(false)
       }
     }
 
     load()
+    return () => {
+      cancelled = true
+    }
   }, [user])
 
   const switchProject = useCallback(async (id: string) => {
@@ -115,7 +139,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
   }, [router])
 
   return (
-    <ProjectContext.Provider value={{ projects, currentProject, switchProject, loading }}>
+    <ProjectContext.Provider value={{ projects, currentProject, demoContext, switchProject, loading }}>
       {children}
     </ProjectContext.Provider>
   )
