@@ -172,17 +172,20 @@ async def handle_triage_llm(node: dict, ctx: DAGContext) -> dict:
         f"{i + 1}. [{r['action_type']}] {r['trigger_description']}"
         for i, r in enumerate(rules)
     )
-    system_msg = {
-        "role": "system",
-        "content": (
+    # 允許 node config 覆寫 system prompt 模板（可用 {rules_desc} 當佔位符）
+    custom_sys_prompt = cfg.get("system_prompt")
+    if custom_sys_prompt:
+        sys_content = custom_sys_prompt.replace("{rules_desc}", rules_desc)
+    else:
+        sys_content = (
             "你是一個意圖分類器。根據使用者訊息，判斷是否符合以下任一規則：\n\n"
             f"{rules_desc}\n\n"
             "只回傳 JSON，格式如下：\n"
             '- 不符合：{"type": "general"}\n'
             '- 符合：{"type": "capability_rule", "rule_index": <1-based int>}\n'
             "不要加任何其他說明。"
-        ),
-    }
+        )
+    system_msg = {"role": "system", "content": sys_content}
 
     try:
         resp = await chat_completion(
@@ -534,7 +537,7 @@ async def handle_call_model(node: dict, ctx: DAGContext) -> dict:
                         print(f"[WARN] synthesis L1 failed: {_e}", flush=True)
                         _tb.print_exc()
 
-                    # Layer 2: 乾淨上下文 + 簡化 system prompt
+                    # Layer 2: 乾淨上下文 + 可配置 system prompt + 可配置模型（預設用 call_model 同一顆）
                     if not _syn_text:
                         try:
                             _start = time.time()
@@ -546,12 +549,17 @@ async def handle_call_model(node: dict, ctx: DAGContext) -> dict:
                                 f"[{tr['name']}]\n{json.dumps(tr['result'], ensure_ascii=False)[:1000]}"
                                 for tr in ctx.tool_results
                             )
+                            # 允許 node config 覆寫：synthesis_model / synthesis_system_prompt
+                            _syn_model = cfg.get("synthesis_model") or ctx.model
+                            _syn_sys_prompt = cfg.get("synthesis_system_prompt") or (
+                                "你是一個助手。根據以下工具執行結果，用繁體中文提供清楚完整的回答。"
+                            )
                             _clean_msgs = [
-                                {"role": "system", "content": "你是一個助手。根據以下工具執行結果，用繁體中文提供清楚完整的回答。"},
+                                {"role": "system", "content": _syn_sys_prompt},
                                 {"role": "user", "content": f"問題：{_user_msg}\n\n工具結果：\n{_tool_text}\n\n請根據結果完整回答。"},
                             ]
                             _resp = await _litellm.acompletion(
-                                model=ctx.model,
+                                model=_syn_model,
                                 messages=_clean_msgs,
                                 temperature=ctx.temperature,
                                 max_tokens=ctx.max_tokens,
@@ -609,6 +617,9 @@ async def handle_call_model(node: dict, ctx: DAGContext) -> dict:
             "output": {
                 "text": ctx.llm_response_text[:500] + ("..." if len(ctx.llm_response_text) > 500 else ""),
                 "model": ctx.model,
+                "synthesis_model": cfg.get("synthesis_model") or ctx.model,
+                "synthesis_system_prompt": cfg.get("synthesis_system_prompt") or "（預設）",
+                "system_prompt_prefix": cfg.get("system_prompt_prefix") or "（無）",
                 "temperature": ctx.temperature,
                 "max_tokens": ctx.max_tokens,
                 "max_iterations": max_iterations,

@@ -785,6 +785,46 @@ function NodeConfigPanel({ node, nodeType, config, projectDefaultModel, tools, o
         </div>
       )}
 
+      {fields.includes('synthesis_model') && (
+        <div>
+          <label className="text-[10px] uppercase text-zinc-500 block mb-1">合成階段模型（可選）</label>
+          <ModelSelector
+            value={(config.synthesis_model as string) || ''}
+            onChange={(v) => onChange({ synthesis_model: v })}
+            projectDefault={projectDefaultModel}
+            showWarning
+            className="w-full"
+          />
+          <p className="text-[10px] text-zinc-600 mt-1">工具呼叫耗盡後合成回覆用的模型；未設定則同主模型</p>
+        </div>
+      )}
+
+      {fields.includes('synthesis_system_prompt') && (
+        <div>
+          <label className="text-[10px] uppercase text-zinc-500 block mb-1">合成階段 System Prompt（可選）</label>
+          <textarea
+            value={(config.synthesis_system_prompt as string) || ''}
+            onChange={(e) => onChange({ synthesis_system_prompt: e.target.value })}
+            rows={3}
+            placeholder="未設定則用：「你是一個助手。根據以下工具執行結果，用繁體中文提供清楚完整的回答。」"
+            className="w-full rounded border border-zinc-700 bg-zinc-900 px-2 py-1 text-xs text-zinc-200 outline-none focus:border-blue-500 resize-y"
+          />
+        </div>
+      )}
+
+      {fields.includes('system_prompt') && (
+        <div>
+          <label className="text-[10px] uppercase text-zinc-500 block mb-1">System Prompt</label>
+          <textarea
+            value={(config.system_prompt as string) || ''}
+            onChange={(e) => onChange({ system_prompt: e.target.value })}
+            rows={4}
+            placeholder="分類器的 system prompt；可用 {rules_desc} 當佔位符插入規則清單"
+            className="w-full rounded border border-zinc-700 bg-zinc-900 px-2 py-1 text-xs text-zinc-200 outline-none focus:border-blue-500 resize-y"
+          />
+        </div>
+      )}
+
       {fields.includes('rag_limit') && (
         <div>
           <label className="flex items-center justify-between mb-1">
