@@ -1292,7 +1292,7 @@ async def get_project_analytics(project_id: str, days: int = 30):
     since = (datetime.utcnow() - timedelta(days=days)).isoformat()
 
     # 1. Sessions
-    sessions = get_supabase().table("ait_training_sessions").select("id, created_at").eq("project_id", project_id).gte("created_at", since).execute().data
+    sessions = get_supabase().table("ait_training_sessions").select("id, started_at").eq("project_id", project_id).gte("started_at", since).execute().data
     total_sessions = len(sessions)
 
     # 2. Messages
@@ -1324,7 +1324,10 @@ async def get_project_analytics(project_id: str, days: int = 30):
     project_data = crud.get_project(project_id)
     tenant_id = project_data.get("tenant_id") if project_data else None
     tools = crud.list_tools(tenant_id) if tenant_id else []
-    tool_call_stats = crud.get_tool_call_stats(tenant_id, since) if tenant_id else {"total_calls": 0, "by_tool": {}}
+    try:
+        tool_call_stats = crud.get_tool_call_stats(tenant_id, since) if tenant_id else {"total_calls": 0, "by_tool": {}}
+    except Exception:
+        tool_call_stats = {"total_calls": 0, "by_tool": {}}
 
     # 6. Prompt versions
     prompts = crud.list_prompt_versions(project_id)
@@ -1338,7 +1341,7 @@ async def get_project_analytics(project_id: str, days: int = 30):
     # 9. Daily activity
     daily_activity: dict = {}
     for s in sessions:
-        day = s["created_at"][:10]
+        day = s["started_at"][:10]
         daily_activity.setdefault(day, {"sessions": 0})
         daily_activity[day]["sessions"] += 1
 
