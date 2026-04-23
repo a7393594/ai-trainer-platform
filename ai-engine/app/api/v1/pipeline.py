@@ -705,3 +705,32 @@ async def delete_preset(preset_id: str):
         return {"deleted": preset_id}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Delete preset failed: {e}")
+
+
+# ============================================================================
+# Batch 4B: Pipeline Configs — 專案級每節點預設配置
+# ============================================================================
+
+class PipelineConfigUpsert(BaseModel):
+    project_id: str
+    node_configs: dict  # {node_label: {model?, temperature?, max_tokens?, tool_ids?, system_prompt_prefix?}}
+
+
+@router.get("/config/{project_id}")
+async def get_pipeline_config(project_id: str):
+    """取得專案的 pipeline config。若尚未設定，回傳空 node_configs。"""
+    try:
+        cfg = crud.get_pipeline_config(project_id)
+        return {"config": cfg}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Load config failed: {e}")
+
+
+@router.put("/config")
+async def upsert_pipeline_config(req: PipelineConfigUpsert):
+    """更新專案的 pipeline config（整份 node_configs 覆蓋）。"""
+    try:
+        cfg = crud.upsert_pipeline_config(req.project_id, req.node_configs)
+        return {"config": cfg}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Save config failed: {e}")

@@ -511,13 +511,34 @@ class AgentOrchestrator:
         )
 
         # 4. 呼叫 LLM（帶工具 + 成本追蹤）
-        # Model priority: request > project default > global default
+        # Model priority: request > pipeline config > project default > global default
         project = crud.get_project(request.project_id)
-        model = request.model or (project.get("default_model") if project else None) or "claude-sonnet-4-20250514"
+        # Batch 4B: per-project per-node pipeline config
+        main_cfg = crud.get_node_config(request.project_id, "main_model") or {}
+        model = (
+            request.model
+            or main_cfg.get("model")
+            or (project.get("default_model") if project else None)
+            or "claude-sonnet-4-20250514"
+        )
+        temperature = main_cfg.get("temperature", 0.7)
+        max_tokens = main_cfg.get("max_tokens", 2000)
+
+        # Filter tools by config's whitelist if set
+        effective_tools = llm_tools
+        tool_whitelist = main_cfg.get("tool_ids")
+        if tool_whitelist is not None and llm_tools:
+            allowed = set(tool_whitelist)
+            # db_tools has id field; llm_tools is converted format - filter db_tools then reconvert
+            filtered_db = [t for t in db_tools if t.get("id") in allowed]
+            effective_tools = tool_registry.convert_to_llm_tools(filtered_db) if filtered_db else None
+
         llm_response = await chat_completion(
             messages=messages,
             model=model,
-            tools=llm_tools if llm_tools else None,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            tools=effective_tools if effective_tools else None,
             project_id=request.project_id,
             session_id=session_id,
             span_label="main_model",
@@ -555,11 +576,13 @@ class AgentOrchestrator:
             all_tool_results.extend(tool_results)
             messages.extend(tool_msgs)
 
-            # Re-invoke LLM with tool results
+            # Re-invoke LLM with tool results (same config as first call)
             llm_response = await chat_completion(
                 messages=messages,
                 model=model,
-                tools=llm_tools if llm_tools else None,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                tools=effective_tools if effective_tools else None,
                 project_id=request.project_id,
                 session_id=session_id,
                 span_label=f"main_model_iter_{loop_count + 1}",
@@ -732,18 +755,24 @@ class AgentOrchestrator:
                     },
                 )
 
-                # main_model 用 streaming
+                # main_model 用 streaming — 套用 pipeline config
                 project = crud.get_project(request.project_id)
+                main_cfg = crud.get_node_config(request.project_id, "main_model") or {}
                 model = (
                     request.model
+                    or main_cfg.get("model")
                     or (project.get("default_model") if project else None)
                     or "claude-sonnet-4-20250514"
                 )
+                temperature = main_cfg.get("temperature", 0.7)
+                max_tokens = main_cfg.get("max_tokens", 2000)
 
                 full_content = ""
                 async for chunk in stream_chat_completion(
                     messages=messages,
                     model=model,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
                     project_id=request.project_id,
                     session_id=session_id,
                     span_label="main_model",

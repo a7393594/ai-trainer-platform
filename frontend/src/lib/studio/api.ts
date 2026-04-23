@@ -172,6 +172,37 @@ export async function deletePreset(presetId: string): Promise<{ deleted: string 
   })
 }
 
+// ============================================================================
+// Batch 4B: Pipeline Config (per-project per-node defaults)
+// ============================================================================
+
+export interface NodeConfig {
+  model?: string
+  temperature?: number
+  max_tokens?: number
+  tool_ids?: string[]
+  system_prompt_prefix?: string
+  notes?: string
+}
+
+export interface PipelineConfig {
+  project_id: string
+  node_configs: Record<string, NodeConfig>
+  updated_at?: string
+  updated_by?: string | null
+}
+
+export async function getPipelineConfig(projectId: string): Promise<{ config: PipelineConfig }> {
+  return request<{ config: PipelineConfig }>(`/api/v1/pipeline/config/${projectId}`)
+}
+
+export async function savePipelineConfig(projectId: string, nodeConfigs: Record<string, NodeConfig>): Promise<{ config: PipelineConfig }> {
+  return request<{ config: PipelineConfig }>('/api/v1/pipeline/config', {
+    method: 'PUT',
+    body: JSON.stringify({ project_id: projectId, node_configs: nodeConfigs }),
+  })
+}
+
 export async function selectComparison(
   runId: string,
   nodeId: string,

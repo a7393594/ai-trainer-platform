@@ -1472,6 +1472,55 @@ def get_pipeline_run_by_message(message_id: str) -> Optional[dict]:
 # ============================================================================
 
 T_RERUN_PRESETS = "ait_rerun_presets"
+T_PIPELINE_CONFIGS = "ait_pipeline_configs"
+
+
+# ============================================================================
+# Batch 4B: Pipeline Configs (per-project per-node defaults)
+# ============================================================================
+
+def get_pipeline_config(project_id: str) -> dict:
+    """取得專案的 pipeline config（node_configs 是 {node_label: {model, temperature, ...}}）。
+    若不存在則回傳空設定。"""
+    result = (
+        get_supabase().table(T_PIPELINE_CONFIGS)
+        .select("*")
+        .eq("project_id", project_id)
+        .limit(1)
+        .execute()
+    )
+    if result.data:
+        return result.data[0]
+    return {"project_id": project_id, "node_configs": {}}
+
+
+def upsert_pipeline_config(project_id: str, node_configs: dict, updated_by: Optional[str] = None) -> dict:
+    """Upsert pipeline config（整份 node_configs 覆蓋寫入）。"""
+    sb = get_supabase()
+    existing = (
+        sb.table(T_PIPELINE_CONFIGS)
+        .select("id")
+        .eq("project_id", project_id)
+        .limit(1)
+        .execute()
+    )
+    data = {
+        "project_id": project_id,
+        "node_configs": node_configs,
+        "updated_by": updated_by,
+        "updated_at": "now()",
+    }
+    if existing.data:
+        sb.table(T_PIPELINE_CONFIGS).update(data).eq("project_id", project_id).execute()
+    else:
+        sb.table(T_PIPELINE_CONFIGS).insert(data).execute()
+    return get_pipeline_config(project_id)
+
+
+def get_node_config(project_id: str, node_label: str) -> Optional[dict]:
+    """取得特定節點的配置（供 orchestrator 呼叫）。"""
+    cfg = get_pipeline_config(project_id)
+    return cfg.get("node_configs", {}).get(node_label)
 
 
 def list_rerun_presets(project_id: str, node_type: Optional[str] = None) -> list[dict]:
