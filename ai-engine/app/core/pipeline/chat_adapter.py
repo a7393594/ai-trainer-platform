@@ -162,7 +162,7 @@ def _seed_default_dag(project_id: str) -> dict:
         {"id": "n_prompt", "type_key": "compose_prompt", "label": "組 Prompt",
          "condition": not_handled},
         {"id": "n_model", "type_key": "call_model", "label": "主模型",
-         "condition": not_handled, "config": {"max_iterations": 5}},
+         "condition": not_handled, "config": {"max_iterations": 20}},
         {"id": "n_tools", "type_key": "execute_tools", "label": "工具結果",
          "condition": not_handled},
         {"id": "n_widget", "type_key": "parse_widget", "label": "Widget 解析",

@@ -322,7 +322,7 @@ async def handle_call_model(node: dict, ctx: DAGContext) -> dict:
     """主模型呼叫 + 完整工具迴圈。
 
     若 model 要求呼叫工具，實際執行工具、把結果餵回模型，最多跑 max_iterations 輪。
-    max_iterations 從 execute_tools 節點的 config 讀（如存在於 DAG），否則預設 5。
+    max_iterations 預設 20（夠複雜題目用，偶發 runaway 由重複偵測 + token 預算兜底）。
     """
     cfg = node.get("config") or {}
     try:
@@ -345,7 +345,10 @@ async def handle_call_model(node: dict, ctx: DAGContext) -> dict:
     )
     ctx.temperature = float(cfg.get("temperature", per_project_cfg.get("temperature", 0.7)))
     ctx.max_tokens = int(cfg.get("max_tokens", per_project_cfg.get("max_tokens", 2000)))
-    max_iterations = int(cfg.get("max_iterations", 5))
+    max_iterations = int(cfg.get("max_iterations", 20))
+    # Runaway safeguards (Layer 2 & 3)
+    _dup_threshold = 3          # 連續 N 次同 tool+params 視為 runaway
+    _token_budget = 150_000     # 累計 input tokens 硬上限
 
     # Resolve tools:優先 node cfg.tool_ids,否則 per-project cfg.tool_ids,否則全部
     tool_ids = cfg.get("tool_ids")
@@ -465,6 +468,27 @@ async def handle_call_model(node: dict, ctx: DAGContext) -> dict:
                     "tool_call_id": tc.id,
                     "content": json.dumps(result, ensure_ascii=False)[:4000],
                 })
+
+            # Runaway safeguards（在合成判斷之前檢查，觸發則強制進入合成分支）
+            # Layer 2: 連續 N 個 tool_call 都是同 tool+params → 視為 runaway
+            _recent = ctx.tool_results[-_dup_threshold:]
+            if len(_recent) == _dup_threshold and all(
+                r["name"] == _recent[0]["name"] and r["params"] == _recent[0]["params"]
+                for r in _recent
+            ):
+                print(
+                    f"[WARN] duplicate tool_call loop detected: {_recent[0]['name']} × {_dup_threshold}, forcing synthesis",
+                    flush=True,
+                )
+                iteration = max_iterations
+
+            # Layer 3: 累計 input tokens 超過硬上限 → 強制進入合成
+            if total_in > _token_budget:
+                print(
+                    f"[WARN] token budget exhausted: total_in={total_in} > {_token_budget}, forcing synthesis",
+                    flush=True,
+                )
+                iteration = max_iterations
 
             # 達到 iteration cap：三層防呆合成，保證 ctx.llm_response_text 絕對非空。
             # 所有 print 用 flush=True，確保 Uvicorn --reload 下 worker 子行程能輸出 log。
