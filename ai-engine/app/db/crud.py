@@ -376,16 +376,46 @@ def list_sessions(
     project_id: str,
     user_id: Optional[str] = None,
     limit: int = 100,
+    offset: int = 0,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    search: Optional[str] = None,
 ) -> list[dict]:
+    """List sessions with optional filters.
+
+    Args:
+        date_from/date_to: ISO8601 strings (YYYY-MM-DD or full timestamp)
+        search: full-text search term — matches against any message content in the session
+    """
+    # If search is given, find session_ids whose messages contain the term first
+    matching_session_ids: Optional[list[str]] = None
+    if search:
+        msg_query = (
+            get_supabase().table(T_MESSAGES)
+            .select("session_id")
+            .ilike("content", f"%{search}%")
+            .limit(500)
+        )
+        msg_res = msg_query.execute().data or []
+        matching_session_ids = list({m["session_id"] for m in msg_res})
+        if not matching_session_ids:
+            return []  # no matches
+
     query = (
         get_supabase().table(T_SESSIONS)
         .select("*")
         .eq("project_id", project_id)
         .order("started_at", desc=True)
-        .limit(limit)
+        .range(offset, offset + limit - 1)
     )
     if user_id:
         query = query.eq("user_id", user_id)
+    if date_from:
+        query = query.gte("started_at", date_from)
+    if date_to:
+        query = query.lte("started_at", date_to)
+    if matching_session_ids is not None:
+        query = query.in_("id", matching_session_ids)
     return query.execute().data
 
 

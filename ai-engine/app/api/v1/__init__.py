@@ -2,6 +2,7 @@
 API v1 路由 — 所有對外端點
 """
 import json
+from typing import Optional
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from app.models.schemas import (
@@ -148,9 +149,40 @@ async def get_feedback_stats(project_id: str):
 # ============================================
 
 @router.get("/sessions/{project_id}")
-async def list_sessions(project_id: str):
-    """列出專案的所有訓練會話"""
-    sessions = crud.list_sessions(project_id)
+async def list_sessions(
+    project_id: str,
+    user_id: Optional[str] = None,
+    limit: int = 100,
+    offset: int = 0,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    search: Optional[str] = None,
+):
+    """列出專案的訓練會話（支援篩選）。
+
+    Query params:
+    - user_id: 篩選特定用戶
+    - date_from / date_to: ISO8601 時間範圍
+    - search: 搜尋 messages.content 內的關鍵字
+    - limit / offset: 分頁
+    """
+    sessions = crud.list_sessions(
+        project_id=project_id,
+        user_id=user_id,
+        limit=limit,
+        offset=offset,
+        date_from=date_from,
+        date_to=date_to,
+        search=search,
+    )
+
+    # Enrich with first user message preview and message count for UI
+    for s in sessions:
+        msgs = crud.list_messages(s["id"], limit=200)
+        s["message_count"] = len(msgs)
+        first_user = next((m for m in msgs if m.get("role") == "user"), None)
+        s["preview"] = (first_user["content"][:80] if first_user else "")
+
     return {"sessions": sessions}
 
 
@@ -188,6 +220,31 @@ async def activate_prompt(project_id: str, version_id: str):
     if not result:
         raise HTTPException(status_code=404, detail="Prompt 版本不存在")
     return {"status": "activated", "version_id": version_id}
+
+
+@router.post("/prompts/{project_id}")
+async def create_prompt(project_id: str, data: dict):
+    """建立新 Prompt 版本。
+
+    body: { content: str, change_notes?: str, activate?: bool }
+    版本號 = 目前最大版本 + 1
+    activate=true 時直接啟用並停用其他版本
+    """
+    content = data.get("content", "").strip()
+    if not content:
+        raise HTTPException(400, "content required")
+    change_notes = data.get("change_notes", "")
+    activate = bool(data.get("activate", False))
+
+    next_version = crud.get_next_version_number(project_id)
+    created = crud.create_prompt_version(
+        project_id=project_id,
+        content=content,
+        version=next_version,
+        is_active=activate,
+        change_notes=change_notes,
+    )
+    return created
 
 
 # ============================================

@@ -142,8 +142,28 @@ export function clearDemoContextCache(): void {
 // ============================================
 
 /** 列出專案的所有訓練會話 */
-export async function listSessions(projectId: string) {
-  return request<{ sessions: any[] }>(`/api/v1/sessions/${projectId}`)
+export async function listSessions(
+  projectId: string,
+  options: {
+    userId?: string
+    dateFrom?: string
+    dateTo?: string
+    search?: string
+    limit?: number
+    offset?: number
+  } = {}
+) {
+  const qs = new URLSearchParams()
+  if (options.userId) qs.set('user_id', options.userId)
+  if (options.dateFrom) qs.set('date_from', options.dateFrom)
+  if (options.dateTo) qs.set('date_to', options.dateTo)
+  if (options.search) qs.set('search', options.search)
+  if (options.limit) qs.set('limit', String(options.limit))
+  if (options.offset) qs.set('offset', String(options.offset))
+  const query = qs.toString()
+  return request<{ sessions: any[] }>(
+    `/api/v1/sessions/${projectId}${query ? '?' + query : ''}`
+  )
 }
 
 /** 取得會話的訊息歷史 */
@@ -163,6 +183,17 @@ export async function listPromptVersions(projectId: string) {
 /** 切換 active Prompt */
 export async function activatePromptVersion(projectId: string, versionId: string) {
   return request(`/api/v1/prompts/${projectId}/activate/${versionId}`, { method: 'POST' })
+}
+
+/** 建立新 Prompt 版本（編輯 = 建立新版本） */
+export async function createPromptVersion(
+  projectId: string,
+  data: { content: string; change_notes?: string; activate?: boolean }
+) {
+  return request<any>(`/api/v1/prompts/${projectId}`, {
+    method: 'POST',
+    body: JSON.stringify(data),
+  })
 }
 
 // ============================================
