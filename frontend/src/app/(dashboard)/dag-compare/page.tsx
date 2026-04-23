@@ -35,6 +35,154 @@ function StatusBadge({ status }: { status: string }) {
   return <span className="text-[9px] rounded px-1 bg-red-900/60 text-red-400">err</span>
 }
 
+// ── Per-node detail view ──────────────────────────────────────────────────
+function IterationTable({ iters }: { iters: Array<Record<string, unknown>> }) {
+  return (
+    <div className="mt-1 overflow-x-auto">
+      <table className="text-[9px] w-full border-collapse">
+        <thead>
+          <tr className="text-zinc-500 border-b border-zinc-700/60">
+            <th className="text-left px-1 py-0.5">#</th>
+            <th className="text-left px-1 py-0.5">phase</th>
+            <th className="text-right px-1 py-0.5">in</th>
+            <th className="text-right px-1 py-0.5">out</th>
+            <th className="text-right px-1 py-0.5">ms</th>
+            <th className="text-left px-1 py-0.5">finish</th>
+            <th className="text-left px-1 py-0.5">tools/text</th>
+          </tr>
+        </thead>
+        <tbody>
+          {iters.map((it, i) => {
+            const tools = (it.tool_calls as Array<{ name: string; arguments?: string }> | undefined) || []
+            const preview = (it.text_preview as string | undefined) || ''
+            const toolsDisplay = tools.length > 0
+              ? tools.map((t) => t.name).join(', ')
+              : preview.slice(0, 80) + (preview.length > 80 ? '…' : '')
+            return (
+              <tr key={i} className="border-b border-zinc-800/50 hover:bg-zinc-800/30">
+                <td className="px-1 py-0.5 text-zinc-400">{String(it.iter)}</td>
+                <td className="px-1 py-0.5 font-mono text-zinc-300">{String(it.phase)}</td>
+                <td className="px-1 py-0.5 text-right text-zinc-400">{String(it.tokens_in || 0)}</td>
+                <td className="px-1 py-0.5 text-right text-zinc-400">{String(it.tokens_out || 0)}</td>
+                <td className="px-1 py-0.5 text-right text-zinc-500">{String(it.latency_ms || 0)}</td>
+                <td className="px-1 py-0.5 text-zinc-500">{String(it.finish_reason || '')}</td>
+                <td className="px-1 py-0.5 text-zinc-300 truncate max-w-[180px]" title={toolsDisplay}>{toolsDisplay}</td>
+              </tr>
+            )
+          })}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
+function ToolResultList({ results }: { results: Array<Record<string, unknown>> }) {
+  return (
+    <div className="mt-1 space-y-1">
+      {results.map((tr, i) => (
+        <div key={i} className="border border-zinc-700/40 rounded px-1 py-0.5 bg-zinc-950/40">
+          <div className="flex items-center gap-2">
+            <span className={`text-[9px] rounded px-1 ${tr.status === 'ok' ? 'bg-emerald-900/60 text-emerald-400' : 'bg-red-900/60 text-red-400'}`}>
+              {String(tr.status)}
+            </span>
+            <span className="text-[10px] font-mono text-zinc-200">{String(tr.name)}</span>
+            <span className="text-[9px] text-zinc-500">iter {String(tr.iteration)}</span>
+          </div>
+          <details className="mt-0.5">
+            <summary className="text-[9px] text-zinc-500 cursor-pointer">params / result</summary>
+            <pre className="text-[9px] text-zinc-400 whitespace-pre-wrap mt-0.5">
+              params: {JSON.stringify(tr.params, null, 2)}
+              {'\n'}result: {JSON.stringify(tr.result, null, 2).slice(0, 1200)}
+            </pre>
+          </details>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+function NodeDetail({ output }: { output: Record<string, unknown> }) {
+  if (!output || Object.keys(output).length === 0) {
+    return <div className="text-[9px] text-zinc-500 italic">無詳細資料</div>
+  }
+  const entries = Object.entries(output)
+  return (
+    <div className="space-y-1 text-[10px]">
+      {entries.map(([key, value]) => {
+        // Special renderings
+        if (key === 'iteration_details' && Array.isArray(value)) {
+          return (
+            <div key={key}>
+              <div className="text-[9px] text-zinc-500 mb-0.5">iteration_details：</div>
+              <IterationTable iters={value as Array<Record<string, unknown>>} />
+            </div>
+          )
+        }
+        if (key === 'results' && Array.isArray(value)) {
+          return (
+            <div key={key}>
+              <div className="text-[9px] text-zinc-500 mb-0.5">results：</div>
+              <ToolResultList results={value as Array<Record<string, unknown>>} />
+            </div>
+          )
+        }
+        // Long string → pre-wrap
+        if (typeof value === 'string' && value.length > 80) {
+          return (
+            <div key={key}>
+              <div className="text-[9px] text-zinc-500">{key}：</div>
+              <pre className="text-[10px] text-zinc-300 whitespace-pre-wrap bg-zinc-950/40 border border-zinc-700/40 rounded p-1 max-h-40 overflow-y-auto">{value}</pre>
+            </div>
+          )
+        }
+        // Objects/arrays → json
+        if (typeof value === 'object' && value !== null) {
+          return (
+            <div key={key}>
+              <div className="text-[9px] text-zinc-500">{key}：</div>
+              <pre className="text-[9px] text-zinc-400 whitespace-pre-wrap bg-zinc-950/40 border border-zinc-700/40 rounded p-1 max-h-40 overflow-y-auto">{JSON.stringify(value, null, 2)}</pre>
+            </div>
+          )
+        }
+        // Scalar → inline
+        return (
+          <div key={key} className="flex gap-2">
+            <span className="text-[9px] text-zinc-500 shrink-0">{key}：</span>
+            <span className="text-[10px] text-zinc-300 break-all">{String(value)}</span>
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+function TraceRow({ t, index }: { t: ABTraceEntry; index: number }) {
+  const [open, setOpen] = useState(false)
+  const hasDetail = !!(t.output && Object.keys(t.output).length > 0)
+  return (
+    <div className="border-b border-zinc-800/50 last:border-b-0">
+      <button
+        onClick={() => hasDetail && setOpen((v) => !v)}
+        className={`w-full flex items-start gap-2 py-1 px-1 text-left ${hasDetail ? 'hover:bg-zinc-800/30 cursor-pointer' : 'cursor-default'}`}
+      >
+        <span className="text-[9px] text-zinc-600 w-4 shrink-0">{hasDetail ? (open ? '▾' : '▸') : ' '}</span>
+        <span className="text-[9px] text-zinc-600 w-5 shrink-0">{index + 1}</span>
+        <StatusBadge status={t.status} />
+        <span className="text-[10px] text-zinc-400 shrink-0 w-28 truncate" title={t.label}>{t.label || t.type_key}</span>
+        <span className="text-[10px] text-zinc-300 flex-1 min-w-0 truncate" title={t.summary}>{t.summary}</span>
+        <span className="text-[9px] text-zinc-500 shrink-0">
+          {t.latency_ms > 0 ? `${t.latency_ms}ms` : '—'}
+        </span>
+      </button>
+      {open && hasDetail && (
+        <div className="pl-6 pr-2 pb-2 pt-1 bg-zinc-950/30 border-t border-zinc-800/50">
+          <NodeDetail output={t.output as Record<string, unknown>} />
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ── Trace panel ───────────────────────────────────────────────────────────
 function TracePanel({ trace }: { trace: ABTraceEntry[] }) {
   const [open, setOpen] = useState(false)
@@ -47,19 +195,12 @@ function TracePanel({ trace }: { trace: ABTraceEntry[] }) {
         className="w-full flex items-center justify-between px-2 py-1 text-[10px] text-zinc-400 hover:text-zinc-200"
       >
         <span>{open ? '▾' : '▸'} 執行過程 ({trace.length} 個節點)</span>
-        <span className="text-zinc-500">{totalMs}ms 總計</span>
+        <span className="text-zinc-500">{totalMs}ms 總計 · 點節點看明細</span>
       </button>
       {open && (
-        <div className="border-t border-zinc-700/60 px-2 py-1 space-y-0.5 max-h-64 overflow-y-auto">
+        <div className="border-t border-zinc-700/60 max-h-[480px] overflow-y-auto">
           {trace.map((t, i) => (
-            <div key={i} className="flex items-start gap-2 py-0.5">
-              <StatusBadge status={t.status} />
-              <span className="text-[10px] text-zinc-400 shrink-0 w-28 truncate" title={t.label}>{t.label || t.type_key}</span>
-              <span className="text-[10px] text-zinc-300 flex-1 min-w-0 truncate" title={t.summary}>{t.summary}</span>
-              <span className="text-[9px] text-zinc-500 shrink-0">
-                {t.latency_ms > 0 ? `${t.latency_ms}ms` : '—'}
-              </span>
-            </div>
+            <TraceRow key={i} t={t} index={i} />
           ))}
         </div>
       )}

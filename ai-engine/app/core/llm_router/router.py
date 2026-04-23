@@ -2,14 +2,68 @@
 LLM Router — 多模型切換器 + 成本追蹤
 透過 LiteLLM 統一介面呼叫任何 LLM（Claude / GPT / Gemini / Llama ...）
 """
+import asyncio
 import time
+from collections import deque
+from typing import Deque, Optional, Tuple
 import litellm
-from typing import Optional
 from app.config import settings
 
 from app.core.llm_router.models import get_model_pricing
 
 MODEL_PRICING = get_model_pricing()
+
+
+# ---------------------------------------------------------------------------
+# Sliding-window token bucket — 防止觸及 Anthropic 30K tokens/min rate limit
+# 超標時排隊等待，而非直接回傳 rate_limit_error 給前端。
+# ---------------------------------------------------------------------------
+
+class _TokenRateLimiter:
+    """Per-process sliding-window token bucket. Thread-safe via asyncio.Lock."""
+
+    def __init__(self, tpm_limit: int = 27_000, window_sec: int = 60) -> None:
+        self._limit = tpm_limit          # 27K < 30K，留 3K buffer
+        self._window_sec = window_sec
+        self._lock = asyncio.Lock()
+        self._entries: Deque[Tuple[float, int]] = deque()
+
+    def _prune(self, now: float) -> int:
+        cutoff = now - self._window_sec
+        while self._entries and self._entries[0][0] < cutoff:
+            self._entries.popleft()
+        return sum(t for _, t in self._entries)
+
+    async def acquire(self, tokens: int) -> None:
+        """等到 window 內有足夠 quota 才回傳，不超時不失敗。"""
+        while True:
+            async with self._lock:
+                now = time.time()
+                used = self._prune(now)
+                if used + tokens <= self._limit:
+                    self._entries.append((now, tokens))
+                    return
+                # 計算需等多久直到最舊的 entry 滑出 window
+                oldest_ts = self._entries[0][0]
+                wait = self._window_sec - (now - oldest_ts) + 0.5
+            await asyncio.sleep(max(wait, 1.0))
+
+
+_rate_limiter = _TokenRateLimiter(tpm_limit=27_000)
+
+
+def _estimate_tokens(messages: list[dict]) -> int:
+    """粗估輸入 token 數（chars / 4），用於 rate limiter 預留 quota。"""
+    chars = 0
+    for m in messages:
+        c = m.get("content", "")
+        if isinstance(c, str):
+            chars += len(c)
+        elif isinstance(c, list):
+            for block in c:
+                if isinstance(block, dict):
+                    chars += len(block.get("text", ""))
+    return max(1, chars // 4)
 
 
 def calculate_cost(model: str, input_tokens: int, output_tokens: int) -> float:
@@ -89,6 +143,9 @@ async def chat_completion(
         kwargs["tools"] = tools
         kwargs["tool_choice"] = "auto"
 
+    # 排隊等待 quota，避免 Anthropic rate_limit_error
+    await _rate_limiter.acquire(_estimate_tokens(messages))
+
     start = time.time()
     response = await litellm.acompletion(**kwargs)
     latency = int((time.time() - start) * 1000)
@@ -158,6 +215,8 @@ async def stream_chat_completion(
         "stream": True,
         "metadata": {"tenant_id": tenant_id} if tenant_id else {},
     }
+    await _rate_limiter.acquire(_estimate_tokens(messages))
+
     start = time.time()
     full_text = ""
     response = await litellm.acompletion(**kwargs)

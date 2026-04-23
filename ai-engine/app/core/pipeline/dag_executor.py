@@ -164,7 +164,7 @@ async def handle_triage_llm(node: dict, ctx: DAGContext) -> dict:
         ctx.intent_type = "general"
         return {
             "status": "ok",
-            "output": {"intent_type": "general", "reason": "no_rules"},
+            "output": {"intent_type": "general", "reason": "no_rules", "user_message": ctx.user_message[:300]},
             "summary": "無 capability rules → general",
         }
 
@@ -253,13 +253,19 @@ async def handle_load_knowledge(node: dict, ctx: DAGContext) -> dict:
             chunk_count = rag_text.count("\n\n---\n\n") + 1
             return {
                 "status": "ok",
-                "output": {"chunk_count": chunk_count, "total_chars": len(rag_text)},
+                "output": {
+                    "chunk_count": chunk_count,
+                    "total_chars": len(rag_text),
+                    "rag_limit": rag_limit,
+                    "rag_preview": rag_text[:1000] + ("..." if len(rag_text) > 1000 else ""),
+                    "query": ctx.user_message[:300],
+                },
                 "summary": f"取 {chunk_count} 個 RAG 片段",
             }
     except Exception as e:  # noqa: BLE001
-        return {"status": "ok", "output": {"error": str(e)[:200]}, "summary": "RAG 檢索失敗(略過)"}
+        return {"status": "ok", "output": {"error": str(e)[:200], "query": ctx.user_message[:300]}, "summary": "RAG 檢索失敗(略過)"}
 
-    return {"status": "ok", "output": {"chunk_count": 0}, "summary": "沒有相關知識"}
+    return {"status": "ok", "output": {"chunk_count": 0, "rag_limit": rag_limit, "query": ctx.user_message[:300]}, "summary": "沒有相關知識"}
 
 
 async def handle_compose_prompt(node: dict, ctx: DAGContext) -> dict:
@@ -299,9 +305,14 @@ async def handle_compose_prompt(node: dict, ctx: DAGContext) -> dict:
         "output": {
             "message_count": len(ctx.messages),
             "system_prompt_length": len(ctx.system_prompt),
+            "system_prompt_preview": ctx.system_prompt[:1500] + ("..." if len(ctx.system_prompt) > 1500 else ""),
             "has_rag": bool(ctx.rag_context),
+            "rag_length": len(ctx.rag_context) if ctx.rag_context else 0,
             "has_prefix": bool(prefix),
+            "prefix_preview": prefix[:500] if prefix else "",
             "has_widget_instruction": True,
+            "history_count": len(ctx.history),
+            "user_message": ctx.user_message[:500],
         },
         "summary": f"組出 {len(ctx.messages)} 則訊息(system {len(ctx.system_prompt)} 字)",
     }
@@ -358,6 +369,8 @@ async def handle_call_model(node: dict, ctx: DAGContext) -> dict:
     total_in = 0
     total_out = 0
     final_tool_call_count = 0
+    iteration_details: list[dict] = []   # 每輪詳細（for trace output）
+    synthesis_layer: str = ""             # L1 / L2 / L3 / "" (not needed)
 
     try:
         for iteration in range(max_iterations + 1):  # initial + up to N iterations
@@ -378,10 +391,25 @@ async def handle_call_model(node: dict, ctx: DAGContext) -> dict:
             in_tokens = getattr(usage, "prompt_tokens", 0) if usage else 0
             out_tokens = getattr(usage, "completion_tokens", 0) if usage else 0
             tool_calls = getattr(msg, "tool_calls", None) or []
+            iter_latency = int((time.time() - start) * 1000)
 
             total_in += in_tokens
             total_out += out_tokens
-            total_latency_ms += int((time.time() - start) * 1000)
+            total_latency_ms += iter_latency
+
+            iteration_details.append({
+                "iter": iteration + 1,
+                "phase": "tool_loop",
+                "tokens_in": in_tokens,
+                "tokens_out": out_tokens,
+                "latency_ms": iter_latency,
+                "tool_calls": [
+                    {"name": tc.function.name, "arguments": tc.function.arguments[:300] if tc.function.arguments else ""}
+                    for tc in tool_calls
+                ],
+                "text_preview": text[:200] if text else "",
+                "finish_reason": "text" if not tool_calls else "tool_calls",
+            })
 
             if not tool_calls:
                 # Done
@@ -438,50 +466,138 @@ async def handle_call_model(node: dict, ctx: DAGContext) -> dict:
                     "content": json.dumps(result, ensure_ascii=False)[:4000],
                 })
 
-            # Stop if we hit the iteration cap
+            # 達到 iteration cap：三層防呆合成，保證 ctx.llm_response_text 絕對非空。
+            # 所有 print 用 flush=True，確保 Uvicorn --reload 下 worker 子行程能輸出 log。
             if iteration >= max_iterations:
-                break
+                if not ctx.llm_response_text and ctx.tool_results:
+                    import litellm as _litellm
+                    import traceback as _tb
+                    _syn_text = ""
 
-        # 迴圈因 iteration cap 中止但沒有捕捉到文字 → 做最終合成呼叫（不帶 tools）
-        if not ctx.llm_response_text and ctx.tool_results:
-            try:
-                start = time.time()
-                syn_resp = await chat_completion(
-                    messages=ctx.messages,
-                    model=ctx.model,
-                    temperature=ctx.temperature,
-                    max_tokens=ctx.max_tokens,
-                    tools=None,
-                    project_id=ctx.project_id,
-                    session_id=ctx.session_id,
-                    span_label="call_model_synthesis",
-                )
-                syn_msg = syn_resp.choices[0].message
-                ctx.llm_response_text = syn_msg.content or ""
-                syn_usage = getattr(syn_resp, "usage", None)
-                total_in += getattr(syn_usage, "prompt_tokens", 0) if syn_usage else 0
-                total_out += getattr(syn_usage, "completion_tokens", 0) if syn_usage else 0
-                total_latency_ms += int((time.time() - start) * 1000)
-            except Exception:
-                pass
+                    # Layer 1: tool_choice="none" 保留完整上下文（Anthropic 原生）
+                    try:
+                        _start = time.time()
+                        _resp = await _litellm.acompletion(
+                            model=ctx.model,
+                            messages=ctx.messages,
+                            temperature=ctx.temperature,
+                            max_tokens=ctx.max_tokens,
+                            tools=tools_payload,
+                            tool_choice="none",
+                        )
+                        _syn_text = (_resp.choices[0].message.content or "").strip()
+                        _usage = getattr(_resp, "usage", None)
+                        _syn_in = getattr(_usage, "prompt_tokens", 0) if _usage else 0
+                        _syn_out = getattr(_usage, "completion_tokens", 0) if _usage else 0
+                        _syn_lat = int((time.time() - _start) * 1000)
+                        total_in += _syn_in
+                        total_out += _syn_out
+                        total_latency_ms += _syn_lat
+                        iteration_details.append({
+                            "iter": len(iteration_details) + 1, "phase": "synthesis_L1",
+                            "tokens_in": _syn_in, "tokens_out": _syn_out, "latency_ms": _syn_lat,
+                            "text_preview": _syn_text[:200], "finish_reason": "text" if _syn_text else "empty",
+                        })
+                        if _syn_text:
+                            synthesis_layer = "L1"
+                        print(f"[INFO] synthesis L1 tool_choice=none: len={len(_syn_text)}", flush=True)
+                    except Exception as _e:
+                        iteration_details.append({
+                            "iter": len(iteration_details) + 1, "phase": "synthesis_L1",
+                            "tokens_in": 0, "tokens_out": 0, "latency_ms": 0,
+                            "text_preview": "", "finish_reason": f"error: {str(_e)[:100]}",
+                        })
+                        print(f"[WARN] synthesis L1 failed: {_e}", flush=True)
+                        _tb.print_exc()
+
+                    # Layer 2: 乾淨上下文 + 簡化 system prompt
+                    if not _syn_text:
+                        try:
+                            _start = time.time()
+                            _user_msg = next(
+                                (m.get("content", "") for m in ctx.messages if m.get("role") == "user"),
+                                ctx.user_message,
+                            )
+                            _tool_text = "\n\n".join(
+                                f"[{tr['name']}]\n{json.dumps(tr['result'], ensure_ascii=False)[:1000]}"
+                                for tr in ctx.tool_results
+                            )
+                            _clean_msgs = [
+                                {"role": "system", "content": "你是一個助手。根據以下工具執行結果，用繁體中文提供清楚完整的回答。"},
+                                {"role": "user", "content": f"問題：{_user_msg}\n\n工具結果：\n{_tool_text}\n\n請根據結果完整回答。"},
+                            ]
+                            _resp = await _litellm.acompletion(
+                                model=ctx.model,
+                                messages=_clean_msgs,
+                                temperature=ctx.temperature,
+                                max_tokens=ctx.max_tokens,
+                            )
+                            _syn_text = (_resp.choices[0].message.content or "").strip()
+                            _usage = getattr(_resp, "usage", None)
+                            _syn_in = getattr(_usage, "prompt_tokens", 0) if _usage else 0
+                            _syn_out = getattr(_usage, "completion_tokens", 0) if _usage else 0
+                            _syn_lat = int((time.time() - _start) * 1000)
+                            total_in += _syn_in
+                            total_out += _syn_out
+                            total_latency_ms += _syn_lat
+                            iteration_details.append({
+                                "iter": len(iteration_details) + 1, "phase": "synthesis_L2",
+                                "tokens_in": _syn_in, "tokens_out": _syn_out, "latency_ms": _syn_lat,
+                                "text_preview": _syn_text[:200], "finish_reason": "text" if _syn_text else "empty",
+                            })
+                            if _syn_text:
+                                synthesis_layer = "L2"
+                            print(f"[INFO] synthesis L2 clean-context: len={len(_syn_text)}", flush=True)
+                        except Exception as _e:
+                            iteration_details.append({
+                                "iter": len(iteration_details) + 1, "phase": "synthesis_L2",
+                                "tokens_in": 0, "tokens_out": 0, "latency_ms": 0,
+                                "text_preview": "", "finish_reason": f"error: {str(_e)[:100]}",
+                            })
+                            print(f"[WARN] synthesis L2 failed: {_e}", flush=True)
+                            _tb.print_exc()
+
+                    # Layer 3: 工具結果直接當文字（保底絕對非空）
+                    if not _syn_text:
+                        _syn_text = "工具執行完成，結果如下：\n\n" + "\n\n".join(
+                            f"**{tr['name']}**\n```json\n{json.dumps(tr['result'], ensure_ascii=False, indent=2)[:800]}\n```"
+                            for tr in ctx.tool_results
+                        )
+                        synthesis_layer = "L3"
+                        iteration_details.append({
+                            "iter": len(iteration_details) + 1, "phase": "synthesis_L3",
+                            "tokens_in": 0, "tokens_out": 0, "latency_ms": 0,
+                            "text_preview": _syn_text[:200], "finish_reason": "fallback",
+                        })
+                        print(f"[INFO] synthesis L3 tool-as-text: len={len(_syn_text)}", flush=True)
+
+                    ctx.llm_response_text = _syn_text
+                break
 
         ctx.total_tokens_in += total_in
         ctx.total_tokens_out += total_out
         ctx.tool_call_count = final_tool_call_count
 
         tool_summary = f"，呼叫 {len(ctx.tool_results)} 個工具" if ctx.tool_results else ""
+        syn_suffix = f"（合成 {synthesis_layer}）" if synthesis_layer else ""
         return {
             "status": "ok",
             "output": {
                 "text": ctx.llm_response_text[:500] + ("..." if len(ctx.llm_response_text) > 500 else ""),
                 "model": ctx.model,
+                "temperature": ctx.temperature,
+                "max_tokens": ctx.max_tokens,
+                "max_iterations": max_iterations,
                 "tokens_in": total_in,
                 "tokens_out": total_out,
                 "latency_ms": total_latency_ms,
                 "iterations": ctx.tool_iterations,
                 "tool_calls_total": len(ctx.tool_results),
+                "tools_available": [t.get("name") for t in (ctx.db_tools or [])],
+                "synthesis_layer": synthesis_layer,
+                "iteration_details": iteration_details,
             },
-            "summary": f"{ctx.model} · 收 {total_in} 出 {total_out} · {total_latency_ms}ms{tool_summary}",
+            "summary": f"{ctx.model} · 收 {total_in} 出 {total_out} · {total_latency_ms}ms{tool_summary}{syn_suffix}",
         }
     except Exception as e:
         return {"status": "error", "error": str(e), "summary": f"模型呼叫失敗：{e}"}
@@ -573,7 +689,13 @@ async def handle_parse_widget(node: dict, ctx: DAGContext) -> dict:
     ctx.clean_text = clean
     return {
         "status": "ok",
-        "output": {"widget_count": len(widgets), "clean_length": len(clean)},
+        "output": {
+            "widget_count": len(widgets),
+            "clean_length": len(clean),
+            "raw_length": len(text),
+            "clean_preview": clean[:500] + ("..." if len(clean) > 500 else ""),
+            "widgets_preview": widgets[:3],
+        },
         "summary": f"解析出 {len(widgets)} 個 widget",
     }
 
@@ -819,9 +941,12 @@ async def handle_output(node: dict, ctx: DAGContext) -> dict:
     final_text = ctx.clean_text or ctx.llm_response_text
     output: dict = {
         "final_text": final_text,
+        "final_text_preview": final_text[:1000] + ("..." if len(final_text) > 1000 else ""),
+        "final_text_length": len(final_text),
         "widget_count": len(ctx.widgets),
         "total_tokens_in": ctx.total_tokens_in,
         "total_tokens_out": ctx.total_tokens_out,
+        "tool_call_count": len(ctx.tool_results),
     }
 
     if ctx.persist and ctx.session_id:
