@@ -315,6 +315,37 @@ export async function compareDags(dagAId: string, dagBId: string, testInputs: st
   })
 }
 
+// DAG Test Execution
+export interface DAGTestTraceEntry {
+  node_id: string
+  label?: string
+  type_key?: string
+  status: string
+  summary?: string
+  latency_ms?: number
+  output?: unknown
+  error?: string | null
+}
+
+export interface DAGTestResult {
+  dag_id: string
+  dag_name: string
+  dag_version: number
+  final_text: string
+  widgets: unknown[]
+  total_tokens_in: number
+  total_tokens_out: number
+  guardrail_triggered: boolean
+  trace: DAGTestTraceEntry[]
+}
+
+export async function testDag(dagId: string, userMessage: string): Promise<DAGTestResult> {
+  return request<DAGTestResult>(`/api/v1/pipeline/dag/${dagId}/test`, {
+    method: 'POST',
+    body: JSON.stringify({ user_message: userMessage }),
+  })
+}
+
 export async function selectComparison(
   runId: string,
   nodeId: string,

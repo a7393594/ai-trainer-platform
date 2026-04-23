@@ -22,7 +22,8 @@ import '@xyflow/react/dist/style.css'
 import { useProject } from '@/lib/project-context'
 import {
   getActiveDag, listDags, listNodeTypes, createDag, updateDag, activateDag, deleteDag,
-  type PipelineDAG, type NodeType, type DAGNode, type DAGEdge,
+  testDag,
+  type PipelineDAG, type NodeType, type DAGNode, type DAGEdge, type DAGTestResult,
 } from '@/lib/studio/api'
 import { listTools } from '@/lib/ai-engine'
 import { ModelSelector } from '@/components/shared/ModelSelector'
@@ -56,6 +57,13 @@ export default function DAGEditorPage() {
   const [dirty, setDirty] = useState(false)
   const [saving, setSaving] = useState(false)
   const [notice, setNotice] = useState<string | null>(null)
+
+  // Test DAG state
+  const [testModalOpen, setTestModalOpen] = useState(false)
+  const [testInput, setTestInput] = useState('K-7-2 flop，我有 AK，對手 check，該怎麼打？')
+  const [testRunning, setTestRunning] = useState(false)
+  const [testResult, setTestResult] = useState<DAGTestResult | null>(null)
+  const [testError, setTestError] = useState<string | null>(null)
 
   // Load DAGs and node types on mount
   useEffect(() => {
@@ -302,6 +310,27 @@ export default function DAGEditorPage() {
     }
   }
 
+  const handleTestDag = async () => {
+    if (!currentDag) return
+    setTestRunning(true)
+    setTestError(null)
+    setTestResult(null)
+    try {
+      // If dirty, warn user first
+      if (dirty) {
+        if (!confirm('當前變更尚未儲存，測試會使用已儲存的版本。是否繼續？')) {
+          setTestRunning(false)
+          return
+        }
+      }
+      const res = await testDag(currentDag.id, testInput)
+      setTestResult(res)
+    } catch (e) {
+      setTestError(e instanceof Error ? e.message : '測試失敗')
+    }
+    setTestRunning(false)
+  }
+
   const handleSelectedNodeDelete = () => {
     if (!selectedNodeId) return
     setNodes((nds) => nds.filter((n) => n.id !== selectedNodeId))
@@ -361,6 +390,14 @@ export default function DAGEditorPage() {
           className="rounded bg-blue-600 px-3 py-1.5 text-xs text-white hover:bg-blue-500 disabled:opacity-50"
         >
           儲存為新版本
+        </button>
+        <button
+          onClick={() => setTestModalOpen(true)}
+          disabled={!currentDag}
+          className="rounded bg-purple-600 px-3 py-1.5 text-xs text-white hover:bg-purple-500 disabled:opacity-50"
+          title="用測試 input 跑此 DAG，看每個節點結果"
+        >
+          ▶ 測試此 DAG
         </button>
         {currentDag && !currentDag.is_active && (
           <button onClick={handleActivate} className="rounded bg-green-600 px-3 py-1.5 text-xs text-white hover:bg-green-500">
@@ -476,6 +513,111 @@ export default function DAGEditorPage() {
           )}
         </aside>
       </div>
+
+      {/* Test DAG Modal */}
+      {testModalOpen && currentDag && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+          <div className="w-full max-w-3xl max-h-[90vh] flex flex-col rounded-lg border border-zinc-700 bg-zinc-900 shadow-xl">
+            <div className="flex items-center justify-between border-b border-zinc-700 px-4 py-3">
+              <h2 className="text-sm font-medium text-zinc-200">
+                測試 DAG：v{currentDag.version} · {currentDag.name}
+              </h2>
+              <button onClick={() => { setTestModalOpen(false); setTestResult(null); setTestError(null) }} className="text-zinc-500 hover:text-zinc-200">✕</button>
+            </div>
+
+            <div className="flex-1 overflow-y-auto p-4 space-y-3">
+              <div>
+                <label className="text-[10px] uppercase text-zinc-500 block mb-1">測試 Input</label>
+                <textarea
+                  value={testInput}
+                  onChange={(e) => setTestInput(e.target.value)}
+                  rows={3}
+                  className="w-full rounded border border-zinc-700 bg-zinc-800 px-3 py-2 text-xs text-zinc-200 outline-none focus:border-blue-500"
+                />
+              </div>
+              <button
+                onClick={handleTestDag}
+                disabled={testRunning || !testInput.trim()}
+                className="w-full rounded bg-purple-600 px-3 py-2 text-xs text-white hover:bg-purple-500 disabled:opacity-50"
+              >
+                {testRunning ? '執行中…' : '▶ 執行'}
+              </button>
+
+              {testError && (
+                <div className="rounded border border-red-500/50 bg-red-950/30 px-3 py-2 text-xs text-red-300">
+                  {testError}
+                </div>
+              )}
+
+              {testResult && (
+                <div className="space-y-3">
+                  {/* Summary */}
+                  <div className="rounded border border-zinc-700 bg-zinc-800/50 p-3 space-y-1">
+                    <div className="flex items-center justify-between text-[10px] text-zinc-400">
+                      <span>總覽</span>
+                      <span className="font-mono">
+                        {testResult.trace.length} 節點 · {testResult.trace.reduce((a, b) => a + (b.latency_ms || 0), 0)}ms · tokens {testResult.total_tokens_in}→{testResult.total_tokens_out}
+                      </span>
+                    </div>
+                    {testResult.guardrail_triggered && (
+                      <p className="text-[11px] text-yellow-400">🛡️ Guardrail 觸發</p>
+                    )}
+                  </div>
+
+                  {/* Final output */}
+                  <div>
+                    <p className="text-[10px] uppercase text-zinc-500 mb-1">最終輸出</p>
+                    <pre className="whitespace-pre-wrap rounded bg-zinc-950 border border-zinc-800 px-3 py-2 text-xs text-emerald-200 max-h-60 overflow-y-auto">
+                      {testResult.final_text || '(空)'}
+                    </pre>
+                    {testResult.widgets.length > 0 && (
+                      <p className="text-[10px] text-zinc-500 mt-1">
+                        解析出 {testResult.widgets.length} 個 widget
+                      </p>
+                    )}
+                  </div>
+
+                  {/* Trace */}
+                  <div>
+                    <p className="text-[10px] uppercase text-zinc-500 mb-1">執行 trace</p>
+                    <div className="space-y-1">
+                      {testResult.trace.map((t, i) => (
+                        <div
+                          key={`${t.node_id}-${i}`}
+                          className={`rounded border px-2 py-1.5 text-[11px] ${
+                            t.status === 'error'
+                              ? 'border-red-500/50 bg-red-950/20'
+                              : t.status === 'skipped'
+                              ? 'border-zinc-800 bg-zinc-900/40 opacity-60'
+                              : 'border-zinc-700 bg-zinc-800/40'
+                          }`}
+                        >
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className="text-zinc-500 text-[10px]">#{i + 1}</span>
+                            <span className="text-zinc-200 font-medium">{t.label}</span>
+                            <span className="text-[9px] text-zinc-600 font-mono">({t.type_key})</span>
+                            <div className="flex-1" />
+                            <span className={`text-[9px] ${
+                              t.status === 'ok' ? 'text-green-400' : t.status === 'error' ? 'text-red-400' : 'text-zinc-500'
+                            }`}>
+                              {t.status}
+                            </span>
+                            {t.latency_ms != null && (
+                              <span className="text-[9px] text-zinc-500 font-mono">{t.latency_ms}ms</span>
+                            )}
+                          </div>
+                          {t.summary && <p className="text-[10px] text-zinc-400 mt-0.5">{t.summary}</p>}
+                          {t.error && <p className="text-[10px] text-red-400 mt-0.5">Error: {t.error}</p>}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

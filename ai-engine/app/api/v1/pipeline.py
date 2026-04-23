@@ -859,88 +859,47 @@ class ABCompareRequest(BaseModel):
 async def compare_dags(req: ABCompareRequest):
     """A/B 比較：對同一批 input 跑 2 個 DAG，回傳並排結果。
 
-    MVP 實作：DAG 執行簡化為「只跑 call_model 節點」，用 DAG 中該節點的
-    config（model、temperature、max_tokens、system_prompt）來呼叫 LLM。
-    不跑 tools / widget 解析 / knowledge 檢索 — 只比較主模型表現。
+    使用完整 DAG executor — 所有節點（guardrail / retry / widget 等）都會執行。
     """
-    from app.core.llm_router.router import chat_completion
+    from app.core.pipeline.dag_executor import execute_dag
     dag_a = crud.get_dag(req.dag_a_id)
     dag_b = crud.get_dag(req.dag_b_id)
     if not dag_a or not dag_b:
         raise HTTPException(status_code=404, detail="DAG not found")
 
-    def _extract_model_config(dag: dict) -> dict:
-        """From DAG nodes, find the call_model node and return its config."""
+    def _find_call_model(dag: dict) -> str:
         for n in dag.get("nodes", []):
             if n.get("type_key") == "call_model":
-                return n.get("config", {}) or {}
-        return {}
+                return (n.get("config") or {}).get("model") or "claude-sonnet-4-20250514"
+        return "claude-sonnet-4-20250514"
 
-    def _extract_system_prompt(dag: dict) -> Optional[str]:
-        """From compose_prompt node config, get system_prompt_prefix."""
-        for n in dag.get("nodes", []):
-            if n.get("type_key") == "compose_prompt":
-                cfg = n.get("config", {}) or {}
-                return cfg.get("system_prompt_prefix")
-        return None
-
-    cfg_a = _extract_model_config(dag_a)
-    cfg_b = _extract_model_config(dag_b)
-    sys_a = _extract_system_prompt(dag_a)
-    sys_b = _extract_system_prompt(dag_b)
-
-    async def _run_one(dag_cfg: dict, sys_prompt: Optional[str], user_msg: str, project_id: str) -> dict:
-        import time
-        model = dag_cfg.get("model") or "claude-sonnet-4-20250514"
-        temperature = dag_cfg.get("temperature", 0.7)
-        max_tokens = dag_cfg.get("max_tokens", 2000)
-
-        # Build messages: use system_prompt from compose_prompt node config, or fall back to project's active prompt
-        if not sys_prompt:
-            try:
-                sys_prompt = (crud.get_active_prompt(project_id) or {}).get("content", "")
-            except Exception:
-                sys_prompt = ""
-
-        msgs = []
-        if sys_prompt:
-            msgs.append({"role": "system", "content": sys_prompt})
-        msgs.append({"role": "user", "content": user_msg})
-
-        start = time.time()
+    async def _run_one(dag: dict, user_msg: str) -> dict:
         try:
-            resp = await chat_completion(
-                messages=msgs,
-                model=model,
-                temperature=temperature,
-                max_tokens=max_tokens,
-                project_id=project_id,
-                span_label=f"ab_test:{model}",
+            result = await execute_dag(
+                dag=dag, project_id=dag["project_id"], user_message=user_msg,
             )
-            text = resp.choices[0].message.content or ""
-            usage = getattr(resp, "usage", None)
             return {
-                "output": text,
-                "model": model,
-                "tokens_in": getattr(usage, "prompt_tokens", 0) if usage else 0,
-                "tokens_out": getattr(usage, "completion_tokens", 0) if usage else 0,
-                "latency_ms": int((time.time() - start) * 1000),
+                "output": result.get("final_text", ""),
+                "model": _find_call_model(dag),
+                "tokens_in": result.get("total_tokens_in", 0),
+                "tokens_out": result.get("total_tokens_out", 0),
+                "latency_ms": sum(s.get("latency_ms", 0) for s in result.get("trace", [])),
+                "guardrail_triggered": result.get("guardrail_triggered", False),
+                "widget_count": len(result.get("widgets", [])),
+                "trace": result.get("trace", []),
                 "error": None,
             }
         except Exception as e:
             return {
-                "output": "",
-                "model": model,
-                "tokens_in": 0, "tokens_out": 0,
-                "latency_ms": int((time.time() - start) * 1000),
-                "error": str(e),
+                "output": "", "model": _find_call_model(dag),
+                "tokens_in": 0, "tokens_out": 0, "latency_ms": 0,
+                "trace": [], "error": str(e),
             }
 
-    project_id = dag_a["project_id"]
     results = []
     for user_msg in req.test_inputs:
-        res_a = await _run_one(cfg_a, sys_a, user_msg, project_id)
-        res_b = await _run_one(cfg_b, sys_b, user_msg, project_id)
+        res_a = await _run_one(dag_a, user_msg)
+        res_b = await _run_one(dag_b, user_msg)
         results.append({"input": user_msg, "a": res_a, "b": res_b})
 
     return {
@@ -948,3 +907,40 @@ async def compare_dags(req: ABCompareRequest):
         "dag_b": {"id": dag_b["id"], "name": dag_b["name"], "version": dag_b["version"]},
         "results": results,
     }
+
+
+# ============================================================================
+# DAG Test Execution — run a DAG with a test input, return full trace
+# ============================================================================
+
+class DAGTestRequest(BaseModel):
+    user_message: str
+    user_id: Optional[str] = None
+
+
+@router.post("/dag/{dag_id}/test")
+async def test_dag(dag_id: str, req: DAGTestRequest):
+    """Execute a DAG with a test input and return trace + final output.
+
+    不寫入 ait_training_messages，純測試用。
+    """
+    from app.core.pipeline.dag_executor import execute_dag
+    dag = crud.get_dag(dag_id)
+    if not dag:
+        raise HTTPException(status_code=404, detail="DAG not found")
+
+    try:
+        result = await execute_dag(
+            dag=dag,
+            project_id=dag["project_id"],
+            user_message=req.user_message,
+            user_id=req.user_id,
+        )
+        return {
+            "dag_id": dag_id,
+            "dag_name": dag.get("name"),
+            "dag_version": dag.get("version"),
+            **result,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"DAG execution failed: {e}")
