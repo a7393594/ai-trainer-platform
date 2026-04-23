@@ -2,12 +2,12 @@
 
 import { useEffect, useState } from 'react'
 import {
-  getDemoContext,
   listPromptVersions,
   activatePromptVersion,
   createPromptVersion,
 } from '@/lib/ai-engine'
 import { useI18n } from '@/lib/i18n'
+import { useProject } from '@/lib/project-context'
 
 interface PromptVersion {
   id: string
@@ -22,22 +22,21 @@ type ModalMode = { type: 'create' } | { type: 'edit'; source: PromptVersion } | 
 
 export default function PromptsPage() {
   const [versions, setVersions] = useState<PromptVersion[]>([])
-  const [projectId, setProjectId] = useState<string | null>(null)
   const [expandedId, setExpandedId] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [modal, setModal] = useState<ModalMode>(null)
   const { t } = useI18n()
+  const { currentProject } = useProject()
+  const projectId = currentProject?.project_id || null
 
   useEffect(() => {
-    getDemoContext()
-      .then((ctx) => {
-        setProjectId(ctx.project_id)
-        return listPromptVersions(ctx.project_id)
-      })
+    if (!projectId) return
+    setLoading(true)
+    listPromptVersions(projectId)
       .then((r) => setVersions(r.versions))
       .catch(() => {})
       .finally(() => setLoading(false))
-  }, [])
+  }, [projectId])
 
   const refreshVersions = async () => {
     if (!projectId) return
