@@ -16,6 +16,7 @@ export interface ProjectConfig {
   name: string
   description?: string
   default_model?: string
+  tenant_id?: string
   domain_config: DomainConfig
 }
 
@@ -99,6 +100,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
             name: config.name,
             description: config.description,
             default_model: config.default_model,
+            tenant_id: config.tenant_id,
             domain_config: config.domain_config || {},
           })
           if (typeof window !== 'undefined') {
@@ -127,6 +129,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
         name: config.name,
         description: config.description,
         default_model: config.default_model,
+        tenant_id: config.tenant_id,
         domain_config: config.domain_config || {},
       }
       setCurrentProject(pc)

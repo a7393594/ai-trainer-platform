@@ -31,10 +31,12 @@ async def run_single_prompt_parallel(
     session_id: Optional[str] = None,
     temperature: float = 0.7,
     max_tokens: int = 2000,
+    tools: Optional[list[dict]] = None,
 ) -> list[dict]:
     """Fan out the same prompt to multiple models in parallel via asyncio.gather.
 
     Pipeline Studio 的 node-level compare 沿用這個 helper。
+    Batch 4A: tools 可選（傳給 chat_completion，模型會看到工具）。
     Returns list of {model, output_text, input_tokens, output_tokens, cost_usd, latency_ms, error}
     in the same order as `models`.
     """
@@ -47,6 +49,7 @@ async def run_single_prompt_parallel(
                 model=model,
                 temperature=temperature,
                 max_tokens=max_tokens,
+                tools=tools,
                 project_id=project_id,
                 session_id=session_id,
                 span_label=f"compare:{model}",

@@ -1467,6 +1467,36 @@ def get_pipeline_run_by_message(message_id: str) -> Optional[dict]:
     return result.data[0] if result.data else None
 
 
+# ============================================================================
+# Batch 4A: Rerun Presets (named node configurations)
+# ============================================================================
+
+T_RERUN_PRESETS = "ait_rerun_presets"
+
+
+def list_rerun_presets(project_id: str, node_type: Optional[str] = None) -> list[dict]:
+    """列出專案的所有 preset，可選依 node_type 過濾。"""
+    q = (
+        get_supabase().table(T_RERUN_PRESETS)
+        .select("*")
+        .eq("project_id", project_id)
+        .order("created_at", desc=True)
+    )
+    if node_type:
+        q = q.eq("node_type", node_type)
+    return q.execute().data or []
+
+
+def create_rerun_preset(data: dict) -> dict:
+    """建立新 preset。上層應驗證 data 包含必要欄位。"""
+    result = get_supabase().table(T_RERUN_PRESETS).insert(data).execute()
+    return result.data[0] if result.data else {}
+
+
+def delete_rerun_preset(preset_id: str) -> None:
+    get_supabase().table(T_RERUN_PRESETS).delete().eq("id", preset_id).execute()
+
+
 def list_pipeline_comparisons(run_id: str) -> list[dict]:
     """取某個 run 下所有節點的多模型比較候選。"""
     result = (

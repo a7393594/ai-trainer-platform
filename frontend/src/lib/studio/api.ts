@@ -102,6 +102,11 @@ export async function rerunNode(
   opts: {
     modelOverride?: string
     promptOverride?: Array<{ role: string; content: string }>
+    /** Batch 4A: extended config overrides */
+    temperatureOverride?: number
+    maxTokensOverride?: number
+    toolIds?: string[]
+    presetName?: string
   }
 ): Promise<{ comparison: PipelineComparison }> {
   return request<{ comparison: PipelineComparison }>(
@@ -111,9 +116,60 @@ export async function rerunNode(
       body: JSON.stringify({
         model_override: opts.modelOverride,
         prompt_override: opts.promptOverride,
+        temperature_override: opts.temperatureOverride,
+        max_tokens_override: opts.maxTokensOverride,
+        tool_ids: opts.toolIds,
+        preset_name: opts.presetName,
       }),
     }
   )
+}
+
+// ============================================================================
+// Batch 4A: Rerun Presets
+// ============================================================================
+
+export interface RerunPreset {
+  id: string
+  project_id: string
+  node_type: string
+  name: string
+  description?: string | null
+  model?: string | null
+  system_prompt?: string | null
+  temperature?: number | null
+  max_tokens?: number | null
+  tool_ids?: string[] | null
+  created_at: string
+}
+
+export async function listPresets(projectId: string, nodeType?: string): Promise<{ presets: RerunPreset[] }> {
+  const qs = new URLSearchParams({ project_id: projectId })
+  if (nodeType) qs.set('node_type', nodeType)
+  return request<{ presets: RerunPreset[] }>(`/api/v1/pipeline/presets?${qs.toString()}`)
+}
+
+export async function createPreset(data: {
+  project_id: string
+  node_type: string
+  name: string
+  description?: string
+  model?: string
+  system_prompt?: string
+  temperature?: number
+  max_tokens?: number
+  tool_ids?: string[]
+}): Promise<{ preset: RerunPreset }> {
+  return request<{ preset: RerunPreset }>('/api/v1/pipeline/presets', {
+    method: 'POST',
+    body: JSON.stringify(data),
+  })
+}
+
+export async function deletePreset(presetId: string): Promise<{ deleted: string }> {
+  return request<{ deleted: string }>(`/api/v1/pipeline/presets/${presetId}`, {
+    method: 'DELETE',
+  })
 }
 
 export async function selectComparison(

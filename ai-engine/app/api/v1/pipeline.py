@@ -50,6 +50,23 @@ class CompareRequest(BaseModel):
 class RerunRequest(BaseModel):
     model_override: Optional[str] = None
     prompt_override: Optional[list[dict]] = None
+    # Batch 4A: extended config overrides
+    temperature_override: Optional[float] = None
+    max_tokens_override: Optional[int] = None
+    tool_ids: Optional[list[str]] = None  # whitelist of tool IDs for this rerun
+    preset_name: Optional[str] = None  # label stored with the comparison
+
+
+class PresetCreateRequest(BaseModel):
+    project_id: str
+    node_type: str  # typically 'model'
+    name: str
+    description: Optional[str] = None
+    model: Optional[str] = None
+    system_prompt: Optional[str] = None
+    temperature: Optional[float] = None
+    max_tokens: Optional[int] = None
+    tool_ids: Optional[list[str]] = None
 
 
 class SelectRequest(BaseModel):
@@ -339,11 +356,28 @@ async def rerun_node(run_id: str, node_id: str, req: RerunRequest):
                 status_code=400, detail="No messages to replay"
             )
 
+        # Batch 4A: resolve tools if tool_ids provided
+        tools_payload = None
+        if req.tool_ids:
+            try:
+                from app.core.tools.registry import tool_registry
+                project = crud.get_project(run["project_id"])
+                tenant_id = project.get("tenant_id") if project else None
+                if tenant_id:
+                    all_tools = await tool_registry.list_tools(tenant_id)
+                    selected = [t for t in all_tools if t["id"] in set(req.tool_ids)]
+                    tools_payload = tool_registry.convert_to_llm_tools(selected) if selected else None
+            except Exception:
+                tools_payload = None  # tool loading failure shouldn't block rerun
+
         results = await run_single_prompt_parallel(
             messages=messages,
             models=[model],
             project_id=run["project_id"],
             session_id=run.get("session_id"),
+            temperature=req.temperature_override if req.temperature_override is not None else 0.7,
+            max_tokens=req.max_tokens_override if req.max_tokens_override is not None else 2000,
+            tools=tools_payload,
         )
         r = results[0]
         row = crud.create_pipeline_comparison(
@@ -357,6 +391,11 @@ async def rerun_node(run_id: str, node_id: str, req: RerunRequest):
                 "output_tokens": r["output_tokens"],
                 "cost_usd": r["cost_usd"],
                 "latency_ms": r["latency_ms"],
+                # Batch 4A: persist config used
+                "temperature": req.temperature_override,
+                "max_tokens": req.max_tokens_override,
+                "tool_ids": req.tool_ids or None,
+                "preset_name": req.preset_name,
             }
         )
         return {"comparison": row}
@@ -618,3 +657,51 @@ async def delete_pipeline_run(run_id: str):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Delete failed: {e}")
+
+
+# ============================================================================
+# Batch 4A: Rerun Presets — 儲存/讀取節點配置預設
+# ============================================================================
+
+@router.get("/presets")
+async def list_presets(
+    project_id: str = Query(..., description="Project ID"),
+    node_type: Optional[str] = Query(None, description="Filter by node type"),
+):
+    """列出專案的 rerun presets。"""
+    try:
+        presets = crud.list_rerun_presets(project_id, node_type)
+        return {"presets": presets}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"List presets failed: {e}")
+
+
+@router.post("/presets")
+async def create_preset(req: PresetCreateRequest):
+    """建立新的 rerun preset。"""
+    try:
+        data = {
+            "project_id": req.project_id,
+            "node_type": req.node_type,
+            "name": req.name,
+            "description": req.description,
+            "model": req.model,
+            "system_prompt": req.system_prompt,
+            "temperature": req.temperature,
+            "max_tokens": req.max_tokens,
+            "tool_ids": req.tool_ids or [],
+        }
+        preset = crud.create_rerun_preset(data)
+        return {"preset": preset}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Create preset failed: {e}")
+
+
+@router.delete("/presets/{preset_id}")
+async def delete_preset(preset_id: str):
+    """刪除 preset。"""
+    try:
+        crud.delete_rerun_preset(preset_id)
+        return {"deleted": preset_id}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Delete preset failed: {e}")
