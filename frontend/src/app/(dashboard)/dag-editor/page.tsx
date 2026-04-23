@@ -24,6 +24,8 @@ import {
   getActiveDag, listDags, listNodeTypes, createDag, updateDag, activateDag, deleteDag,
   type PipelineDAG, type NodeType, type DAGNode, type DAGEdge,
 } from '@/lib/studio/api'
+import { listTools } from '@/lib/ai-engine'
+import { ModelSelector } from '@/components/shared/ModelSelector'
 
 interface XYNodeData extends Record<string, unknown> {
   label: string
@@ -32,9 +34,16 @@ interface XYNodeData extends Record<string, unknown> {
   category?: string
 }
 
+interface Tool {
+  id: string
+  name: string
+  description?: string
+}
+
 export default function DAGEditorPage() {
   const { currentProject } = useProject()
   const projectId = currentProject?.project_id
+  const tenantId = currentProject?.tenant_id
 
   const [allDags, setAllDags] = useState<PipelineDAG[]>([])
   const [currentDag, setCurrentDag] = useState<PipelineDAG | null>(null)
@@ -42,6 +51,8 @@ export default function DAGEditorPage() {
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null)
   const [nodes, setNodes] = useState<Node<XYNodeData>[]>([])
   const [edges, setEdges] = useState<Edge[]>([])
+  const [nodeConfigs, setNodeConfigs] = useState<Record<string, Record<string, unknown>>>({})
+  const [tools, setTools] = useState<Tool[]>([])
   const [dirty, setDirty] = useState(false)
   const [saving, setSaving] = useState(false)
   const [notice, setNotice] = useState<string | null>(null)
@@ -92,10 +103,45 @@ export default function DAGEditorPage() {
       animated: true,
       style: { stroke: '#52525b' },
     }))
+    // Seed per-node configs from DAG
+    const configs: Record<string, Record<string, unknown>> = {}
+    for (const n of dag.nodes || []) {
+      configs[n.id] = { ...(n.config || {}) }
+    }
+    setNodeConfigs(configs)
     setNodes(xyNodes)
     setEdges(xyEdges)
     setDirty(false)
+    setSelectedNodeId(null)
   }
+
+  useEffect(() => {
+    if (!tenantId) return
+    listTools(tenantId)
+      .then((r: unknown) => setTools(((r as { tools?: Tool[] })?.tools) || []))
+      .catch(() => setTools([]))
+  }, [tenantId])
+
+  const updateNodeConfig = (nodeId: string, patch: Record<string, unknown>) => {
+    setNodeConfigs((prev) => {
+      const current = prev[nodeId] || {}
+      const merged = { ...current, ...patch }
+      // Prune undefined/empty
+      const cleaned: Record<string, unknown> = {}
+      for (const [k, v] of Object.entries(merged)) {
+        if (v === undefined || v === null || v === '') continue
+        if (Array.isArray(v) && v.length === 0) continue
+        cleaned[k] = v
+      }
+      return { ...prev, [nodeId]: cleaned }
+    })
+    setDirty(true)
+  }
+
+  const selectedNode = selectedNodeId ? nodes.find((n) => n.id === selectedNodeId) : null
+  const selectedNodeType = selectedNode
+    ? nodeTypes.find((t) => t.type_key === (selectedNode.data as XYNodeData).typeKey)
+    : null
 
   const onNodesChange = useCallback((changes: NodeChange[]) => {
     setNodes((nds) => applyNodeChanges(changes, nds) as Node<XYNodeData>[])
@@ -152,6 +198,7 @@ export default function DAGEditorPage() {
       },
     }
     setNodes((nds) => [...nds, newNode])
+    setNodeConfigs((prev) => ({ ...prev, [newId]: {} }))
     setDirty(true)
   }, [nodeTypes])
 
@@ -172,12 +219,11 @@ export default function DAGEditorPage() {
     try {
       // Serialize xy nodes/edges back to DAG format
       const dagNodes: DAGNode[] = nodes.map((n) => {
-        const original = currentDag.nodes.find((on) => on.id === n.id)
         return {
           id: n.id,
           type_key: (n.data as XYNodeData).typeKey,
           label: (n.data as XYNodeData).label,
-          config: original?.config || {},
+          config: nodeConfigs[n.id] || {},
           position: n.position,
         }
       })
@@ -208,12 +254,11 @@ export default function DAGEditorPage() {
     setNotice(null)
     try {
       const dagNodes: DAGNode[] = nodes.map((n) => {
-        const original = currentDag.nodes.find((on) => on.id === n.id)
         return {
           id: n.id,
           type_key: (n.data as XYNodeData).typeKey,
           label: (n.data as XYNodeData).label,
-          config: original?.config || {},
+          config: nodeConfigs[n.id] || {},
           position: n.position,
         }
       })
@@ -261,6 +306,11 @@ export default function DAGEditorPage() {
     if (!selectedNodeId) return
     setNodes((nds) => nds.filter((n) => n.id !== selectedNodeId))
     setEdges((eds) => eds.filter((e) => e.source !== selectedNodeId && e.target !== selectedNodeId))
+    setNodeConfigs((prev) => {
+      const next = { ...prev }
+      delete next[selectedNodeId]
+      return next
+    })
     setSelectedNodeId(null)
     setDirty(true)
   }
@@ -377,34 +427,334 @@ export default function DAGEditorPage() {
           </ReactFlowProvider>
         </div>
 
-        {/* Info (right) */}
-        <aside className="w-64 border-l border-zinc-800 bg-zinc-950 p-3 text-xs text-zinc-400 overflow-y-auto">
-          <p className="text-[10px] uppercase text-zinc-500 mb-2">使用說明</p>
-          <ul className="space-y-1 list-disc pl-4 text-[11px]">
-            <li>從左側拖節點到畫布</li>
-            <li>拖節點右下方的小圓點連線</li>
-            <li>點節點可選取，按「刪除選取節點」移除</li>
-            <li>修改後可「覆蓋此版本」或「儲存為新版本」</li>
-            <li>新版本預設不啟用，需點「啟用此版本」才會生效</li>
-          </ul>
-          <p className="text-[10px] uppercase text-zinc-500 mt-4 mb-2">A/B 測試</p>
-          <p className="text-[11px]">
-            建立新版本後可到 <a href="/dag-compare" className="text-blue-400 hover:underline">DAG 比較</a> 頁面
-            用同一批 input 並排測試兩個版本。
-          </p>
-          {currentDag && (
+        {/* Info / Config (right) */}
+        <aside className="w-80 border-l border-zinc-800 bg-zinc-950 p-3 text-xs text-zinc-400 overflow-y-auto">
+          {selectedNode && selectedNodeType ? (
+            <NodeConfigPanel
+              node={selectedNode}
+              nodeType={selectedNodeType}
+              config={nodeConfigs[selectedNode.id] || {}}
+              projectDefaultModel={currentProject?.default_model}
+              tools={tools}
+              onChange={(patch) => updateNodeConfig(selectedNode.id, patch)}
+              onLabelChange={(newLabel) => {
+                setNodes((nds) => nds.map((n) =>
+                  n.id === selectedNode.id
+                    ? { ...n, data: { ...(n.data as XYNodeData), label: newLabel } }
+                    : n
+                ))
+                setDirty(true)
+              }}
+            />
+          ) : (
             <>
-              <p className="text-[10px] uppercase text-zinc-500 mt-4 mb-2">當前 DAG</p>
-              <dl className="text-[11px] space-y-0.5">
-                <div className="flex justify-between"><dt className="text-zinc-500">版本</dt><dd>v{currentDag.version}</dd></div>
-                <div className="flex justify-between"><dt className="text-zinc-500">節點數</dt><dd>{nodes.length}</dd></div>
-                <div className="flex justify-between"><dt className="text-zinc-500">連線數</dt><dd>{edges.length}</dd></div>
-                <div className="flex justify-between"><dt className="text-zinc-500">狀態</dt><dd>{currentDag.is_active ? '啟用中' : '草稿'}</dd></div>
-              </dl>
+              <p className="text-[10px] uppercase text-zinc-500 mb-2">使用說明</p>
+              <ul className="space-y-1 list-disc pl-4 text-[11px]">
+                <li>從左側拖節點到畫布</li>
+                <li>拖節點右下方的小圓點連線</li>
+                <li>點節點打開右側配置面板</li>
+                <li>修改後可「覆蓋此版本」或「儲存為新版本」</li>
+                <li>新版本預設不啟用，需點「啟用此版本」才會生效</li>
+              </ul>
+              <p className="text-[10px] uppercase text-zinc-500 mt-4 mb-2">A/B 測試</p>
+              <p className="text-[11px]">
+                建立新版本後可到 <a href="/dag-compare" className="text-blue-400 hover:underline">DAG 比較</a> 頁面
+                用同一批 input 並排測試兩個版本。
+              </p>
+              {currentDag && (
+                <>
+                  <p className="text-[10px] uppercase text-zinc-500 mt-4 mb-2">當前 DAG</p>
+                  <dl className="text-[11px] space-y-0.5">
+                    <div className="flex justify-between"><dt className="text-zinc-500">版本</dt><dd>v{currentDag.version}</dd></div>
+                    <div className="flex justify-between"><dt className="text-zinc-500">節點數</dt><dd>{nodes.length}</dd></div>
+                    <div className="flex justify-between"><dt className="text-zinc-500">連線數</dt><dd>{edges.length}</dd></div>
+                    <div className="flex justify-between"><dt className="text-zinc-500">狀態</dt><dd>{currentDag.is_active ? '啟用中' : '草稿'}</dd></div>
+                  </dl>
+                </>
+              )}
             </>
           )}
         </aside>
       </div>
+    </div>
+  )
+}
+
+
+// ============================================================================
+// Node Config Panel — dynamic form based on node type's schema.fields
+// ============================================================================
+
+interface NodeConfigPanelProps {
+  node: Node<XYNodeData>
+  nodeType: NodeType
+  config: Record<string, unknown>
+  projectDefaultModel?: string
+  tools: Tool[]
+  onChange: (patch: Record<string, unknown>) => void
+  onLabelChange: (newLabel: string) => void
+}
+
+function NodeConfigPanel({ node, nodeType, config, projectDefaultModel, tools, onChange, onLabelChange }: NodeConfigPanelProps) {
+  const fields = nodeType.schema?.fields || []
+  const hasCustom = Object.keys(config).length > 0
+
+  return (
+    <div className="space-y-3">
+      {/* Header */}
+      <div className="border-b border-zinc-800 pb-2">
+        <div className="flex items-center gap-2 mb-1">
+          <span className="text-xl">{nodeType.icon}</span>
+          <div className="flex-1 min-w-0">
+            <p className="text-[10px] uppercase text-zinc-500">{nodeType.category} · {nodeType.type_key}</p>
+            <p className="text-sm text-zinc-200 font-medium truncate">{nodeType.name}</p>
+          </div>
+          {hasCustom && <span className="text-[9px] text-blue-400 bg-blue-500/10 rounded px-1.5 py-0.5">已自訂</span>}
+        </div>
+        {nodeType.description && (
+          <p className="text-[10px] text-zinc-500 mt-1">{nodeType.description}</p>
+        )}
+      </div>
+
+      {/* Label (always editable) */}
+      <div>
+        <label className="text-[10px] uppercase text-zinc-500 block mb-1">節點名稱（顯示用）</label>
+        <input
+          type="text"
+          value={(node.data as XYNodeData).label}
+          onChange={(e) => onLabelChange(e.target.value)}
+          className="w-full rounded border border-zinc-700 bg-zinc-900 px-2 py-1 text-xs text-zinc-200 outline-none focus:border-blue-500"
+        />
+      </div>
+
+      {fields.length === 0 && (
+        <p className="text-[11px] text-zinc-500 italic">此節點類型沒有可調參數。</p>
+      )}
+
+      {/* Dynamic fields */}
+      {fields.includes('model') && (
+        <div>
+          <label className="text-[10px] uppercase text-zinc-500 block mb-1">模型</label>
+          <ModelSelector
+            value={(config.model as string) || ''}
+            onChange={(v) => onChange({ model: v })}
+            projectDefault={projectDefaultModel}
+            showWarning
+            className="w-full"
+          />
+          {!config.model && (
+            <p className="text-[10px] text-zinc-600 mt-1">未設定時使用專案預設（{projectDefaultModel || '...'}）</p>
+          )}
+        </div>
+      )}
+
+      {fields.includes('temperature') && (
+        <div>
+          <label className="flex items-center justify-between mb-1">
+            <span className="text-[10px] uppercase text-zinc-500">Temperature</span>
+            <span className="text-[10px] font-mono text-zinc-400">
+              {config.temperature != null ? Number(config.temperature).toFixed(2) : '預設 (0.70)'}
+            </span>
+          </label>
+          <input
+            type="range"
+            min="0" max="2" step="0.05"
+            value={Number(config.temperature ?? 0.7)}
+            onChange={(e) => onChange({ temperature: parseFloat(e.target.value) })}
+            className="w-full accent-blue-500"
+          />
+          <div className="flex justify-between text-[9px] text-zinc-600">
+            <span>0 · 確定</span><span>1 · 平衡</span><span>2 · 創造</span>
+          </div>
+          {config.temperature != null && (
+            <button onClick={() => onChange({ temperature: undefined })} className="mt-1 text-[10px] text-zinc-500 hover:text-zinc-300">
+              重設為預設
+            </button>
+          )}
+        </div>
+      )}
+
+      {fields.includes('max_tokens') && (
+        <div>
+          <label className="flex items-center justify-between mb-1">
+            <span className="text-[10px] uppercase text-zinc-500">Max Tokens</span>
+            <span className="text-[10px] font-mono text-zinc-400">{String(config.max_tokens ?? '預設 (2000)')}</span>
+          </label>
+          <input
+            type="number"
+            min="256" max="32000" step="256"
+            value={(config.max_tokens as number) ?? ''}
+            placeholder="2000"
+            onChange={(e) => onChange({ max_tokens: e.target.value ? parseInt(e.target.value, 10) : undefined })}
+            className="w-full rounded border border-zinc-700 bg-zinc-900 px-2 py-1 text-xs text-zinc-200 outline-none focus:border-blue-500"
+          />
+        </div>
+      )}
+
+      {fields.includes('tool_ids') && (
+        <div>
+          <label className="block mb-1">
+            <span className="text-[10px] uppercase text-zinc-500">可用工具白名單</span>
+            <span className="ml-1 text-[9px] text-zinc-600">
+              （{((config.tool_ids as string[]) || []).length} / {tools.length}；未選 = 不給工具）
+            </span>
+          </label>
+          {tools.length === 0 ? (
+            <p className="text-[10px] text-zinc-600">此 tenant 尚無註冊工具</p>
+          ) : (
+            <div className="max-h-32 overflow-y-auto space-y-0.5 rounded border border-zinc-800 bg-zinc-900 p-1">
+              {tools.map((t) => {
+                const selected = ((config.tool_ids as string[]) || []).includes(t.id)
+                return (
+                  <button
+                    key={t.id}
+                    onClick={() => {
+                      const cur = new Set((config.tool_ids as string[]) || [])
+                      if (cur.has(t.id)) cur.delete(t.id)
+                      else cur.add(t.id)
+                      onChange({ tool_ids: cur.size === 0 ? undefined : Array.from(cur) })
+                    }}
+                    className={`w-full text-left px-2 py-1 rounded text-[10px] flex items-center gap-1.5 ${
+                      selected ? 'bg-blue-500/20 text-blue-300' : 'text-zinc-400 hover:bg-zinc-800'
+                    }`}
+                  >
+                    <span className={`w-3 h-3 rounded border flex items-center justify-center text-[8px] ${
+                      selected ? 'bg-blue-500 border-blue-500 text-white' : 'border-zinc-600'
+                    }`}>{selected && '✓'}</span>
+                    <span className="font-mono">{t.name}</span>
+                  </button>
+                )
+              })}
+            </div>
+          )}
+        </div>
+      )}
+
+      {fields.includes('system_prompt_prefix') && (
+        <div>
+          <label className="text-[10px] uppercase text-zinc-500 block mb-1">System Prompt 前綴</label>
+          <textarea
+            value={(config.system_prompt_prefix as string) || ''}
+            onChange={(e) => onChange({ system_prompt_prefix: e.target.value })}
+            rows={4}
+            placeholder="會插入到 active prompt 之前..."
+            className="w-full rounded border border-zinc-700 bg-zinc-900 px-2 py-1 text-xs text-zinc-200 outline-none focus:border-blue-500 resize-y"
+          />
+        </div>
+      )}
+
+      {fields.includes('rag_limit') && (
+        <div>
+          <label className="flex items-center justify-between mb-1">
+            <span className="text-[10px] uppercase text-zinc-500">RAG 取回數量</span>
+            <span className="text-[10px] font-mono text-zinc-400">{String(config.rag_limit ?? '預設 (5)')}</span>
+          </label>
+          <input
+            type="number"
+            min="0" max="20" step="1"
+            value={(config.rag_limit as number) ?? ''}
+            placeholder="5"
+            onChange={(e) => onChange({ rag_limit: e.target.value ? parseInt(e.target.value, 10) : undefined })}
+            className="w-full rounded border border-zinc-700 bg-zinc-900 px-2 py-1 text-xs text-zinc-200 outline-none focus:border-blue-500"
+          />
+          <p className="text-[10px] text-zinc-600 mt-1">0 = 關閉 RAG</p>
+        </div>
+      )}
+
+      {fields.includes('max_iterations') && (
+        <div>
+          <label className="flex items-center justify-between mb-1">
+            <span className="text-[10px] uppercase text-zinc-500">最大迭代次數</span>
+            <span className="text-[10px] font-mono text-zinc-400">{String(config.max_iterations ?? '預設 (5)')}</span>
+          </label>
+          <input
+            type="number"
+            min="1" max="10" step="1"
+            value={(config.max_iterations as number) ?? ''}
+            placeholder="5"
+            onChange={(e) => onChange({ max_iterations: e.target.value ? parseInt(e.target.value, 10) : undefined })}
+            className="w-full rounded border border-zinc-700 bg-zinc-900 px-2 py-1 text-xs text-zinc-200 outline-none focus:border-blue-500"
+          />
+        </div>
+      )}
+
+      {fields.includes('forbidden_patterns') && (
+        <div>
+          <label className="text-[10px] uppercase text-zinc-500 block mb-1">禁用關鍵字（每行一個）</label>
+          <textarea
+            value={((config.forbidden_patterns as string[]) || []).join('\n')}
+            onChange={(e) => {
+              const arr = e.target.value.split('\n').map((s) => s.trim()).filter(Boolean)
+              onChange({ forbidden_patterns: arr.length > 0 ? arr : undefined })
+            }}
+            rows={4}
+            placeholder="例如：仇恨言論"
+            className="w-full rounded border border-zinc-700 bg-zinc-900 px-2 py-1 text-xs text-zinc-200 outline-none focus:border-blue-500 resize-y font-mono"
+          />
+        </div>
+      )}
+
+      {fields.includes('action') && (
+        <div>
+          <label className="text-[10px] uppercase text-zinc-500 block mb-1">偵測後行動</label>
+          <select
+            value={(config.action as string) || 'warn'}
+            onChange={(e) => onChange({ action: e.target.value })}
+            className="w-full rounded border border-zinc-700 bg-zinc-900 px-2 py-1 text-xs text-zinc-200"
+          >
+            <option value="warn">警告並繼續</option>
+            <option value="block">阻擋回應</option>
+            <option value="retry">要求重新生成</option>
+          </select>
+        </div>
+      )}
+
+      {fields.includes('max_retries') && (
+        <div>
+          <label className="flex items-center justify-between mb-1">
+            <span className="text-[10px] uppercase text-zinc-500">最多重試次數</span>
+            <span className="text-[10px] font-mono text-zinc-400">{String(config.max_retries ?? '預設 (3)')}</span>
+          </label>
+          <input
+            type="number"
+            min="1" max="5" step="1"
+            value={(config.max_retries as number) ?? ''}
+            placeholder="3"
+            onChange={(e) => onChange({ max_retries: e.target.value ? parseInt(e.target.value, 10) : undefined })}
+            className="w-full rounded border border-zinc-700 bg-zinc-900 px-2 py-1 text-xs text-zinc-200 outline-none focus:border-blue-500"
+          />
+        </div>
+      )}
+
+      {fields.includes('backoff_ms') && (
+        <div>
+          <label className="flex items-center justify-between mb-1">
+            <span className="text-[10px] uppercase text-zinc-500">重試間隔 (ms)</span>
+            <span className="text-[10px] font-mono text-zinc-400">{String(config.backoff_ms ?? '預設 (1000)')}</span>
+          </label>
+          <input
+            type="number"
+            min="100" max="10000" step="100"
+            value={(config.backoff_ms as number) ?? ''}
+            placeholder="1000"
+            onChange={(e) => onChange({ backoff_ms: e.target.value ? parseInt(e.target.value, 10) : undefined })}
+            className="w-full rounded border border-zinc-700 bg-zinc-900 px-2 py-1 text-xs text-zinc-200 outline-none focus:border-blue-500"
+          />
+        </div>
+      )}
+
+      {hasCustom && (
+        <div className="border-t border-zinc-800 pt-2">
+          <button
+            onClick={() => {
+              for (const k of Object.keys(config)) onChange({ [k]: undefined })
+            }}
+            className="text-[10px] text-zinc-500 hover:text-red-400"
+          >
+            清除此節點所有自訂
+          </button>
+        </div>
+      )}
     </div>
   )
 }
