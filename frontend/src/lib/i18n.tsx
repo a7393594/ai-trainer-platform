@@ -8,6 +8,7 @@ const translations: Record<Locale, Record<string, string>> = {
   'zh-TW': {
     // ====== Nav ======
     'nav.overview': '儀表板',
+    'nav.history': '對話紀錄',
     'nav.train': '訓練對話',
     'nav.comparison': '模型比較',
     'nav.prompts': '提示詞管理',
@@ -577,6 +578,7 @@ const translations: Record<Locale, Record<string, string>> = {
   'en': {
     // ====== Nav ======
     'nav.overview': 'Dashboard',
+    'nav.history': 'Chat History',
     'nav.train': 'Train',
     'nav.comparison': 'Model Compare',
     'nav.prompts': 'Prompts',
