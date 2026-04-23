@@ -9,6 +9,7 @@ import { useAuth } from '@/lib/auth-context'
 import { useI18n } from '@/lib/i18n'
 import { useProject } from '@/lib/project-context'
 import { StudentProfilePanel } from '@/components/poker/StudentProfilePanel'
+import { ModelSelector } from '@/components/shared/ModelSelector'
 import dynamic from 'next/dynamic'
 import type { DemoContext } from '@/types'
 
@@ -103,11 +104,13 @@ function TrainerChat() {
             </p>
           </div>
           <div className="flex items-center gap-3">
-            <select value={model} onChange={(e) => setModel(e.target.value)} className="rounded border border-zinc-700 bg-zinc-800 px-3 py-1.5 text-xs text-zinc-300 outline-none" title="覆蓋專案預設模型（僅本次對話）">
-              <option value="claude-sonnet-4-20250514">Claude Sonnet 4</option>
-              <option value="claude-haiku-4-5-20251001">Claude Haiku 4.5</option>
-              <option value="gemini/gemini-2.0-flash">Gemini Flash</option>
-            </select>
+            <ModelSelector
+              value={model}
+              onChange={setModel}
+              projectDefault={projectDefaultModel}
+              showWarning
+              className="w-[220px]"
+            />
             <select value={mode} onChange={(e) => handleModeChange(e.target.value as ChatMode)} className="rounded border border-zinc-700 bg-zinc-800 px-3 py-1.5 text-xs text-zinc-300 outline-none">
               <option value="freeform">{t('chat.freeTraining')}</option>
               <option value="onboarding">{t('chat.guidedSetup')}</option>

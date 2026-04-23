@@ -3,6 +3,7 @@
 import { useMemo, useState } from 'react'
 import type { NodeSpan, PipelineComparison } from '@/lib/studio/types'
 import { formatCost, formatDuration } from '@/lib/studio/graph'
+import { humanize } from '@/lib/studio/humanize'
 import ModelCompareGrid from './ModelCompareGrid'
 import PromptEditor from './PromptEditor'
 
@@ -55,7 +56,7 @@ export default function NodeInspector({
     <aside className="flex h-full w-[440px] flex-shrink-0 flex-col border-l border-zinc-800 bg-zinc-950/80">
       {/* Header */}
       <div className="flex items-start justify-between border-b border-zinc-800 px-4 py-3">
-        <div className="min-w-0">
+        <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
             <span className="rounded bg-zinc-800 px-1.5 py-0.5 text-[10px] uppercase text-zinc-400">
               {span.type}
@@ -67,10 +68,12 @@ export default function NodeInspector({
           {span.model && (
             <p className="mt-1 text-xs text-violet-300">{span.model}</p>
           )}
+          {/* Humanize summary — one-line "what happened" */}
+          <HumanizeSummary span={span} />
         </div>
         <button
           onClick={onClose}
-          className="rounded p-1 text-zinc-500 hover:bg-zinc-800 hover:text-zinc-200"
+          className="rounded p-1 text-zinc-500 hover:bg-zinc-800 hover:text-zinc-200 ml-2 shrink-0"
           aria-label="Close inspector"
         >
           ✕
@@ -234,5 +237,28 @@ function JsonBlock({ data }: { data: unknown }) {
     <pre className="whitespace-pre-wrap break-words rounded border border-zinc-800 bg-zinc-900/60 p-3 font-mono text-[11px] leading-relaxed text-zinc-200">
       {JSON.stringify(data, null, 2)}
     </pre>
+  )
+}
+
+/** 「做了什麼」一行話 + 小細節列表（放在 header 下方） */
+function HumanizeSummary({ span }: { span: NodeSpan }) {
+  const h = humanize(span)
+  if (!h.summary && h.details.length === 0) return null
+  return (
+    <div className="mt-2 rounded bg-zinc-900/60 border border-zinc-800 px-2 py-1.5">
+      {h.summary && <p className="text-[11px] text-zinc-300">{h.summary}</p>}
+      {h.details.length > 0 && (
+        <div className="mt-1 flex flex-wrap gap-x-3 gap-y-0.5">
+          {h.details.slice(0, 4).map((d, i) => (
+            <span key={i} className="text-[10px] text-zinc-500">
+              {d.label}：<span className={d.code ? 'font-mono text-zinc-300' : 'text-zinc-300'}>{d.value}</span>
+            </span>
+          ))}
+        </div>
+      )}
+      {h.notices.length > 0 && h.notices[0].level === 'error' && (
+        <p className="mt-1 text-[10px] text-red-400">⚠ {h.notices[0].text}</p>
+      )}
+    </div>
   )
 }

@@ -291,9 +291,20 @@ export async function runEval(projectId: string) {
 // LLM 模型
 // ============================================
 
-/** 列出可用模型 */
+export interface ModelInfo {
+  id: string
+  label: string
+  provider: string
+  tier?: string
+  context?: number
+  tool_use?: boolean
+  tags?: string[]
+  notes?: string
+  cost?: string
+  available?: boolean
+}
+
+/** 列出可用模型（含 provider availability 資訊） */
 export async function listModels() {
-  return request<{ models: Array<{ id: string; provider: string; label: string }> }>(
-    '/api/v1/models'
-  )
+  return request<{ models: ModelInfo[] }>('/api/v1/models')
 }
