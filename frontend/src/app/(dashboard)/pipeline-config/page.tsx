@@ -3,12 +3,12 @@
 /**
  * /pipeline-config — 專案級每節點預設配置
  *
- * 把硬編碼的 orchestrator 流程視覺化為節點列表。
+ * 把硬編碼的 orchestrator 流程視覺化為節點列表 + 視覺流程圖。
  * 每個節點可調整：model / temperature / max_tokens / tools / prompt prefix。
  * 儲存後套用到這個專案所有未來的 chat 呼叫。
  */
 
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useProject } from '@/lib/project-context'
 import { getPipelineConfig, savePipelineConfig, type NodeConfig } from '@/lib/studio/api'
 import { listTools } from '@/lib/ai-engine'
@@ -114,6 +114,16 @@ export default function PipelineConfigPage() {
   const [saving, setSaving] = useState(false)
   const [notice, setNotice] = useState<string | null>(null)
   const [expanded, setExpanded] = useState<string | null>('main_model')
+  const cardRefs = useRef<Record<string, HTMLDivElement | null>>({})
+
+  const handleNodeClick = (label: string, configurable: boolean) => {
+    if (!configurable) return
+    setExpanded(label)
+    // scroll into view with smooth animation
+    setTimeout(() => {
+      cardRefs.current[label]?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    }, 50)
+  }
 
   useEffect(() => {
     if (!projectId) return
@@ -231,6 +241,75 @@ export default function PipelineConfigPage() {
           </div>
         )}
 
+        {/* Visual flow diagram */}
+        <div className="mb-4 rounded-lg border border-zinc-800 bg-zinc-950/40 p-3 overflow-x-auto">
+          <p className="text-[10px] uppercase text-zinc-500 mb-2">流程視覺化（點節點直接跳到設定）</p>
+          <div className="flex items-center gap-1 min-w-max">
+            {PIPELINE_NODES.map((node, idx) => {
+              const hasCustom = Object.keys(nodeConfigs[node.label] || {}).length > 0
+              const isExpanded = expanded === node.label
+              const configurable = node.configurable
+              return (
+                <div key={node.label} className="flex items-center gap-1">
+                  <button
+                    onClick={() => handleNodeClick(node.label, configurable)}
+                    disabled={!configurable}
+                    title={node.description + (configurable ? '' : '（不可調）')}
+                    className={`flex flex-col items-center gap-1 rounded-lg border-2 px-3 py-2 w-[110px] transition-all ${
+                      !configurable
+                        ? 'border-zinc-800 bg-zinc-900/30 cursor-not-allowed opacity-60'
+                        : hasCustom
+                          ? 'border-blue-500 bg-blue-500/10 hover:bg-blue-500/20'
+                          : 'border-zinc-700 bg-zinc-800/40 hover:border-zinc-500'
+                    } ${isExpanded && configurable ? 'ring-2 ring-blue-400 ring-offset-2 ring-offset-zinc-950' : ''}`}
+                  >
+                    <span className="text-xl">{node.icon}</span>
+                    <span className="text-[10px] font-medium text-zinc-200 text-center leading-tight">
+                      {node.title}
+                    </span>
+                    <span className="text-[9px] uppercase text-zinc-600">{node.type}</span>
+                    {hasCustom && (
+                      <span className="text-[8px] text-blue-400 bg-blue-500/20 rounded px-1 py-0.5">
+                        已自訂
+                      </span>
+                    )}
+                    {configurable && !hasCustom && (
+                      <span className="text-[8px] text-zinc-500">可調</span>
+                    )}
+                  </button>
+                  {idx < PIPELINE_NODES.length - 1 && (
+                    <svg width="16" height="12" viewBox="0 0 16 12" className="shrink-0">
+                      <path
+                        d="M 0 6 L 12 6 M 8 2 L 12 6 L 8 10"
+                        stroke="currentColor"
+                        strokeWidth="1.5"
+                        fill="none"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        className="text-zinc-600"
+                      />
+                    </svg>
+                  )}
+                </div>
+              )
+            })}
+          </div>
+          <div className="mt-3 flex items-center gap-4 text-[10px] text-zinc-500">
+            <span className="flex items-center gap-1">
+              <span className="inline-block w-3 h-3 rounded border-2 border-zinc-700 bg-zinc-800/40" />
+              預設
+            </span>
+            <span className="flex items-center gap-1">
+              <span className="inline-block w-3 h-3 rounded border-2 border-blue-500 bg-blue-500/10" />
+              已自訂
+            </span>
+            <span className="flex items-center gap-1">
+              <span className="inline-block w-3 h-3 rounded border-2 border-zinc-800 bg-zinc-900/30 opacity-60" />
+              不可調
+            </span>
+          </div>
+        </div>
+
         {/* Node cards */}
         <div className="space-y-2">
           {PIPELINE_NODES.map((node, idx) => {
@@ -241,6 +320,7 @@ export default function PipelineConfigPage() {
             return (
               <div
                 key={node.label}
+                ref={(el) => { cardRefs.current[node.label] = el }}
                 className={`rounded-lg border transition-colors ${
                   hasCustom ? 'border-blue-500/50 bg-blue-500/5' : 'border-zinc-700 bg-zinc-800/40'
                 }`}
