@@ -874,27 +874,32 @@ async def compare_dags(req: ABCompareRequest):
         return "claude-sonnet-4-20250514"
 
     async def _run_one(dag: dict, user_msg: str) -> dict:
-        try:
-            result = await execute_dag(
-                dag=dag, project_id=dag["project_id"], user_message=user_msg,
-            )
-            return {
-                "output": result.get("final_text", ""),
-                "model": _find_call_model(dag),
-                "tokens_in": result.get("total_tokens_in", 0),
-                "tokens_out": result.get("total_tokens_out", 0),
-                "latency_ms": sum(s.get("latency_ms", 0) for s in result.get("trace", [])),
-                "guardrail_triggered": result.get("guardrail_triggered", False),
-                "widget_count": len(result.get("widgets", [])),
-                "trace": result.get("trace", []),
-                "error": None,
-            }
-        except Exception as e:
-            return {
-                "output": "", "model": _find_call_model(dag),
-                "tokens_in": 0, "tokens_out": 0, "latency_ms": 0,
-                "trace": [], "error": str(e),
-            }
+        import asyncio as _asyncio
+        for attempt in range(3):
+            try:
+                result = await execute_dag(
+                    dag=dag, project_id=dag["project_id"], user_message=user_msg,
+                )
+                return {
+                    "output": result.get("final_text", ""),
+                    "model": _find_call_model(dag),
+                    "tokens_in": result.get("total_tokens_in", 0),
+                    "tokens_out": result.get("total_tokens_out", 0),
+                    "latency_ms": sum(s.get("latency_ms", 0) for s in result.get("trace", [])),
+                    "guardrail_triggered": result.get("guardrail_triggered", False),
+                    "widget_count": len(result.get("widgets", [])),
+                    "trace": result.get("trace", []),
+                    "error": None,
+                }
+            except Exception as e:
+                if "rate_limit" in str(e).lower() and attempt < 2:
+                    await _asyncio.sleep(10 * (attempt + 1))  # 10s, 20s
+                    continue
+                return {
+                    "output": "", "model": _find_call_model(dag),
+                    "tokens_in": 0, "tokens_out": 0, "latency_ms": 0,
+                    "trace": [], "error": str(e),
+                }
 
     results = []
     for user_msg in req.test_inputs:

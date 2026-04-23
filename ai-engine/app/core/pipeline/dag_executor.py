@@ -442,6 +442,29 @@ async def handle_call_model(node: dict, ctx: DAGContext) -> dict:
             if iteration >= max_iterations:
                 break
 
+        # 迴圈因 iteration cap 中止但沒有捕捉到文字 → 做最終合成呼叫（不帶 tools）
+        if not ctx.llm_response_text and ctx.tool_results:
+            try:
+                start = time.time()
+                syn_resp = await chat_completion(
+                    messages=ctx.messages,
+                    model=ctx.model,
+                    temperature=ctx.temperature,
+                    max_tokens=ctx.max_tokens,
+                    tools=None,
+                    project_id=ctx.project_id,
+                    session_id=ctx.session_id,
+                    span_label="call_model_synthesis",
+                )
+                syn_msg = syn_resp.choices[0].message
+                ctx.llm_response_text = syn_msg.content or ""
+                syn_usage = getattr(syn_resp, "usage", None)
+                total_in += getattr(syn_usage, "prompt_tokens", 0) if syn_usage else 0
+                total_out += getattr(syn_usage, "completion_tokens", 0) if syn_usage else 0
+                total_latency_ms += int((time.time() - start) * 1000)
+            except Exception:
+                pass
+
         ctx.total_tokens_in += total_in
         ctx.total_tokens_out += total_out
         ctx.tool_call_count = final_tool_call_count
