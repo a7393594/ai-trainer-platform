@@ -15,6 +15,7 @@ export interface ProjectConfig {
   project_type: 'trainer' | 'referee' | 'poker_coach'
   name: string
   description?: string
+  default_model?: string
   domain_config: DomainConfig
 }
 
@@ -97,6 +98,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
             project_type: config.project_type || 'trainer',
             name: config.name,
             description: config.description,
+            default_model: config.default_model,
             domain_config: config.domain_config || {},
           })
           if (typeof window !== 'undefined') {
@@ -124,6 +126,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
         project_type: config.project_type || 'trainer',
         name: config.name,
         description: config.description,
+        default_model: config.default_model,
         domain_config: config.domain_config || {},
       }
       setCurrentProject(pc)

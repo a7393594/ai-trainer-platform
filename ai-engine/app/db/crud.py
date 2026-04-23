@@ -1454,6 +1454,19 @@ def get_pipeline_run(run_id: str) -> Optional[dict]:
     return result.data[0] if result.data else None
 
 
+def get_pipeline_run_by_message(message_id: str) -> Optional[dict]:
+    """依 message_id 查 pipeline run（用於 history 頁面展開 trace）。"""
+    result = (
+        get_supabase().table(T_PIPELINE_RUNS)
+        .select("*")
+        .eq("message_id", message_id)
+        .order("created_at", desc=True)
+        .limit(1)
+        .execute()
+    )
+    return result.data[0] if result.data else None
+
+
 def list_pipeline_comparisons(run_id: str) -> list[dict]:
     """取某個 run 下所有節點的多模型比較候選。"""
     result = (

@@ -36,11 +36,22 @@ function TrainerChat() {
   const [model, setModel] = useState('claude-sonnet-4-20250514')
   const [mode, setMode] = useState<ChatMode>('freeform')
 
+  // Still need demo context for user_id/tenant_id (auth), but use currentProject for project_id
   useEffect(() => {
     getDemoContext(user?.email || undefined)
       .then(setContext)
       .catch((err) => setError(err.message))
   }, [user])
+
+  // When project switches, reset session + align model to project default
+  useEffect(() => {
+    if (!currentProject) return
+    setSessionId(undefined)
+    setSessionKey((k) => k + 1)
+    if (currentProject.default_model) {
+      setModel(currentProject.default_model)
+    }
+  }, [currentProject?.project_id, currentProject?.default_model])
 
   const handleNewSession = () => { setSessionId(undefined); setMode('freeform'); setSessionKey((k) => k + 1) }
   const handleSelectSession = (sid: string) => { setSessionId(sid); setMode('freeform'); setSessionKey((k) => k + 1) }
@@ -72,17 +83,27 @@ function TrainerChat() {
     )
   }
 
+  // Use currentProject (from sidebar) for project_id — NOT context.project_id (which is demo default)
+  const projectId = currentProject?.project_id || context.project_id
+  const projectName = currentProject?.name || context.project_name
+  const projectDefaultModel = currentProject?.default_model
+
   return (
     <div className="h-full flex overflow-hidden">
-      <SessionSidebar projectId={context.project_id} currentSessionId={sessionId} onSelectSession={handleSelectSession} onNewSession={handleNewSession} />
+      <SessionSidebar projectId={projectId} currentSessionId={sessionId} onSelectSession={handleSelectSession} onNewSession={handleNewSession} />
       <div className="flex-1 flex flex-col min-w-0 min-h-0">
         <header className="flex items-center justify-between border-b border-zinc-800 bg-zinc-900 px-4 py-3">
           <div>
             <h2 className="text-sm font-medium text-zinc-200">{t('chat.title')}</h2>
-            <p className="text-xs text-zinc-500">{context.project_name}</p>
+            <p className="text-xs text-zinc-500">
+              訓練中：<span className="text-zinc-300">{projectName}</span>
+              {projectDefaultModel && (
+                <span className="ml-2 text-[10px] text-zinc-600">（預設模型：{projectDefaultModel}）</span>
+              )}
+            </p>
           </div>
           <div className="flex items-center gap-3">
-            <select value={model} onChange={(e) => setModel(e.target.value)} className="rounded border border-zinc-700 bg-zinc-800 px-3 py-1.5 text-xs text-zinc-300 outline-none">
+            <select value={model} onChange={(e) => setModel(e.target.value)} className="rounded border border-zinc-700 bg-zinc-800 px-3 py-1.5 text-xs text-zinc-300 outline-none" title="覆蓋專案預設模型（僅本次對話）">
               <option value="claude-sonnet-4-20250514">Claude Sonnet 4</option>
               <option value="claude-haiku-4-5-20251001">Claude Haiku 4.5</option>
               <option value="gemini/gemini-2.0-flash">Gemini Flash</option>
@@ -91,7 +112,7 @@ function TrainerChat() {
               <option value="freeform">{t('chat.freeTraining')}</option>
               <option value="onboarding">{t('chat.guidedSetup')}</option>
             </select>
-            <PromptSuggestionButton projectId={context.project_id} />
+            <PromptSuggestionButton projectId={projectId} />
           </div>
         </header>
         {/* Onboarding Banner — show when no sessions exist or mode is freeform */}
@@ -107,7 +128,7 @@ function TrainerChat() {
           </div>
         )}
         <div className="flex-1 min-h-0">
-          <ChatInterface key={sessionKey} projectId={context.project_id} userId={context.user_id} sessionId={sessionId} model={model} mode={mode} />
+          <ChatInterface key={sessionKey} projectId={projectId} userId={context.user_id} sessionId={sessionId} model={model} mode={mode} />
         </div>
       </div>
       {/* Poker Coach: 右側學生檔案面板 */}
@@ -116,7 +137,7 @@ function TrainerChat() {
           <div className="border-b border-zinc-800 px-3 py-2">
             <h3 className="text-[10px] font-medium uppercase tracking-wider text-zinc-500">學生檔案</h3>
           </div>
-          <StudentProfilePanel userId={context.user_id} projectId={context.project_id} />
+          <StudentProfilePanel userId={context.user_id} projectId={projectId} />
         </aside>
       )}
     </div>

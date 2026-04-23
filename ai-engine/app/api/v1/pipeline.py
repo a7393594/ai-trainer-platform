@@ -128,6 +128,24 @@ async def get_run_detail(run_id: str):
         raise HTTPException(status_code=500, detail=f"Failed to get run: {e}")
 
 
+@router.get("/runs/by-message/{message_id}")
+async def get_run_by_message(message_id: str):
+    """依 message_id 查對應的 pipeline run（供 history 頁面展開 trace 用）。"""
+    try:
+        run = crud.get_pipeline_run_by_message(message_id)
+        if not run:
+            raise HTTPException(status_code=404, detail="No pipeline run for this message")
+        comparisons = crud.list_pipeline_comparisons(run["id"])
+        by_node: dict = {}
+        for cmp in comparisons:
+            by_node.setdefault(cmp["node_id"], []).append(cmp)
+        return {"run": run, "comparisons_by_node": by_node}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get run: {e}")
+
+
 # ============================================================================
 # Helpers
 # ============================================================================

@@ -13,6 +13,7 @@ import {
   rejectSuggestion,
 } from '@/lib/ai-engine'
 import { FeedbackBar } from '@/components/chat/FeedbackBar'
+import { PipelineTraceExpander } from '@/components/history/PipelineTraceExpander'
 import type { Rating } from '@/types'
 import dynamic from 'next/dynamic'
 
@@ -472,6 +473,8 @@ function TrainerHistory({ projectId }: { projectId?: string }) {
                     {showBar && (
                       <FeedbackBar messageId={m.id} onFeedback={handleFeedback} />
                     )}
+                    {/* Pipeline trace expander for assistant messages */}
+                    {isAssistant && <PipelineTraceExpander messageId={m.id} />}
                   </div>
                 )
               })}

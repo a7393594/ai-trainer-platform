@@ -52,6 +52,21 @@ export async function getPipelineRunDetail(runId: string): Promise<RunDetailResp
   return request<RunDetailResponse>(`/api/v1/pipeline/runs/detail/${runId}`)
 }
 
+/** 依 message_id 查對應的 pipeline run（history 頁面用）。404 時回傳 null。*/
+export async function getPipelineRunByMessage(
+  messageId: string
+): Promise<RunDetailResponse | null> {
+  try {
+    return await request<RunDetailResponse>(
+      `/api/v1/pipeline/runs/by-message/${messageId}`
+    )
+  } catch (err) {
+    if (err instanceof Error && err.message.includes('404')) return null
+    if (err instanceof Error && err.message.includes('No pipeline run')) return null
+    throw err
+  }
+}
+
 // ============================================================================
 // Lab Mode (v1)
 // ============================================================================
