@@ -20,6 +20,8 @@ from typing import Any, Awaitable, Callable, Optional
 
 from app.core.llm_router.router import chat_completion
 from app.core.tools.registry import tool_registry
+from app.core.orchestrator.constants import WIDGET_INSTRUCTION
+from app.core.orchestrator.prompt_loader import load_active_prompt, search_knowledge
 from app.db import crud
 
 
@@ -30,14 +32,29 @@ from app.db import crud
 class DAGContext:
     """節點間傳遞的狀態容器。"""
 
-    def __init__(self, project_id: str, user_id: Optional[str], user_message: str):
+    def __init__(
+        self,
+        project_id: str,
+        user_id: Optional[str],
+        user_message: str,
+        session_id: Optional[str] = None,
+        persist: bool = False,
+        pre_loaded_history: Optional[list[dict]] = None,
+    ):
         self.project_id = project_id
         self.user_id = user_id
         self.user_message = user_message
 
+        # 生產整合欄位（adapter 注入）
+        self.session_id = session_id
+        self.persist = persist
+        self.pre_loaded_history = pre_loaded_history
+
         # 狀態欄位（各 node handler 按需讀寫）
         self.history: list[dict] = []
         self.intent_type: Optional[str] = None
+        self.intent_rule: Optional[dict] = None  # capability rule dict when intent_type==capability_rule
+        self.capability_handled: bool = False  # 某 capability 節點執行後設為 True,讓下游 general 節點透過 condition 跳過
         self.rag_context: Optional[str] = None
         self.system_prompt: str = ""
         self.messages: list[dict] = []
@@ -56,6 +73,12 @@ class DAGContext:
         self.widgets: list[dict] = []
         self.clean_text: str = ""
         self.guardrail_triggered: bool = False
+        self.assistant_message_id: Optional[str] = None
+
+        # capability 節點要寫入 assistant_msg.metadata 的額外欄位(capability_rule_id、tool_id 等)
+        self.extra_metadata: dict = {}
+        # capability 節點要寫入 ChatResponse.metadata 的額外欄位(handoff、workflow_status 等)
+        self.response_metadata: dict = {}
 
 
 # ============================================================================
@@ -71,7 +94,14 @@ async def handle_input(node: dict, ctx: DAGContext) -> dict:
 
 
 async def handle_load_history(node: dict, ctx: DAGContext) -> dict:
-    # MVP test mode: 空歷史（測試 DAG 不需要完整 session 上下文）
+    """載入歷史。生產模式由 adapter 預載(pre_loaded_history);測試模式空歷史。"""
+    if ctx.pre_loaded_history is not None:
+        ctx.history = ctx.pre_loaded_history
+        return {
+            "status": "ok",
+            "output": {"history_length": len(ctx.history), "source": "adapter_injected"},
+            "summary": f"載入 {len(ctx.history)} 則歷史(adapter 注入)",
+        }
     ctx.history = []
     return {
         "status": "ok",
@@ -81,60 +111,186 @@ async def handle_load_history(node: dict, ctx: DAGContext) -> dict:
 
 
 async def handle_triage(node: dict, ctx: DAGContext) -> dict:
-    # MVP: 固定走 general_chat
-    ctx.intent_type = "general"
+    """真實 intent 分類 — keyword + semantic embedding hybrid。
+
+    依 classify_async 回傳決定:
+      - capability_rule: 帶著 rule dict,讓下游 capability_* 節點依 action_type 接手
+      - active_workflow: 下游 workflow_continue 節點接手
+      - general: 下游 load_knowledge → compose_prompt → call_model 鏈
+    """
+    try:
+        from app.core.intent.classifier import intent_classifier
+        result = await intent_classifier.classify_async(
+            ctx.user_message, ctx.project_id, mode="hybrid"
+        )
+        ctx.intent_type = result.get("type", "general")
+        ctx.intent_rule = result.get("rule")
+    except Exception as e:  # noqa: BLE001
+        ctx.intent_type = "general"
+        return {
+            "status": "ok",
+            "output": {"intent_type": "general", "error": str(e)[:200]},
+            "summary": f"分類失敗退回 general:{e}",
+        }
+
+    matched = None
+    if ctx.intent_type == "capability_rule" and ctx.intent_rule:
+        matched = ctx.intent_rule.get("trigger_description")
     return {
         "status": "ok",
-        "output": {"intent_type": "general"},
-        "summary": "意圖：一般對話",
+        "output": {
+            "intent_type": ctx.intent_type,
+            "matched": matched,
+            "action_type": (ctx.intent_rule or {}).get("action_type") if ctx.intent_rule else None,
+        },
+        "summary": f"意圖:{ctx.intent_type}" + (f"({matched})" if matched else ""),
     }
 
 
+async def handle_triage_llm(node: dict, ctx: DAGContext) -> dict:
+    """LLM-based intent classification using a cheap model (default: claude-haiku-4-5-20251001).
+
+    讀取 project 的 capability rules，組成列表給便宜模型判斷；
+    失敗時降級為 keyword classifier。
+    """
+    import json as _json
+    import re as _re
+
+    rules = crud.list_capability_rules(ctx.project_id)
+    cfg = node.get("config") or {}
+    cheap_model = cfg.get("model", "claude-haiku-4-5-20251001")
+
+    if not rules:
+        ctx.intent_type = "general"
+        return {
+            "status": "ok",
+            "output": {"intent_type": "general", "reason": "no_rules"},
+            "summary": "無 capability rules → general",
+        }
+
+    rules_desc = "\n".join(
+        f"{i + 1}. [{r['action_type']}] {r['trigger_description']}"
+        for i, r in enumerate(rules)
+    )
+    system_msg = {
+        "role": "system",
+        "content": (
+            "你是一個意圖分類器。根據使用者訊息，判斷是否符合以下任一規則：\n\n"
+            f"{rules_desc}\n\n"
+            "只回傳 JSON，格式如下：\n"
+            '- 不符合：{"type": "general"}\n'
+            '- 符合：{"type": "capability_rule", "rule_index": <1-based int>}\n'
+            "不要加任何其他說明。"
+        ),
+    }
+
+    try:
+        resp = await chat_completion(
+            messages=[system_msg, {"role": "user", "content": ctx.user_message}],
+            model=cheap_model,
+            max_tokens=50,
+            temperature=0.0,
+            project_id=ctx.project_id,
+            session_id=ctx.session_id,
+            span_label="triage_llm",
+        )
+        text = (resp.get("content") or "").strip()
+        m = _re.search(r"\{.*?\}", text, _re.DOTALL)
+        parsed = _json.loads(m.group()) if m else {"type": "general"}
+
+        if parsed.get("type") == "capability_rule":
+            idx = int(parsed.get("rule_index", 1)) - 1
+            if 0 <= idx < len(rules):
+                ctx.intent_type = "capability_rule"
+                ctx.intent_rule = rules[idx]
+                desc = (rules[idx].get("trigger_description") or "")[:60]
+                return {
+                    "status": "ok",
+                    "output": {
+                        "intent_type": "capability_rule",
+                        "matched": desc,
+                        "action_type": rules[idx].get("action_type"),
+                        "model_used": cheap_model,
+                    },
+                    "summary": f"LLM意圖: capability_rule({desc})",
+                }
+
+        ctx.intent_type = "general"
+        return {
+            "status": "ok",
+            "output": {"intent_type": "general", "model_used": cheap_model},
+            "summary": "LLM意圖: general",
+        }
+    except Exception as e:  # noqa: BLE001
+        from app.core.intent.classifier import intent_classifier
+
+        fallback = intent_classifier.classify(ctx.user_message, ctx.project_id)
+        ctx.intent_type = fallback.get("type", "general")
+        ctx.intent_rule = fallback.get("rule")
+        return {
+            "status": "ok",
+            "output": {
+                "intent_type": ctx.intent_type,
+                "fallback": "keyword",
+                "error": str(e)[:100],
+            },
+            "summary": f"LLM失敗→keyword fallback: {ctx.intent_type}",
+        }
+
+
 async def handle_load_knowledge(node: dict, ctx: DAGContext) -> dict:
+    """RAG 檢索 — 走 orchestrator.prompt_loader.search_knowledge(pipeline:Qdrant → pgvector → keyword)。"""
     cfg = node.get("config") or {}
     rag_limit = int(cfg.get("rag_limit", 5))
     if rag_limit == 0:
         return {"status": "ok", "output": {"skipped": True}, "summary": "RAG 關閉"}
 
-    # Reuse knowledge search if available
     try:
-        from app.core.knowledge.retriever import search_knowledge
-        chunks = await search_knowledge(
-            project_id=ctx.project_id,
-            query=ctx.user_message,
-            limit=rag_limit,
-        )
-        if chunks:
-            ctx.rag_context = "\n\n".join(c.get("content", "") for c in chunks)
+        rag_text = await search_knowledge(ctx.user_message, ctx.project_id)
+        if rag_text:
+            ctx.rag_context = rag_text
+            # 估個片段數(以 "---" 分隔)供 trace 顯示
+            chunk_count = rag_text.count("\n\n---\n\n") + 1
             return {
                 "status": "ok",
-                "output": {"chunk_count": len(chunks), "total_chars": len(ctx.rag_context)},
-                "summary": f"取 {len(chunks)} 個 RAG 片段",
+                "output": {"chunk_count": chunk_count, "total_chars": len(rag_text)},
+                "summary": f"取 {chunk_count} 個 RAG 片段",
             }
-    except Exception as e:
-        return {"status": "ok", "output": {"error": str(e)}, "summary": "RAG 檢索失敗（略過）"}
+    except Exception as e:  # noqa: BLE001
+        return {"status": "ok", "output": {"error": str(e)[:200]}, "summary": "RAG 檢索失敗(略過)"}
 
     return {"status": "ok", "output": {"chunk_count": 0}, "summary": "沒有相關知識"}
 
 
 async def handle_compose_prompt(node: dict, ctx: DAGContext) -> dict:
+    """組 LLM messages:system(prefix + active prompt + WIDGET_INSTRUCTION) + RAG + history + user。
+
+    用 load_active_prompt 取 A/B variant-aware 的 prompt。WIDGET_INSTRUCTION 一定要附,
+    否則 DAG 路徑永遠不會產生 widget 標記。
+    """
     cfg = node.get("config") or {}
     prefix = cfg.get("system_prompt_prefix", "") or ""
 
-    # Load active prompt for project
+    base_prompt = ""
     try:
-        active = crud.get_active_prompt(ctx.project_id)
-        base_prompt = (active or {}).get("content", "") if active else ""
-    except Exception:
-        base_prompt = ""
+        base_prompt = await load_active_prompt(ctx.project_id, ctx.session_id) or ""
+    except Exception as e:  # noqa: BLE001
+        print(f"[WARN] load_active_prompt failed in DAG: {e}")
 
-    ctx.system_prompt = (prefix + "\n\n" if prefix else "") + base_prompt
+    # 組 system prompt:prefix + base + WIDGET_INSTRUCTION(與 orchestrator 對齊)
+    parts = []
+    if prefix:
+        parts.append(prefix)
+    if base_prompt:
+        parts.append(base_prompt)
+    parts.append(WIDGET_INSTRUCTION)
+    ctx.system_prompt = "\n\n".join(p for p in parts if p)
 
     ctx.messages = []
     if ctx.system_prompt:
         ctx.messages.append({"role": "system", "content": ctx.system_prompt})
     if ctx.rag_context:
-        ctx.messages.append({"role": "system", "content": f"參考資料：\n{ctx.rag_context}"})
+        ctx.messages.append({"role": "system", "content": f"以下是相關參考資料:\n\n{ctx.rag_context}"})
     ctx.messages.extend(ctx.history)
     ctx.messages.append({"role": "user", "content": ctx.user_message})
 
@@ -145,8 +301,9 @@ async def handle_compose_prompt(node: dict, ctx: DAGContext) -> dict:
             "system_prompt_length": len(ctx.system_prompt),
             "has_rag": bool(ctx.rag_context),
             "has_prefix": bool(prefix),
+            "has_widget_instruction": True,
         },
-        "summary": f"組出 {len(ctx.messages)} 則訊息（system {len(ctx.system_prompt)} 字）",
+        "summary": f"組出 {len(ctx.messages)} 則訊息(system {len(ctx.system_prompt)} 字)",
     }
 
 
@@ -162,22 +319,35 @@ async def handle_call_model(node: dict, ctx: DAGContext) -> dict:
     except Exception:
         project = None
 
+    # Per-project pipeline config override(與 orchestrator agent.py:517 對齊)
+    try:
+        per_project_cfg = crud.get_node_config(ctx.project_id, "main_model") or {}
+    except Exception:
+        per_project_cfg = {}
+
+    # 優先序:node cfg > per-project cfg > project default > fallback
     ctx.model = (
         cfg.get("model")
+        or per_project_cfg.get("model")
         or (project.get("default_model") if project else None)
         or "claude-sonnet-4-20250514"
     )
-    ctx.temperature = float(cfg.get("temperature", 0.7))
-    ctx.max_tokens = int(cfg.get("max_tokens", 2000))
+    ctx.temperature = float(cfg.get("temperature", per_project_cfg.get("temperature", 0.7)))
+    ctx.max_tokens = int(cfg.get("max_tokens", per_project_cfg.get("max_tokens", 2000)))
     max_iterations = int(cfg.get("max_iterations", 5))
 
-    # Resolve tools if tool_ids specified
-    tool_ids = cfg.get("tool_ids") or []
+    # Resolve tools:優先 node cfg.tool_ids,否則 per-project cfg.tool_ids,否則全部
+    tool_ids = cfg.get("tool_ids")
+    if tool_ids is None:
+        tool_ids = per_project_cfg.get("tool_ids")
     tools_payload = None
-    if tool_ids and project:
+    if project:
         try:
             all_tools = await tool_registry.list_tools(project.get("tenant_id"))
-            selected = [t for t in all_tools if t["id"] in set(tool_ids)]
+            if tool_ids is not None:
+                selected = [t for t in all_tools if t["id"] in set(tool_ids)]
+            else:
+                selected = all_tools
             ctx.db_tools = selected
             tools_payload = tool_registry.convert_to_llm_tools(selected) if selected else None
             ctx.llm_tools = tools_payload
@@ -199,7 +369,8 @@ async def handle_call_model(node: dict, ctx: DAGContext) -> dict:
                 max_tokens=ctx.max_tokens,
                 tools=tools_payload,
                 project_id=ctx.project_id,
-                span_label=f"dag_exec:{ctx.model}:iter{iteration}",
+                session_id=ctx.session_id,
+                span_label=f"main_model{'' if iteration == 0 else f'_iter_{iteration + 1}'}",
             )
             msg = resp.choices[0].message
             text = msg.content or ""
@@ -384,18 +555,277 @@ async def handle_parse_widget(node: dict, ctx: DAGContext) -> dict:
     }
 
 
-async def handle_output(node: dict, ctx: DAGContext) -> dict:
-    # MVP test mode: 不寫入 ait_training_messages，直接回傳
-    final_text = ctx.clean_text or ctx.llm_response_text
+async def handle_capability_widget(node: dict, ctx: DAGContext) -> dict:
+    """Capability rule · widget action — 回傳預定義 widget + 可選的 LLM 文字回覆。
+
+    Condition 應綁 intent_type == capability_rule AND intent_rule.action_type == widget。
+    """
+    rule = ctx.intent_rule or {}
+    action_config = rule.get("action_config") or {}
+    widget_def = action_config.get("widget") or {}
+    text_response = action_config.get("text") or ""
+
+    if not text_response:
+        # 產生 contextual 文字
+        try:
+            system_prompt = await load_active_prompt(ctx.project_id, ctx.session_id) or ""
+            messages: list[dict] = []
+            if system_prompt:
+                messages.append({"role": "system", "content": system_prompt})
+            messages.extend(ctx.history)
+            messages.append({"role": "user", "content": ctx.user_message})
+            messages.append({"role": "system", "content": (
+                f"使用者的問題匹配到了一個互動元件規則。請用自然語言回覆使用者,"
+                f"然後系統會自動顯示互動元件。規則描述:{rule.get('trigger_description', '')}"
+            )})
+            resp = await chat_completion(
+                messages=messages,
+                model="claude-sonnet-4-20250514",
+                project_id=ctx.project_id,
+                session_id=ctx.session_id,
+                span_label="capability_widget_text",
+            )
+            text_response = (resp.choices[0].message.content or "").strip()
+        except Exception as e:  # noqa: BLE001
+            text_response = "好的,我為你準備了一個互動元件。"
+            print(f"[WARN] capability_widget text generation failed: {e}")
+
+    ctx.clean_text = text_response
+    ctx.widgets = [widget_def] if widget_def else []
+    ctx.extra_metadata.update({
+        "capability_rule_id": rule.get("id"),
+        "action_type": "widget",
+    })
+    ctx.capability_handled = True
+
     return {
         "status": "ok",
         "output": {
-            "final_text": final_text,
-            "widget_count": len(ctx.widgets),
-            "total_tokens_in": ctx.total_tokens_in,
-            "total_tokens_out": ctx.total_tokens_out,
+            "rule_id": rule.get("id"),
+            "has_widget": bool(widget_def),
+            "text_length": len(text_response),
         },
-        "summary": f"輸出完成（{len(final_text)} 字）",
+        "summary": f"Widget:{rule.get('trigger_description', '(unknown)')[:30]}",
+    }
+
+
+async def handle_capability_tool_call(node: dict, ctx: DAGContext) -> dict:
+    """Capability rule · tool_call action — LLM 被動參考工具回覆。"""
+    rule = ctx.intent_rule or {}
+    action_config = rule.get("action_config") or {}
+    tool_id = action_config.get("tool_id")
+
+    if not tool_id:
+        # fallback:讓下游 general 節點接手
+        ctx.capability_handled = False
+        return {"status": "ok", "output": {"skipped": True, "reason": "no tool_id"}, "summary": "無 tool_id,退回 general"}
+
+    tool = crud.get_tool(tool_id)
+    if not tool:
+        ctx.capability_handled = False
+        return {"status": "ok", "output": {"skipped": True, "reason": "tool not found"}, "summary": "tool 不存在,退回 general"}
+
+    try:
+        system_prompt = await load_active_prompt(ctx.project_id, ctx.session_id) or ""
+        messages: list[dict] = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.extend(ctx.history)
+        messages.append({"role": "user", "content": ctx.user_message})
+        messages.append({"role": "system", "content": f"可用工具:{tool['name']} — {tool.get('description', '')}。請使用此工具回答使用者。"})
+        resp = await chat_completion(
+            messages=messages,
+            model="claude-sonnet-4-20250514",
+            project_id=ctx.project_id,
+            session_id=ctx.session_id,
+            span_label="capability_tool_call",
+        )
+        text_response = (resp.choices[0].message.content or "").strip()
+    except Exception as e:  # noqa: BLE001
+        text_response = f"(工具呼叫失敗:{e})"
+
+    ctx.clean_text = text_response
+    ctx.tool_results = [{"tool_name": tool["name"], "status": "referenced"}]
+    ctx.extra_metadata.update({
+        "capability_rule_id": rule.get("id"),
+        "tool_id": tool_id,
+    })
+    ctx.capability_handled = True
+
+    return {
+        "status": "ok",
+        "output": {"rule_id": rule.get("id"), "tool_name": tool["name"], "text_length": len(text_response)},
+        "summary": f"Tool:{tool['name']}",
+    }
+
+
+async def handle_capability_workflow(node: dict, ctx: DAGContext) -> dict:
+    """Capability rule · workflow action — 啟動 workflow(auto 或 step 模式)。"""
+    from app.core.workflows.engine import workflow_engine
+
+    rule = ctx.intent_rule or {}
+    action_config = rule.get("action_config") or {}
+    workflow_id = action_config.get("workflow_id")
+    run_mode = action_config.get("run_mode", "step")
+
+    if not workflow_id:
+        ctx.capability_handled = False
+        return {"status": "ok", "output": {"skipped": True, "reason": "no workflow_id"}, "summary": "無 workflow_id,退回 general"}
+
+    user_id = ctx.user_id or "anonymous"
+
+    if run_mode == "auto":
+        result = await workflow_engine.run_to_completion(
+            workflow_id,
+            session_id=ctx.session_id,
+            user_id=user_id,
+            initial_vars={"message": ctx.user_message},
+        )
+        status = result.get("status")
+        trace_len = len(result.get("trace") or [])
+        if status == "completed":
+            text = f"工作流已自動執行完成({trace_len} 個步驟)。"
+        else:
+            text = f"工作流執行失敗:{result.get('error', 'unknown')}"
+        ctx.clean_text = text
+        ctx.extra_metadata.update({
+            "workflow_run_id": result.get("run_id"),
+            "capability_rule_id": rule.get("id"),
+            "workflow_status": status,
+            "workflow_vars": result.get("vars"),
+        })
+        ctx.response_metadata.update({
+            "workflow_status": status,
+            "workflow_run_id": result.get("run_id"),
+        })
+        ctx.capability_handled = True
+        return {
+            "status": "ok",
+            "output": {"run_id": result.get("run_id"), "workflow_status": status, "steps": trace_len},
+            "summary": f"Workflow auto:{status} ({trace_len} steps)",
+        }
+
+    # 步進式
+    result = await workflow_engine.start_workflow(workflow_id, ctx.session_id, user_id)
+    if result.get("status") == "started":
+        step = result.get("current_step", {})
+        text = f"已啟動工作流:{result.get('workflow_name', '')}。\n\n當前步驟:{step.get('id', '')}"
+        ctx.clean_text = text
+        if step.get("widget"):
+            ctx.widgets = [step["widget"]]
+        ctx.extra_metadata.update({
+            "workflow_run_id": result.get("run_id"),
+            "capability_rule_id": rule.get("id"),
+        })
+        ctx.capability_handled = True
+        return {
+            "status": "ok",
+            "output": {"run_id": result.get("run_id"), "step_id": step.get("id")},
+            "summary": f"Workflow step:{result.get('workflow_name', '')}",
+        }
+
+    # 啟動失敗 → fallback
+    ctx.capability_handled = False
+    return {
+        "status": "ok",
+        "output": {"skipped": True, "reason": result.get("detail", "workflow start failed")},
+        "summary": "Workflow 啟動失敗,退回 general",
+    }
+
+
+async def handle_capability_handoff(node: dict, ctx: DAGContext) -> dict:
+    """Capability rule · handoff action — 升級至真人客服。"""
+    from app.core.handoff.service import handoff_service
+
+    rule = ctx.intent_rule or {}
+    action_config = rule.get("action_config") or {}
+
+    reason = action_config.get("reason") or "User triggered handoff capability"
+    urgency = action_config.get("urgency", "normal")
+    result = await handoff_service.request(
+        ctx.session_id, reason=reason, triggered_by="capability_rule", urgency=urgency,
+    )
+    reply = action_config.get("text") or "已為您轉接真人客服,稍後會有專員與您聯繫。"
+
+    ctx.clean_text = reply
+    ctx.extra_metadata.update({
+        "capability_rule_id": rule.get("id"),
+        "handoff_message_id": result.get("handoff_message_id"),
+        "handoff_notified": result.get("notified"),
+        "handoff_urgency": urgency,
+    })
+    ctx.response_metadata.update({
+        "handoff": True,
+        "handoff_message_id": result.get("handoff_message_id"),
+        "urgency": urgency,
+    })
+    ctx.capability_handled = True
+
+    return {
+        "status": "ok",
+        "output": {
+            "rule_id": rule.get("id"),
+            "handoff_message_id": result.get("handoff_message_id"),
+            "notified": result.get("notified"),
+            "urgency": urgency,
+        },
+        "summary": f"Handoff · {urgency}",
+    }
+
+
+async def handle_workflow_continue(node: dict, ctx: DAGContext) -> dict:
+    """active_workflow 分支 — Phase 5 stub,目前直接退回 general。
+
+    未來 Phase 5 完工時,此節點會:
+      1. 找出 session 的進行中 workflow_run(waiting_input 狀態)
+      2. 把 user_message 當作 step_result 呼叫 workflow_engine.advance_workflow
+      3. 回傳下一步的 widget 或完成訊息
+    """
+    ctx.capability_handled = False
+    return {
+        "status": "ok",
+        "output": {"note": "Phase 5 stub · 退回 general"},
+        "summary": "Workflow continue(stub)",
+    }
+
+
+async def handle_output(node: dict, ctx: DAGContext) -> dict:
+    """組最終輸出。生產模式(ctx.persist && ctx.session_id)會寫 ait_training_messages,
+    metadata 的 widgets / tool_results 欄位與 orchestrator 對齊。
+    """
+    final_text = ctx.clean_text or ctx.llm_response_text
+    output: dict = {
+        "final_text": final_text,
+        "widget_count": len(ctx.widgets),
+        "total_tokens_in": ctx.total_tokens_in,
+        "total_tokens_out": ctx.total_tokens_out,
+    }
+
+    if ctx.persist and ctx.session_id:
+        try:
+            metadata: dict = {}
+            if ctx.widgets:
+                metadata["widgets"] = ctx.widgets
+            if ctx.tool_results:
+                metadata["tool_results"] = ctx.tool_results
+            if ctx.extra_metadata:
+                metadata.update(ctx.extra_metadata)
+            assistant_msg = crud.create_message(
+                session_id=ctx.session_id,
+                role="assistant",
+                content=final_text,
+                metadata=metadata,
+            )
+            ctx.assistant_message_id = assistant_msg["id"]
+            output["assistant_message_id"] = assistant_msg["id"]
+        except Exception as e:  # noqa: BLE001
+            # 寫庫失敗不阻斷回覆 — 記在 output
+            output["persist_error"] = str(e)[:200]
+
+    return {
+        "status": "ok",
+        "output": output,
+        "summary": f"輸出完成({len(final_text)} 字)" + ("|已落庫" if ctx.assistant_message_id else ""),
     }
 
 
@@ -409,6 +839,7 @@ HANDLERS: dict[str, NodeHandler] = {
     "input": handle_input,
     "load_history": handle_load_history,
     "triage": handle_triage,
+    "triage_llm": handle_triage_llm,
     "load_knowledge": handle_load_knowledge,
     "compose_prompt": handle_compose_prompt,
     "call_model": handle_call_model,
@@ -417,12 +848,75 @@ HANDLERS: dict[str, NodeHandler] = {
     "retry": handle_retry,
     "parse_widget": handle_parse_widget,
     "output": handle_output,
+    # Capability rule actions(intent_type == capability_rule 時按 action_type 分派)
+    "capability_widget": handle_capability_widget,
+    "capability_tool_call": handle_capability_tool_call,
+    "capability_workflow": handle_capability_workflow,
+    "capability_handoff": handle_capability_handoff,
+    # active_workflow 分支
+    "workflow_continue": handle_workflow_continue,
 }
 
 
 # ============================================================================
 # Executor
 # ============================================================================
+
+# ============================================================================
+# Conditional execution — 讓 DAG 支援分支
+# ============================================================================
+
+def _resolve_field(field: str, ctx: DAGContext):
+    """支援 dotted path(如 'intent_rule.action_type')取得 ctx 或 ctx.dict 的值。"""
+    parts = field.split(".")
+    val: Any = ctx
+    for p in parts:
+        if val is None:
+            return None
+        if isinstance(val, dict):
+            val = val.get(p)
+        else:
+            val = getattr(val, p, None)
+    return val
+
+
+def _evaluate_condition(cond: dict, ctx: DAGContext) -> bool:
+    """遞迴條件解析器。
+
+    Shape:
+      atomic: {"field": "intent_type", "op": "==", "value": "general"}
+      compound: {"all": [cond1, cond2, ...]} 或 {"any": [cond1, cond2, ...]}
+
+    支援 op: ==, !=, in, not_in, truthy, falsy。field 支援 dotted path。
+    """
+    if not cond:
+        return True
+    if "all" in cond:
+        return all(_evaluate_condition(c, ctx) for c in (cond.get("all") or []))
+    if "any" in cond:
+        return any(_evaluate_condition(c, ctx) for c in (cond.get("any") or []))
+
+    field = cond.get("field")
+    if not field:
+        return True
+    op = cond.get("op", "==")
+    expected = cond.get("value")
+    actual = _resolve_field(field, ctx)
+
+    if op == "==":
+        return actual == expected
+    if op == "!=":
+        return actual != expected
+    if op == "in":
+        return actual in (expected or [])
+    if op == "not_in":
+        return actual not in (expected or [])
+    if op == "truthy":
+        return bool(actual)
+    if op == "falsy":
+        return not bool(actual)
+    return True
+
 
 def _topological_order(nodes: list[dict], edges: list[dict]) -> list[str]:
     """Kahn's algorithm — 傳回節點 id 列表。若有循環則傳回已能處理的部分。"""
@@ -457,13 +951,23 @@ async def execute_dag(
     project_id: str,
     user_message: str,
     user_id: Optional[str] = None,
+    session_id: Optional[str] = None,
+    persist: bool = False,
+    pre_loaded_history: Optional[list[dict]] = None,
 ) -> dict:
     """執行一個 DAG 定義。
+
+    生產模式(adapter 呼叫)傳入 session_id + persist=True + pre_loaded_history,
+    output 節點會寫入 ait_training_messages。測試模式(/dag/test 端點)不傳,
+    handle_load_history 回退成空歷史 stub、handle_output 不落庫。
 
     Returns:
         {
           "final_text": str,
           "widgets": [...],
+          "tool_results": [...],
+          "intent_type": str | None,
+          "assistant_message_id": str | None,
           "total_tokens_in": int,
           "total_tokens_out": int,
           "trace": [{node_id, label, type_key, status, summary, latency_ms, output}, ...],
@@ -473,7 +977,14 @@ async def execute_dag(
     nodes = dag.get("nodes") or []
     edges = dag.get("edges") or []
     node_by_id = {n["id"]: n for n in nodes}
-    ctx = DAGContext(project_id=project_id, user_id=user_id, user_message=user_message)
+    ctx = DAGContext(
+        project_id=project_id,
+        user_id=user_id,
+        user_message=user_message,
+        session_id=session_id,
+        persist=persist,
+        pre_loaded_history=pre_loaded_history,
+    )
 
     order = _topological_order(nodes, edges)
     trace: list[dict] = []
@@ -490,7 +1001,18 @@ async def execute_dag(
             "type_key": type_key,
         }
         if not handler:
-            entry.update({"status": "skipped", "summary": f"未知節點類型：{type_key}"})
+            entry.update({"status": "skipped", "summary": f"未知節點類型:{type_key}"})
+            trace.append(entry)
+            continue
+
+        # Conditional execution:condition 不符就 skip(不執行 handler、不記 latency)
+        cond = node.get("condition")
+        if cond and not _evaluate_condition(cond, ctx):
+            entry.update({
+                "status": "skipped",
+                "summary": f"條件不符:{cond.get('field')} {cond.get('op')} {cond.get('value')}",
+                "latency_ms": 0,
+            })
             trace.append(entry)
             continue
 
@@ -498,7 +1020,7 @@ async def execute_dag(
         try:
             result = await handler(node, ctx)
         except Exception as e:
-            result = {"status": "error", "error": str(e), "summary": f"節點執行例外：{e}"}
+            result = {"status": "error", "error": str(e), "summary": f"節點執行例外:{e}"}
         latency = int((time.time() - start) * 1000)
         entry.update(result)
         entry["latency_ms"] = latency
@@ -506,7 +1028,6 @@ async def execute_dag(
 
         # Fatal error: stop
         if result.get("status") == "error" and type_key in ("call_model", "guardrail"):
-            # Only abort for critical nodes; soft failures continue
             if type_key == "guardrail" and (node.get("config") or {}).get("action") == "block":
                 break
             if type_key == "call_model":
@@ -515,6 +1036,10 @@ async def execute_dag(
     return {
         "final_text": ctx.clean_text or ctx.llm_response_text,
         "widgets": ctx.widgets,
+        "tool_results": ctx.tool_results,
+        "intent_type": ctx.intent_type,
+        "assistant_message_id": ctx.assistant_message_id,
+        "response_metadata": ctx.response_metadata,
         "total_tokens_in": ctx.total_tokens_in,
         "total_tokens_out": ctx.total_tokens_out,
         "guardrail_triggered": ctx.guardrail_triggered,

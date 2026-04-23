@@ -62,6 +62,12 @@ class Settings(BaseSettings):
     # CORS — comma-separated list for internal /api/v1 routes
     cors_allowed_origins: str = "http://localhost:3000,http://localhost:3003,https://frontend-gray-three-14.vercel.app"
 
+    # ── DAG Executor 替代 orchestrator 於生產 /chat ──────────────
+    # False(預設):/chat 走 AgentOrchestrator.process()
+    # True:/chat 走 chat_adapter.process_via_dag() — 由 DAG Executor 驅動
+    # /chat/stream 與 /chat/widget-response 不受此 flag 影響,永遠走 orchestrator。
+    use_dag_executor_for_chat: bool = False
+
     class Config:
         env_file = ".env"
         case_sensitive = False

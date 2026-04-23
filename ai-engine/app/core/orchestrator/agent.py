@@ -22,33 +22,10 @@ from app.core.pipeline.tracer import (
     pipeline_run_context,
     start_process_span,
 )
+from app.core.orchestrator import history as _history
+from app.core.orchestrator import prompt_loader as _prompt_loader
+from app.core.orchestrator.constants import WIDGET_INSTRUCTION, DEMO_USER_EMAIL
 from app.db import crud
-
-# Widget 標記指示 — 附加到所有 system prompt
-WIDGET_INSTRUCTION = """
-
-## 互動元件指示（重要）
-當你的回覆包含需要使用者做選擇、排序、或回答的問題時，請在回覆最末尾附上一個 JSON 標記，格式如下：
-
-<!--WIDGET:{"type":"single_select","question":"問題文字","options":[{"id":"a","label":"選項A"},{"id":"b","label":"選項B"}]}-->
-
-支援的 widget 類型：
-- single_select：單選題（最常用，適合 A/B/C/D 選擇）
-- multi_select：多選題（適合「選出所有正確答案」）
-- rank：排序題（適合「由強到弱排列」）
-- form：簡答題（適合開放式問題，fields: [{"id":"answer","label":"你的答案","type":"text"}]）
-- confirm：是/否確認
-
-規則：
-- 只有當你主動向使用者提問、出題、或需要使用者做選擇時才使用
-- 純講解性質的回覆不需要附加 widget
-- JSON 標記必須放在回覆的最後一行
-- 標記前的文字會正常顯示給使用者
-- 不要在回覆正文中提到這個標記的存在
-"""
-
-# Demo user fallback
-DEMO_USER_EMAIL = "demo@ai-trainer.dev"
 
 
 class AgentOrchestrator:
@@ -826,91 +803,19 @@ class AgentOrchestrator:
                     raise
         return crud.create_session(project_id, user_id, "freeform")
 
-    # 歷史超過此長度時壓縮前段成摘要，保留尾端原始訊息
-    HISTORY_COMPRESS_THRESHOLD = 30
-    HISTORY_KEEP_RECENT = 8
+    # 歷史壓縮參數 — 保留 class attribute 以維持既有引用
+    HISTORY_COMPRESS_THRESHOLD = _history.HISTORY_COMPRESS_THRESHOLD
+    HISTORY_KEEP_RECENT = _history.HISTORY_KEEP_RECENT
 
-    # 壓縮計數器（全域 in-memory；重啟歸零。Analytics 可讀取當前值作為 health metric）
-    compression_stats = {
-        "sessions_compressed": 0,
-        "turns_dropped": 0,
-        "chars_before": 0,
-        "chars_after": 0,
-    }
+    # 壓縮計數器：指向 history 模組的 module-level dict
+    # analytics endpoint 透過 AgentOrchestrator.compression_stats 讀取（__init__.py:1334-1337）
+    compression_stats = _history.compression_stats
 
     async def _load_history(self, session_id: str, exclude_last_user: bool = True) -> list:
-        """載入對話歷史，轉為 LLM 格式。
-
-        若長度超過 `HISTORY_COMPRESS_THRESHOLD`，把最前段壓縮成 system 摘要，
-        只保留最後 `HISTORY_KEEP_RECENT` 條原始訊息，降低 token 成本。
-
-        Args:
-            exclude_last_user: 排除最後一條 user message（避免與 messages.append 重複）
-        """
-        messages = crud.list_messages(session_id) or []
-
-        # 如果之前已 persist 過 summary，優先使用（metadata.summary==True）
-        pre_summary: Optional[str] = None
-        last_summary_idx = -1
-        for idx, m in enumerate(messages):
-            if m.get("role") == "system" and (m.get("metadata") or {}).get("summary"):
-                pre_summary = m.get("content") or pre_summary
-                last_summary_idx = idx
-
-        # 只取 summary 之後的對話訊息
-        tail = messages[last_summary_idx + 1 :] if last_summary_idx >= 0 else messages
-        dialogue = [m for m in tail if m.get("role") in ("user", "assistant")]
-
-        history: list[dict] = []
-        if pre_summary:
-            history.append({"role": "system", "content": f"[Earlier conversation summary]\n{pre_summary}"})
-
-        # 動態壓縮：尾端仍很長時，嘗試用 LLM 壓前段
-        if len(dialogue) > self.HISTORY_COMPRESS_THRESHOLD:
-            head = dialogue[: -self.HISTORY_KEEP_RECENT]
-            chars_before = sum(len(m.get("content") or "") for m in head)
-            compressed = await self._compress_history_head(head)
-            if compressed:
-                history.append({"role": "system", "content": f"[Auto-compressed earlier turns]\n{compressed}"})
-                dialogue = dialogue[-self.HISTORY_KEEP_RECENT :]
-                self.compression_stats["sessions_compressed"] += 1
-                self.compression_stats["turns_dropped"] += len(head)
-                self.compression_stats["chars_before"] += chars_before
-                self.compression_stats["chars_after"] += len(compressed)
-
-        history.extend(
-            {"role": m["role"], "content": m["content"]} for m in dialogue
-        )
-        if exclude_last_user and history and history[-1]["role"] == "user":
-            history = history[:-1]
-        return history
+        return await _history.load_history(session_id, exclude_last_user=exclude_last_user)
 
     async def _compress_history_head(self, head: list[dict]) -> Optional[str]:
-        """用 summarizer 把較早的歷史壓成幾行。失敗回 None。"""
-        if not head:
-            return None
-        try:
-            from app.core.llm_router.router import chat_completion
-
-            transcript = "\n".join(
-                f"{m.get('role','?')}: {(m.get('content') or '')[:400]}" for m in head
-            )
-            resp = await chat_completion(
-                messages=[
-                    {"role": "system", "content": (
-                        "Compress the following dialogue into 5-10 concise bullet points in the "
-                        "original language, preserving key facts, decisions, and unresolved items."
-                    )},
-                    {"role": "user", "content": transcript[:10000]},
-                ],
-                model="claude-haiku-4-5-20251001",
-                max_tokens=600,
-                temperature=0.2,
-            )
-            return (resp.choices[0].message.content or "").strip() or None
-        except Exception as e:  # noqa: BLE001
-            print(f"[WARN] _compress_history_head failed: {e}")
-            return None
+        return await _history.compress_history_head(head)
 
     async def _load_active_prompt(
         self,
@@ -918,49 +823,7 @@ class AgentOrchestrator:
         session_id: Optional[str] = None,
         prompt_override: Optional[str] = None,
     ) -> Optional[str]:
-        """載入專案目前使用的系統提示詞。
-
-        優先序：
-          1) prompt_override（Lab 實驗用 — 最高優先）
-          2) A/B test 變體
-          3) 專案 active prompt
-        """
-        if prompt_override:
-            return prompt_override
-        if session_id:
-            try:
-                from app.core.ab_test.service import ab_test_service
-
-                variant = await ab_test_service.pick_variant(project_id, session_id)
-                if variant and variant.get("prompt_version_id"):
-                    pv = crud.get_prompt_version(variant["prompt_version_id"])
-                    if pv and pv.get("content"):
-                        return pv["content"]
-            except Exception as e:  # noqa: BLE001
-                print(f"[WARN] ab_test lookup failed: {e}")
-        prompt = crud.get_active_prompt(project_id)
-        return prompt["content"] if prompt else None
+        return await _prompt_loader.load_active_prompt(project_id, session_id, prompt_override)
 
     async def _search_knowledge(self, query: str, project_id: str) -> Optional[str]:
-        """從知識庫搜尋相關內容（走 rag_pipeline：依 vector_backend 選 Qdrant / pgvector / keyword）。"""
-        # 先走完整 RAG pipeline（會依 feature flag 試 Qdrant → pgvector → keyword）
-        try:
-            from app.core.rag.pipeline import rag_pipeline
-
-            rag_results = await rag_pipeline.search(project_id, query, top_k=5)
-            if rag_results:
-                parts = [r["content"] for r in rag_results if r.get("content")]
-                if parts:
-                    return "\n\n---\n\n".join(parts)
-        except Exception as e:  # noqa: BLE001
-            print(f"[WARN] rag_pipeline.search failed, falling back to keyword: {e}")
-
-        # 最終 fallback：純 keyword（保留原有行為）
-        try:
-            results = crud.search_knowledge_chunks(project_id, query, limit=5)
-            if results:
-                context_parts = [r["content"] for r in results]
-                return "\n\n---\n\n".join(context_parts)
-        except Exception:
-            pass
-        return None
+        return await _prompt_loader.search_knowledge(query, project_id)

@@ -19,6 +19,7 @@ from app.models.schemas import (
 from app.core.orchestrator.agent import AgentOrchestrator
 from app.core.orchestrator.onboarding import OnboardingManager
 from app.core.prompt.optimizer import PromptOptimizer
+from app.config import settings
 from app.db import crud
 
 router = APIRouter()
@@ -81,10 +82,21 @@ async def get_demo_context(email: str = Query(default=None)):
 
 @router.post("/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest):
-    """核心對話端點"""
+    """核心對話端點。
+
+    依 `settings.use_dag_executor_for_chat` 決定走哪一條路徑:
+      - True  → chat_adapter.process_via_dag(request)(DAG Executor)
+      - False → orchestrator.process(request)(AgentOrchestrator,預設)
+
+    /chat/stream 與 /chat/widget-response 不受此 flag 影響。
+    """
     try:
-        response = await orchestrator.process(request)
-        return response
+        if settings.use_dag_executor_for_chat:
+            from app.core.pipeline.chat_adapter import process_via_dag
+            return await process_via_dag(request)
+        return await orchestrator.process(request)
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

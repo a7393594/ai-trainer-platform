@@ -294,13 +294,33 @@ export async function deleteDag(dagId: string): Promise<{ deleted: string }> {
   })
 }
 
+export interface ABTraceEntry {
+  node_id: string
+  label: string
+  type_key: string
+  status: 'ok' | 'skipped' | 'error' | string
+  summary: string
+  latency_ms: number
+  output?: Record<string, unknown>
+}
+
+export interface ABSideResult {
+  output: string
+  model: string
+  tokens_in: number
+  tokens_out: number
+  latency_ms: number
+  trace: ABTraceEntry[]
+  error?: string | null
+}
+
 export interface ABCompareResult {
   dag_a: { id: string; name: string; version: number }
   dag_b: { id: string; name: string; version: number }
   results: Array<{
     input: string
-    a: { output: string; model: string; tokens_in: number; tokens_out: number; latency_ms: number; error?: string | null }
-    b: { output: string; model: string; tokens_in: number; tokens_out: number; latency_ms: number; error?: string | null }
+    a: ABSideResult
+    b: ABSideResult
   }>
 }
 
