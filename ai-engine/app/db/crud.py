@@ -1473,6 +1473,107 @@ def get_pipeline_run_by_message(message_id: str) -> Optional[dict]:
 
 T_RERUN_PRESETS = "ait_rerun_presets"
 T_PIPELINE_CONFIGS = "ait_pipeline_configs"
+T_PIPELINE_DAGS = "ait_pipeline_dags"
+T_NODE_TYPES = "ait_node_types"
+
+
+# ============================================================================
+# Batch 4C/D: Pipeline DAGs + Node Type Registry
+# ============================================================================
+
+def list_node_types() -> list[dict]:
+    """列出所有已註冊的節點類型（內建 + 自訂）。"""
+    return (
+        get_supabase().table(T_NODE_TYPES)
+        .select("*")
+        .order("category")
+        .order("type_key")
+        .execute()
+    ).data or []
+
+
+def list_dags(project_id: str) -> list[dict]:
+    """列出專案的所有 DAG 版本。"""
+    return (
+        get_supabase().table(T_PIPELINE_DAGS)
+        .select("*")
+        .eq("project_id", project_id)
+        .order("created_at", desc=True)
+        .execute()
+    ).data or []
+
+
+def get_active_dag(project_id: str) -> Optional[dict]:
+    """取專案當前啟用的 DAG。"""
+    result = (
+        get_supabase().table(T_PIPELINE_DAGS)
+        .select("*")
+        .eq("project_id", project_id)
+        .eq("is_active", True)
+        .limit(1)
+        .execute()
+    )
+    return result.data[0] if result.data else None
+
+
+def get_dag(dag_id: str) -> Optional[dict]:
+    result = (
+        get_supabase().table(T_PIPELINE_DAGS)
+        .select("*")
+        .eq("id", dag_id)
+        .execute()
+    )
+    return result.data[0] if result.data else None
+
+
+def create_dag(project_id: str, name: str, nodes: list, edges: list,
+               description: Optional[str] = None, activate: bool = False) -> dict:
+    """建立新 DAG 版本。activate=True 會同時停用其他版本。"""
+    sb = get_supabase()
+    # 算下一個版本號
+    existing = sb.table(T_PIPELINE_DAGS).select("version").eq("project_id", project_id).execute().data or []
+    next_version = max([e["version"] for e in existing], default=0) + 1
+
+    if activate:
+        sb.table(T_PIPELINE_DAGS).update({"is_active": False}).eq("project_id", project_id).execute()
+
+    result = sb.table(T_PIPELINE_DAGS).insert({
+        "project_id": project_id,
+        "name": name,
+        "version": next_version,
+        "is_active": activate,
+        "nodes": nodes,
+        "edges": edges,
+        "description": description,
+    }).execute()
+    return result.data[0] if result.data else {}
+
+
+def activate_dag(dag_id: str, project_id: str) -> dict:
+    sb = get_supabase()
+    sb.table(T_PIPELINE_DAGS).update({"is_active": False}).eq("project_id", project_id).execute()
+    result = sb.table(T_PIPELINE_DAGS).update({"is_active": True}).eq("id", dag_id).execute()
+    return result.data[0] if result.data else {}
+
+
+def update_dag(dag_id: str, nodes: Optional[list] = None, edges: Optional[list] = None,
+               name: Optional[str] = None, description: Optional[str] = None) -> dict:
+    """就地更新 DAG 內容（版本號不變）。"""
+    patch: dict = {"updated_at": "now()"}
+    if nodes is not None:
+        patch["nodes"] = nodes
+    if edges is not None:
+        patch["edges"] = edges
+    if name is not None:
+        patch["name"] = name
+    if description is not None:
+        patch["description"] = description
+    result = get_supabase().table(T_PIPELINE_DAGS).update(patch).eq("id", dag_id).execute()
+    return result.data[0] if result.data else {}
+
+
+def delete_dag(dag_id: str) -> None:
+    get_supabase().table(T_PIPELINE_DAGS).delete().eq("id", dag_id).execute()
 
 
 # ============================================================================

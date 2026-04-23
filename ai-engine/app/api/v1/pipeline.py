@@ -734,3 +734,217 @@ async def upsert_pipeline_config(req: PipelineConfigUpsert):
         return {"config": cfg}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Save config failed: {e}")
+
+
+# ============================================================================
+# Batch 4C/D: DAG Management
+# ============================================================================
+
+class DAGNode(BaseModel):
+    id: str
+    type_key: str
+    label: str
+    config: dict = {}
+    position: Optional[dict] = None
+
+
+class DAGEdge(BaseModel):
+    from_: str
+    to: str
+
+    class Config:
+        fields = {'from_': 'from'}
+
+
+class DAGCreateRequest(BaseModel):
+    project_id: str
+    name: str
+    nodes: list[dict]
+    edges: list[dict]
+    description: Optional[str] = None
+    activate: bool = False
+
+
+class DAGUpdateRequest(BaseModel):
+    nodes: Optional[list[dict]] = None
+    edges: Optional[list[dict]] = None
+    name: Optional[str] = None
+    description: Optional[str] = None
+
+
+@router.get("/node-types")
+async def list_node_types_endpoint():
+    """列出所有節點類型（UI 顯示可用節點清單）。"""
+    try:
+        return {"node_types": crud.list_node_types()}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"List node types failed: {e}")
+
+
+@router.get("/dag/{project_id}")
+async def get_active_dag_endpoint(project_id: str):
+    """取專案當前啟用的 DAG。"""
+    dag = crud.get_active_dag(project_id)
+    if not dag:
+        raise HTTPException(status_code=404, detail="No active DAG for this project")
+    return {"dag": dag}
+
+
+@router.get("/dags/{project_id}")
+async def list_dags_endpoint(project_id: str):
+    """列出專案所有 DAG 版本。"""
+    return {"dags": crud.list_dags(project_id)}
+
+
+@router.post("/dag")
+async def create_dag_endpoint(req: DAGCreateRequest):
+    """建立新 DAG 版本。"""
+    try:
+        dag = crud.create_dag(
+            project_id=req.project_id,
+            name=req.name,
+            nodes=req.nodes,
+            edges=req.edges,
+            description=req.description,
+            activate=req.activate,
+        )
+        return {"dag": dag}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Create DAG failed: {e}")
+
+
+@router.put("/dag/{dag_id}")
+async def update_dag_endpoint(dag_id: str, req: DAGUpdateRequest):
+    """更新 DAG（就地修改，版本號不變；如要版本管理用 POST 建立新版）。"""
+    try:
+        dag = crud.update_dag(dag_id, req.nodes, req.edges, req.name, req.description)
+        return {"dag": dag}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Update DAG failed: {e}")
+
+
+@router.post("/dag/{dag_id}/activate")
+async def activate_dag_endpoint(dag_id: str):
+    """切換 active DAG（該專案內其他版本會停用）。"""
+    dag = crud.get_dag(dag_id)
+    if not dag:
+        raise HTTPException(status_code=404, detail="DAG not found")
+    result = crud.activate_dag(dag_id, dag["project_id"])
+    return {"dag": result}
+
+
+@router.delete("/dag/{dag_id}")
+async def delete_dag_endpoint(dag_id: str):
+    dag = crud.get_dag(dag_id)
+    if not dag:
+        raise HTTPException(status_code=404, detail="DAG not found")
+    if dag.get("is_active"):
+        raise HTTPException(status_code=400, detail="Cannot delete active DAG. Activate another version first.")
+    crud.delete_dag(dag_id)
+    return {"deleted": dag_id}
+
+
+# ============================================================================
+# Batch 4F: A/B Comparison Runner
+# ============================================================================
+
+class ABCompareRequest(BaseModel):
+    dag_a_id: str
+    dag_b_id: str
+    test_inputs: list[str]  # list of user messages to test
+    user_id: Optional[str] = None
+
+
+@router.post("/dag/compare")
+async def compare_dags(req: ABCompareRequest):
+    """A/B 比較：對同一批 input 跑 2 個 DAG，回傳並排結果。
+
+    MVP 實作：DAG 執行簡化為「只跑 call_model 節點」，用 DAG 中該節點的
+    config（model、temperature、max_tokens、system_prompt）來呼叫 LLM。
+    不跑 tools / widget 解析 / knowledge 檢索 — 只比較主模型表現。
+    """
+    from app.core.llm_router.router import chat_completion
+    dag_a = crud.get_dag(req.dag_a_id)
+    dag_b = crud.get_dag(req.dag_b_id)
+    if not dag_a or not dag_b:
+        raise HTTPException(status_code=404, detail="DAG not found")
+
+    def _extract_model_config(dag: dict) -> dict:
+        """From DAG nodes, find the call_model node and return its config."""
+        for n in dag.get("nodes", []):
+            if n.get("type_key") == "call_model":
+                return n.get("config", {}) or {}
+        return {}
+
+    def _extract_system_prompt(dag: dict) -> Optional[str]:
+        """From compose_prompt node config, get system_prompt_prefix."""
+        for n in dag.get("nodes", []):
+            if n.get("type_key") == "compose_prompt":
+                cfg = n.get("config", {}) or {}
+                return cfg.get("system_prompt_prefix")
+        return None
+
+    cfg_a = _extract_model_config(dag_a)
+    cfg_b = _extract_model_config(dag_b)
+    sys_a = _extract_system_prompt(dag_a)
+    sys_b = _extract_system_prompt(dag_b)
+
+    async def _run_one(dag_cfg: dict, sys_prompt: Optional[str], user_msg: str, project_id: str) -> dict:
+        import time
+        model = dag_cfg.get("model") or "claude-sonnet-4-20250514"
+        temperature = dag_cfg.get("temperature", 0.7)
+        max_tokens = dag_cfg.get("max_tokens", 2000)
+
+        # Build messages: use system_prompt from compose_prompt node config, or fall back to project's active prompt
+        if not sys_prompt:
+            try:
+                sys_prompt = (crud.get_active_prompt(project_id) or {}).get("content", "")
+            except Exception:
+                sys_prompt = ""
+
+        msgs = []
+        if sys_prompt:
+            msgs.append({"role": "system", "content": sys_prompt})
+        msgs.append({"role": "user", "content": user_msg})
+
+        start = time.time()
+        try:
+            resp = await chat_completion(
+                messages=msgs,
+                model=model,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                project_id=project_id,
+                span_label=f"ab_test:{model}",
+            )
+            text = resp.choices[0].message.content or ""
+            usage = getattr(resp, "usage", None)
+            return {
+                "output": text,
+                "model": model,
+                "tokens_in": getattr(usage, "prompt_tokens", 0) if usage else 0,
+                "tokens_out": getattr(usage, "completion_tokens", 0) if usage else 0,
+                "latency_ms": int((time.time() - start) * 1000),
+                "error": None,
+            }
+        except Exception as e:
+            return {
+                "output": "",
+                "model": model,
+                "tokens_in": 0, "tokens_out": 0,
+                "latency_ms": int((time.time() - start) * 1000),
+                "error": str(e),
+            }
+
+    project_id = dag_a["project_id"]
+    results = []
+    for user_msg in req.test_inputs:
+        res_a = await _run_one(cfg_a, sys_a, user_msg, project_id)
+        res_b = await _run_one(cfg_b, sys_b, user_msg, project_id)
+        results.append({"input": user_msg, "a": res_a, "b": res_b})
+
+    return {
+        "dag_a": {"id": dag_a["id"], "name": dag_a["name"], "version": dag_a["version"]},
+        "dag_b": {"id": dag_b["id"], "name": dag_b["name"], "version": dag_b["version"]},
+        "results": results,
+    }

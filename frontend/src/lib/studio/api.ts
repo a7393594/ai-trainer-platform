@@ -203,6 +203,118 @@ export async function savePipelineConfig(projectId: string, nodeConfigs: Record<
   })
 }
 
+// ============================================================================
+// Batch 4C/D/E/F: DAG + Node Types + A/B Compare
+// ============================================================================
+
+export interface NodeType {
+  id: string
+  type_key: string
+  name: string
+  description?: string
+  category: string
+  icon?: string
+  schema?: { fields?: string[] }
+  is_builtin: boolean
+}
+
+export interface DAGNode {
+  id: string
+  type_key: string
+  label: string
+  config: Record<string, unknown>
+  position?: { x: number; y: number }
+}
+
+export interface DAGEdge {
+  from: string
+  to: string
+}
+
+export interface PipelineDAG {
+  id: string
+  project_id: string
+  name: string
+  version: number
+  is_active: boolean
+  nodes: DAGNode[]
+  edges: DAGEdge[]
+  description?: string
+  created_at: string
+  updated_at?: string
+}
+
+export async function listNodeTypes(): Promise<{ node_types: NodeType[] }> {
+  return request<{ node_types: NodeType[] }>('/api/v1/pipeline/node-types')
+}
+
+export async function getActiveDag(projectId: string): Promise<{ dag: PipelineDAG }> {
+  return request<{ dag: PipelineDAG }>(`/api/v1/pipeline/dag/${projectId}`)
+}
+
+export async function listDags(projectId: string): Promise<{ dags: PipelineDAG[] }> {
+  return request<{ dags: PipelineDAG[] }>(`/api/v1/pipeline/dags/${projectId}`)
+}
+
+export async function createDag(data: {
+  project_id: string
+  name: string
+  nodes: DAGNode[]
+  edges: DAGEdge[]
+  description?: string
+  activate?: boolean
+}): Promise<{ dag: PipelineDAG }> {
+  return request<{ dag: PipelineDAG }>('/api/v1/pipeline/dag', {
+    method: 'POST',
+    body: JSON.stringify(data),
+  })
+}
+
+export async function updateDag(dagId: string, patch: {
+  nodes?: DAGNode[]
+  edges?: DAGEdge[]
+  name?: string
+  description?: string
+}): Promise<{ dag: PipelineDAG }> {
+  return request<{ dag: PipelineDAG }>(`/api/v1/pipeline/dag/${dagId}`, {
+    method: 'PUT',
+    body: JSON.stringify(patch),
+  })
+}
+
+export async function activateDag(dagId: string): Promise<{ dag: PipelineDAG }> {
+  return request<{ dag: PipelineDAG }>(`/api/v1/pipeline/dag/${dagId}/activate`, {
+    method: 'POST',
+  })
+}
+
+export async function deleteDag(dagId: string): Promise<{ deleted: string }> {
+  return request<{ deleted: string }>(`/api/v1/pipeline/dag/${dagId}`, {
+    method: 'DELETE',
+  })
+}
+
+export interface ABCompareResult {
+  dag_a: { id: string; name: string; version: number }
+  dag_b: { id: string; name: string; version: number }
+  results: Array<{
+    input: string
+    a: { output: string; model: string; tokens_in: number; tokens_out: number; latency_ms: number; error?: string | null }
+    b: { output: string; model: string; tokens_in: number; tokens_out: number; latency_ms: number; error?: string | null }
+  }>
+}
+
+export async function compareDags(dagAId: string, dagBId: string, testInputs: string[]): Promise<ABCompareResult> {
+  return request<ABCompareResult>('/api/v1/pipeline/dag/compare', {
+    method: 'POST',
+    body: JSON.stringify({
+      dag_a_id: dagAId,
+      dag_b_id: dagBId,
+      test_inputs: testInputs,
+    }),
+  })
+}
+
 export async function selectComparison(
   runId: string,
   nodeId: string,
