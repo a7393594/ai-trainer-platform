@@ -48,6 +48,8 @@ class DAGContext:
         self.db_tools: list[dict] = []
         self.llm_response_text: str = ""
         self.tool_call_count: int = 0
+        self.tool_iterations: int = 0
+        self.tool_results: list[dict] = []  # list of {name, params, result, status, iteration}
         self.total_tokens_in: int = 0
         self.total_tokens_out: int = 0
         self.total_cost_usd: float = 0.0
@@ -149,6 +151,11 @@ async def handle_compose_prompt(node: dict, ctx: DAGContext) -> dict:
 
 
 async def handle_call_model(node: dict, ctx: DAGContext) -> dict:
+    """主模型呼叫 + 完整工具迴圈。
+
+    若 model 要求呼叫工具，實際執行工具、把結果餵回模型，最多跑 max_iterations 輪。
+    max_iterations 從 execute_tools 節點的 config 讀（如存在於 DAG），否則預設 5。
+    """
     cfg = node.get("config") or {}
     try:
         project = crud.get_project(ctx.project_id)
@@ -162,6 +169,7 @@ async def handle_call_model(node: dict, ctx: DAGContext) -> dict:
     )
     ctx.temperature = float(cfg.get("temperature", 0.7))
     ctx.max_tokens = int(cfg.get("max_tokens", 2000))
+    max_iterations = int(cfg.get("max_iterations", 5))
 
     # Resolve tools if tool_ids specified
     tool_ids = cfg.get("tool_ids") or []
@@ -176,53 +184,134 @@ async def handle_call_model(node: dict, ctx: DAGContext) -> dict:
         except Exception:
             pass
 
+    total_latency_ms = 0
+    total_in = 0
+    total_out = 0
+    final_tool_call_count = 0
+
     try:
-        start = time.time()
-        resp = await chat_completion(
-            messages=ctx.messages,
-            model=ctx.model,
-            temperature=ctx.temperature,
-            max_tokens=ctx.max_tokens,
-            tools=tools_payload,
-            project_id=ctx.project_id,
-            span_label=f"dag_exec:{ctx.model}",
-        )
-        text = resp.choices[0].message.content or ""
-        usage = getattr(resp, "usage", None)
-        in_tokens = getattr(usage, "prompt_tokens", 0) if usage else 0
-        out_tokens = getattr(usage, "completion_tokens", 0) if usage else 0
-        tool_calls = getattr(resp.choices[0].message, "tool_calls", None)
+        for iteration in range(max_iterations + 1):  # initial + up to N iterations
+            start = time.time()
+            resp = await chat_completion(
+                messages=ctx.messages,
+                model=ctx.model,
+                temperature=ctx.temperature,
+                max_tokens=ctx.max_tokens,
+                tools=tools_payload,
+                project_id=ctx.project_id,
+                span_label=f"dag_exec:{ctx.model}:iter{iteration}",
+            )
+            msg = resp.choices[0].message
+            text = msg.content or ""
+            usage = getattr(resp, "usage", None)
+            in_tokens = getattr(usage, "prompt_tokens", 0) if usage else 0
+            out_tokens = getattr(usage, "completion_tokens", 0) if usage else 0
+            tool_calls = getattr(msg, "tool_calls", None) or []
 
-        ctx.llm_response_text = text
-        ctx.total_tokens_in += in_tokens
-        ctx.total_tokens_out += out_tokens
-        ctx.tool_call_count = len(tool_calls) if tool_calls else 0
+            total_in += in_tokens
+            total_out += out_tokens
+            total_latency_ms += int((time.time() - start) * 1000)
 
-        latency = int((time.time() - start) * 1000)
+            if not tool_calls:
+                # Done
+                ctx.llm_response_text = text
+                final_tool_call_count = 0
+                break
+
+            # Model wants to use tools — execute them
+            final_tool_call_count = len(tool_calls)
+            ctx.tool_iterations += 1
+
+            # Append assistant message with tool_calls to history
+            ctx.messages.append({
+                "role": "assistant",
+                "content": text,
+                "tool_calls": [
+                    {
+                        "id": tc.id,
+                        "type": "function",
+                        "function": {"name": tc.function.name, "arguments": tc.function.arguments},
+                    }
+                    for tc in tool_calls
+                ],
+            })
+
+            # Execute each tool call and append tool results
+            for tc in tool_calls:
+                tool_name = tc.function.name
+                try:
+                    params = json.loads(tc.function.arguments) if tc.function.arguments else {}
+                except Exception:
+                    params = {}
+                try:
+                    result = await tool_registry.execute_tool_by_name(
+                        name=tool_name,
+                        params=params,
+                        tools=ctx.db_tools,
+                    )
+                    status = "ok" if not (isinstance(result, dict) and result.get("status") == "error") else "error"
+                except Exception as e:
+                    result = {"error": str(e)}
+                    status = "error"
+
+                ctx.tool_results.append({
+                    "iteration": ctx.tool_iterations,
+                    "name": tool_name,
+                    "params": params,
+                    "result": result,
+                    "status": status,
+                })
+                ctx.messages.append({
+                    "role": "tool",
+                    "tool_call_id": tc.id,
+                    "content": json.dumps(result, ensure_ascii=False)[:4000],
+                })
+
+            # Stop if we hit the iteration cap
+            if iteration >= max_iterations:
+                break
+
+        ctx.total_tokens_in += total_in
+        ctx.total_tokens_out += total_out
+        ctx.tool_call_count = final_tool_call_count
+
+        tool_summary = f"，呼叫 {len(ctx.tool_results)} 個工具" if ctx.tool_results else ""
         return {
             "status": "ok",
             "output": {
-                "text": text[:500] + ("..." if len(text) > 500 else ""),
+                "text": ctx.llm_response_text[:500] + ("..." if len(ctx.llm_response_text) > 500 else ""),
                 "model": ctx.model,
-                "tokens_in": in_tokens,
-                "tokens_out": out_tokens,
-                "latency_ms": latency,
-                "has_tool_calls": bool(tool_calls),
+                "tokens_in": total_in,
+                "tokens_out": total_out,
+                "latency_ms": total_latency_ms,
+                "iterations": ctx.tool_iterations,
+                "tool_calls_total": len(ctx.tool_results),
             },
-            "summary": f"{ctx.model} · 收 {in_tokens} 出 {out_tokens} · {latency}ms",
+            "summary": f"{ctx.model} · 收 {total_in} 出 {total_out} · {total_latency_ms}ms{tool_summary}",
         }
     except Exception as e:
         return {"status": "error", "error": str(e), "summary": f"模型呼叫失敗：{e}"}
 
 
 async def handle_execute_tools(node: dict, ctx: DAGContext) -> dict:
-    # MVP: 如果主模型沒叫工具就略過；叫了就記錄（完整 loop 在未來版本）
-    if ctx.tool_call_count == 0:
-        return {"status": "ok", "output": {"iterations": 0}, "summary": "模型未要求呼叫工具"}
+    """顯示在 call_model 節點內執行的工具結果。"""
+    if not ctx.tool_results:
+        return {"status": "ok", "output": {"iterations": 0}, "summary": "模型未呼叫工具"}
+
+    # Summarize per tool
+    summary_lines = []
+    for tr in ctx.tool_results:
+        status_icon = "✓" if tr["status"] == "ok" else "✗"
+        summary_lines.append(f"{status_icon} {tr['name']} (iter {tr['iteration']})")
+
     return {
         "status": "ok",
-        "output": {"iterations": 1, "note": "MVP: tool loop simplified to single pass"},
-        "summary": f"模型要求 {ctx.tool_call_count} 個工具呼叫（MVP 略過實際執行）",
+        "output": {
+            "iterations": ctx.tool_iterations,
+            "total_calls": len(ctx.tool_results),
+            "results": ctx.tool_results[:10],  # limit dump size
+        },
+        "summary": f"執行 {ctx.tool_iterations} 輪 · {len(ctx.tool_results)} 個工具呼叫｜" + "、".join(summary_lines[:5]),
     }
 
 
