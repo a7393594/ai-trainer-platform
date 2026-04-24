@@ -9,9 +9,9 @@ logger = logging.getLogger(__name__)
 
 # Cheapest non-free model per provider; 1-token ping.
 PROVIDER_TEST_MODELS: dict[str, str] = {
-    "openai": "gpt-5.4-nano",
-    # gemini-2.0-flash is the current stable Gemini model available on free tier.
-    # Google retires preview models often — keep this aligned with models.py.
+    # Non-reasoning classic chat models — reasoning/thinking models consume the
+    # 1-token budget on hidden reasoning and return "output limit reached" errors.
+    "openai": "gpt-4o-mini",
     "google": "gemini/gemini-2.0-flash",
     "groq": "groq/llama-3.1-8b-instant",
     "deepseek": "deepseek/deepseek-chat",
@@ -22,12 +22,26 @@ PROVIDER_TEST_MODELS: dict[str, str] = {
 def _is_auth_failure(err_msg: str) -> bool:
     """True if the error message looks like an auth/permission failure (key is invalid).
 
-    Rate-limit / quota errors are treated as passes — the API accepted our credentials,
-    it just can't fulfill the request right now. That's good enough to prove the key works.
+    Non-auth runtime errors (rate limit / context length / output limit / reasoning
+    token budget) are treated as passes — the API accepted our credentials, it just
+    can't fulfill the 1-token ping request right now. That still proves the key works.
     """
     lo = err_msg.lower()
-    # Quota / rate-limit → key works, just throttled
-    if any(s in lo for s in ("ratelimit", "rate_limit", "rate limit", "quota", "429", "too many request")):
+    # Runtime-level failures where the API ACCEPTED credentials but couldn't complete:
+    # quota, rate-limit, too-small max_tokens on reasoning models, too-long context, etc.
+    # Treat all as "key verified".
+    soft_pass_markers = (
+        # Rate limiting
+        "ratelimit", "rate_limit", "rate limit", "quota", "429", "too many request",
+        # Output / max_tokens exhaustion (reasoning models consume budget on hidden tokens)
+        "max_tokens", "max tokens", "output limit", "output_limit_reached",
+        "could not finish the message",
+        # Context length
+        "context length", "context_length_exceeded", "context window", "maximum context length",
+        # finish_reason length
+        "finish_reason", "finish reason",
+    )
+    if any(s in lo for s in soft_pass_markers):
         return False
     # Clear auth signals
     if any(s in lo for s in (
