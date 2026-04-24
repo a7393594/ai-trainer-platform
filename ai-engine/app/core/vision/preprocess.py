@@ -51,20 +51,20 @@ async def describe_image(image_data_url: str, tenant_id: str | None = None, prom
     if not image_data_url:
         return ""
 
-    parsed = _parse_data_url(image_data_url)
-    if parsed:
-        media_type, b64 = parsed
-        image_block = {
-            "type": "image",
-            "source": {"type": "base64", "media_type": media_type, "data": b64},
-        }
-    elif image_data_url.startswith("http://") or image_data_url.startswith("https://"):
-        image_block = {"type": "image_url", "image_url": {"url": image_data_url}}
-    else:
-        logger.warning("describe_image: unsupported image ref (not data URL or http URL)")
+    # LiteLLM unified multimodal format: image_url works for both base64 data URLs
+    # and https URLs across Anthropic / OpenAI / Gemini providers.
+    if not (
+        image_data_url.startswith("data:image/")
+        or image_data_url.startswith("http://")
+        or image_data_url.startswith("https://")
+    ):
+        logger.warning("describe_image: unsupported image ref")
         return ""
 
-    content_blocks = [image_block, {"type": "text", "text": prompt or DEFAULT_PROMPT}]
+    content_blocks = [
+        {"type": "text", "text": prompt or DEFAULT_PROMPT},
+        {"type": "image_url", "image_url": {"url": image_data_url}},
+    ]
     kwargs: dict = {
         "model": VISION_MODEL,
         "messages": [{"role": "user", "content": content_blocks}],
