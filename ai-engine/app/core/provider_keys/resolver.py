@@ -52,18 +52,33 @@ def parse_provider(model: str) -> str:
 
 
 def resolve_api_key(tenant_id: Optional[str], provider: str) -> Optional[str]:
-    """Return the API key string to pass to LiteLLM, or None if unavailable."""
+    """Return the API key string to pass to LiteLLM, or None if unavailable.
+
+    Tenant resolution order:
+      1. explicit `tenant_id` arg (most specific — used when caller knows)
+      2. request-scoped contextvar (set by FastAPI middleware from project_id)
+      3. None → falls through to env var
+    """
     if not provider:
         return None
 
-    # Anthropic is env-only
+    # Anthropic is env-only by design — keeps the Claude path stable
     if provider == "anthropic":
         return settings.anthropic_api_key or None
 
-    # Per-tenant DB key wins if crypto is configured
-    if tenant_id and crypto.is_configured():
+    # Resolve effective tenant: explicit arg > contextvar > none
+    effective_tenant = tenant_id
+    if not effective_tenant:
         try:
-            db_key = service.get_key(tenant_id, provider)
+            from app.core.tenant_context import get_current_tenant
+            effective_tenant = get_current_tenant()
+        except Exception:
+            effective_tenant = None
+
+    # Per-tenant DB key wins if crypto is configured
+    if effective_tenant and crypto.is_configured():
+        try:
+            db_key = service.get_key(effective_tenant, provider)
             if db_key:
                 return db_key
         except Exception:

@@ -1,6 +1,9 @@
 """
 AI Trainer Platform — AI 引擎入口
 """
+import json
+import logging
+
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -14,9 +17,13 @@ from app.api.v1.public import router as public_router
 from app.api.v1.referee import router as referee_router
 from app.api.v1.poker_coach import router as poker_coach_router
 from app.api.v1.provider_keys import router as provider_keys_router
+from app.core.tenant_context import set_current_tenant, reset_current_tenant
+from app.core.llm_router.router import NoProviderKeyError
 from app.db.supabase import init_supabase
 from app.db.qdrant import init_qdrant
 from app.core.llm_router.router import init_llm_router
+
+_log = logging.getLogger(__name__)
 
 app = FastAPI(
     title="AI Trainer Engine",
@@ -51,6 +58,62 @@ async def security_headers(request: Request, call_next):
     return response
 
 
+@app.middleware("http")
+async def tenant_resolver(request: Request, call_next):
+    """Resolve tenant_id from request, store in contextvar.
+
+    Resolution order:
+      1. X-Tenant-ID header
+      2. tenant_id query param
+      3. POST body's tenant_id field
+      4. POST body's project_id → ait_projects.tenant_id lookup
+      5. None (Anthropic env-only flow still works)
+
+    The contextvar is read by app.core.provider_keys.resolver.resolve_api_key
+    when callers don't pass an explicit tenant_id, fixing the entire class of
+    "OPENAI_API_KEY missing" errors that arise when 41+ chat_completion call
+    sites forget to thread tenant_id through.
+    """
+    tenant_id = None
+    try:
+        # 1. Header (服務間呼叫 / debug)
+        tenant_id = request.headers.get("x-tenant-id")
+
+        # 2. Query param
+        if not tenant_id:
+            tenant_id = request.query_params.get("tenant_id")
+
+        # 3+4. Sniff POST body for tenant_id / project_id (only for JSON bodies)
+        if not tenant_id and request.method in ("POST", "PUT", "PATCH"):
+            ctype = request.headers.get("content-type", "")
+            if "application/json" in ctype:
+                body_bytes = await request.body()
+                if body_bytes:
+                    try:
+                        data = json.loads(body_bytes)
+                        if isinstance(data, dict):
+                            tenant_id = data.get("tenant_id")
+                            if not tenant_id and data.get("project_id"):
+                                from app.db import crud as _crud
+                                proj = _crud.get_project(data["project_id"])
+                                if proj:
+                                    tenant_id = proj.get("tenant_id")
+                    except (ValueError, TypeError):
+                        pass
+                # IMPORTANT: restore the body so the endpoint can read it again.
+                async def receive():
+                    return {"type": "http.request", "body": body_bytes, "more_body": False}
+                request._receive = receive  # type: ignore[attr-defined]
+    except Exception as e:
+        _log.warning("tenant_resolver failed: %s", e)
+
+    token = set_current_tenant(tenant_id)
+    try:
+        return await call_next(request)
+    finally:
+        reset_current_tenant(token)
+
+
 @app.on_event("startup")
 async def startup():
     """啟動時初始化所有連線"""
@@ -61,6 +124,23 @@ async def startup():
         print(f"[WARN] Qdrant not available (Phase 2): {e}")
     init_llm_router()
     print(f"[OK] AI Engine started in {settings.environment} mode")
+
+
+@app.exception_handler(NoProviderKeyError)
+async def no_provider_key_handler(request: Request, exc: NoProviderKeyError):
+    """Translate "LLM provider has no key" into a friendly 400 the frontend can act on."""
+    from fastapi.responses import JSONResponse
+    return JSONResponse(
+        status_code=400,
+        content={
+            "error": "no_provider_key",
+            "provider": exc.provider,
+            "model": exc.model,
+            "message": f"請到設定頁 → Provider API Keys → {exc.provider} 配置 API key",
+            "settings_url": "/settings?tab=providers",
+            "detail": exc.original[:300],
+        },
+    )
 
 
 @app.get("/health")

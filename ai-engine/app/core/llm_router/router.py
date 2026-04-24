@@ -28,6 +28,30 @@ ANTHROPIC_CACHE_WRITE_MULTIPLIER = 1.25
 ANTHROPIC_CACHE_READ_MULTIPLIER = 0.10
 
 
+class NoProviderKeyError(Exception):
+    """LiteLLM rejected the call because no usable API key for `provider`.
+
+    Carries structured info so the FastAPI exception handler can return a 400
+    with a friendly message + link to Settings → Provider API Keys.
+    """
+
+    def __init__(self, provider: str, model: str, original: str = ""):
+        self.provider = provider
+        self.model = model
+        self.original = original
+        super().__init__(f"no api key for provider={provider} model={model}: {original[:200]}")
+
+
+def _looks_like_auth_error(msg: str) -> bool:
+    lo = msg.lower()
+    return any(s in lo for s in (
+        "api_key", "api key", "x-api-key",
+        "authentication", "authenticationerror",
+        "401", "403",
+        "invalid_api_key", "incorrect api key", "api key not valid", "missing api key",
+    ))
+
+
 def _inject_api_key(kwargs: dict, model: str, tenant_id: Optional[str]) -> None:
     """Resolve per-tenant key (DB > env) and set kwargs['api_key'] so LiteLLM uses it.
 
@@ -278,7 +302,16 @@ async def chat_completion(
     await _rate_limiter.acquire(_estimate_tokens(messages))
 
     start = time.time()
-    response = await litellm.acompletion(**kwargs)
+    try:
+        response = await litellm.acompletion(**kwargs)
+    except Exception as e:
+        # Detect auth-failure → translate to friendly NoProviderKeyError so the
+        # FastAPI handler can return a 400 with a "configure key in Settings" link.
+        from app.core.provider_keys.resolver import parse_provider as _pp
+        provider = _pp(model)
+        if provider and provider != "anthropic" and _looks_like_auth_error(str(e)):
+            raise NoProviderKeyError(provider=provider, model=model, original=str(e)) from e
+        raise
     latency = int((time.time() - start) * 1000)
 
     # Extract token usage. For Anthropic, prompt_tokens already EXCLUDES cached tokens
@@ -362,7 +395,14 @@ async def stream_chat_completion(
     start = time.time()
     full_text = ""
     final_usage = None
-    response = await litellm.acompletion(**kwargs)
+    try:
+        response = await litellm.acompletion(**kwargs)
+    except Exception as e:
+        from app.core.provider_keys.resolver import parse_provider as _pp
+        provider = _pp(model)
+        if provider and provider != "anthropic" and _looks_like_auth_error(str(e)):
+            raise NoProviderKeyError(provider=provider, model=model, original=str(e)) from e
+        raise
     async for chunk in response:
         # usage 通常只在最後一個 chunk 出現，可能 choices=[]
         chunk_usage = getattr(chunk, "usage", None)

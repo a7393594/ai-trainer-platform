@@ -13,6 +13,23 @@ import type {
 
 const AI_ENGINE_URL = process.env.NEXT_PUBLIC_AI_ENGINE_URL || 'http://localhost:8000'
 
+/**
+ * Custom error thrown when backend returns 400 `{error: "no_provider_key"}`.
+ * UI catches this, shows a friendly toast with a link to Settings.
+ */
+export class NoProviderKeyError extends Error {
+  provider: string
+  model?: string
+  settingsUrl: string
+  constructor(provider: string, model: string | undefined, message: string, settingsUrl: string) {
+    super(message)
+    this.name = 'NoProviderKeyError'
+    this.provider = provider
+    this.model = model
+    this.settingsUrl = settingsUrl
+  }
+}
+
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const res = await fetch(`${AI_ENGINE_URL}${path}`, {
     headers: {
@@ -24,7 +41,17 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
 
   if (!res.ok) {
     const error = await res.json().catch(() => ({ detail: res.statusText }))
-    throw new Error(error.detail || `API Error: ${res.status}`)
+    // Friendly translation for missing-provider-key — backend returns 400 with
+    // {error:"no_provider_key", provider, model, message, settings_url}
+    if (res.status === 400 && error && typeof error === 'object' && error.error === 'no_provider_key') {
+      throw new NoProviderKeyError(
+        String(error.provider ?? 'unknown'),
+        error.model ? String(error.model) : undefined,
+        String(error.message ?? `請到設定頁配置 ${error.provider} API key`),
+        String(error.settings_url ?? '/settings?tab=providers'),
+      )
+    }
+    throw new Error(error.detail || error.message || `API Error: ${res.status}`)
   }
 
   return res.json()
