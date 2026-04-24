@@ -6,10 +6,11 @@
  * 支援：文字對話 + 互動元件 + 回饋打分 + Onboarding 模式 + 歷史載入
  */
 
-import { useState, useRef, useEffect, useCallback } from 'react'
+import { useState, useRef, useEffect, useCallback, useMemo } from 'react'
 import {
   sendMessage, sendMessageStream, sendWidgetResponse, submitFeedback,
   startOnboarding, answerOnboarding, getSessionMessages,
+  type StreamProgressEvent,
 } from '@/lib/ai-engine'
 import { useI18n } from '@/lib/i18n'
 import { WidgetRenderer } from '@/components/widgets/WidgetRenderer'
@@ -48,6 +49,23 @@ export function ChatInterface({
   const [onboardingProgress, setOnboardingProgress] = useState<{ current: number; total: number } | null>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
   const { t } = useI18n()
+
+  // 工具呼叫進度狀態（streaming 期間顯示）
+  type ToolStat = { name: string; status: 'running' | 'done' | 'error' }
+  const [progressPhase, setProgressPhase] = useState<string | null>(null)
+  const [progressMessage, setProgressMessage] = useState<string>('')
+  const [toolStats, setToolStats] = useState<ToolStat[]>([])
+
+  // Widget bottom-sheet 狀態：自動綁定最新未回答的 widgets
+  const [widgetSheetOpen, setWidgetSheetOpen] = useState(true)
+  const activeWidgetMsg = useMemo(
+    () => [...messages].reverse().find((m) => m.widgets && m.widgets.length > 0 && !m.widgetAnswered),
+    [messages],
+  )
+  // 有新 widgets 出現時自動展開 sheet
+  useEffect(() => {
+    if (activeWidgetMsg) setWidgetSheetOpen(true)
+  }, [activeWidgetMsg?.id])
 
   // 同步 ref 到最新 state
   const updateSessionId = useCallback((sid: string) => {
@@ -131,6 +149,9 @@ export function ChatInterface({
     setMessages((prev) => [...prev, userMsg])
     setInput('')
     setLoading(true)
+    setProgressPhase(null)
+    setProgressMessage('')
+    setToolStats([])
 
     // 先加一個空的 assistant message 用於 streaming 填充
     setMessages((prev) => [...prev, { id: streamingId, role: 'assistant', content: '' }])
@@ -152,14 +173,26 @@ export function ChatInterface({
             )
           )
         },
-        // onDone: 更新 message_id + session_id（永遠更新，不只第一次）
-        (sid, messageId) => {
+        // onDone: 更新 message_id + session_id，帶上 widgets（從 stream 尾端來的）
+        (sid, messageId, widgets) => {
           if (sid) updateSessionId(sid)
           setMessages((prev) =>
             prev.map((m) =>
-              m.id === streamingId ? { ...m, id: messageId } : m
+              m.id === streamingId
+                ? {
+                    ...m,
+                    id: messageId,
+                    widgets: widgets && (widgets as WidgetDefinition[]).length > 0
+                      ? (widgets as WidgetDefinition[])
+                      : m.widgets,
+                  }
+                : m
             )
           )
+          // Progress 狀態清掉
+          setProgressPhase(null)
+          setProgressMessage('')
+          setToolStats([])
         },
         // onError
         (error) => {
@@ -168,6 +201,28 @@ export function ChatInterface({
               m.id === streamingId ? { ...m, content: `Error: ${error}` } : m
             )
           )
+        },
+        // onProgress: 即時 DAG 執行進度
+        (ev: StreamProgressEvent) => {
+          setProgressPhase(ev.status)
+          if (ev.message) setProgressMessage(ev.message)
+          if (ev.status === 'tool_plan' && ev.tools) {
+            setToolStats(ev.tools.map((t) => ({ name: t.name, status: 'running' })))
+          } else if (ev.status === 'tool_start' && ev.tool_name) {
+            setToolStats((prev) => {
+              // 若 plan 沒先送（避免 race），補一個
+              if (!prev.some((t) => t.name === ev.tool_name)) {
+                return [...prev, { name: ev.tool_name!, status: 'running' }]
+              }
+              return prev
+            })
+          } else if (ev.status === 'tool_done' && ev.tool_name) {
+            setToolStats((prev) =>
+              prev.map((t) =>
+                t.name === ev.tool_name ? { ...t, status: ev.ok ? 'done' : 'error' } : t
+              )
+            )
+          }
         },
       )
     } catch (err) {
@@ -180,6 +235,9 @@ export function ChatInterface({
       )
     } finally {
       setLoading(false)
+      setProgressPhase(null)
+      setProgressMessage('')
+      setToolStats([])
     }
   }
 
@@ -278,14 +336,12 @@ export function ChatInterface({
             >
               <p className="text-sm whitespace-pre-wrap">{msg.content}</p>
 
-              {msg.widgets?.map((widget, i) => (
-                <WidgetRenderer
-                  key={i}
-                  widget={widget}
-                  onResponse={(result) => handleWidgetResponse(msg.id, widget, result)}
-                  disabled={msg.widgetAnswered}
-                />
-              ))}
+              {/* widgets 不再在這裡 inline 顯示 — 改由下方 WidgetSheet 統一處理 */}
+              {msg.widgets && msg.widgets.length > 0 && (
+                <div className="mt-2 text-[10px] text-zinc-500 italic">
+                  ↓ 回覆下方有 {msg.widgets.length} 個選項可回答
+                </div>
+              )}
 
               {msg.role === 'assistant' && !msg.metadata?.onboarding && (
                 <FeedbackBar messageId={msg.id} onFeedback={handleFeedback} />
@@ -294,7 +350,39 @@ export function ChatInterface({
           </div>
         ))}
 
-        {loading && (
+        {/* Tool-call progress chip — 在 streaming 期間若有工具進度就顯示 */}
+        {loading && (progressPhase || toolStats.length > 0) && (
+          <div className="flex justify-start">
+            <div className="rounded-xl bg-indigo-950/40 border border-indigo-700/40 px-3 py-2 max-w-[85%] space-y-1">
+              {progressMessage && (
+                <div className="flex items-center gap-2">
+                  <span className="w-1.5 h-1.5 bg-indigo-400 rounded-full animate-pulse" />
+                  <span className="text-xs text-indigo-200">{progressMessage}</span>
+                </div>
+              )}
+              {toolStats.length > 0 && (
+                <div className="flex flex-wrap gap-1.5">
+                  {toolStats.map((ts, i) => (
+                    <span
+                      key={`${ts.name}-${i}`}
+                      className={`text-[10px] font-mono px-1.5 py-0.5 rounded border ${
+                        ts.status === 'done'
+                          ? 'bg-emerald-900/40 border-emerald-700/50 text-emerald-300'
+                          : ts.status === 'error'
+                          ? 'bg-red-900/40 border-red-700/50 text-red-300'
+                          : 'bg-zinc-800/60 border-zinc-600 text-zinc-300 animate-pulse'
+                      }`}
+                    >
+                      {ts.status === 'done' ? '✓' : ts.status === 'error' ? '✗' : '⋯'} {ts.name}
+                    </span>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {loading && !progressPhase && toolStats.length === 0 && (
           <div className="flex justify-start">
             <div className="rounded-xl bg-zinc-800 border border-zinc-700 px-4 py-3">
               <div className="flex gap-1">
@@ -306,6 +394,37 @@ export function ChatInterface({
           </div>
         )}
       </div>
+
+      {/* Widget bottom-sheet — 只在有未回答 widget 時出現，由下往上滑出 */}
+      {activeWidgetMsg && activeWidgetMsg.widgets && (
+        <div className="border-t border-zinc-700 bg-zinc-850">
+          <button
+            onClick={() => setWidgetSheetOpen((v) => !v)}
+            className="w-full flex items-center justify-between px-4 py-2 text-xs text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/50 transition-colors"
+          >
+            <span className="flex items-center gap-2">
+              <span className="w-1.5 h-1.5 bg-amber-400 rounded-full animate-pulse" />
+              待回答的選項（{activeWidgetMsg.widgets.length}）
+            </span>
+            <span className="text-zinc-500">{widgetSheetOpen ? '▼ 收起' : '▲ 展開'}</span>
+          </button>
+          {widgetSheetOpen && (
+            <div
+              className="px-4 pb-3 pt-1 bg-zinc-900/60 border-t border-zinc-800 max-h-[40vh] overflow-y-auto space-y-2 animate-in slide-in-from-bottom duration-200"
+              style={{ animation: 'slideUp 200ms ease-out' }}
+            >
+              {activeWidgetMsg.widgets.map((widget, i) => (
+                <WidgetRenderer
+                  key={i}
+                  widget={widget}
+                  onResponse={(result) => handleWidgetResponse(activeWidgetMsg.id, widget, result)}
+                  disabled={activeWidgetMsg.widgetAnswered}
+                />
+              ))}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* 輸入框 */}
       <div className="border-t border-zinc-700 bg-zinc-800 px-4 py-3">

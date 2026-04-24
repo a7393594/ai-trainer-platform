@@ -80,6 +80,20 @@ class DAGContext:
         # capability 節點要寫入 ChatResponse.metadata 的額外欄位(handoff、workflow_status 等)
         self.response_metadata: dict = {}
 
+        # 可選的進度事件 sink（asyncio.Queue），若設定則 handler 會 push 即時事件
+        # 用於 SSE 串流顯示「正在規劃工具」「正在呼叫 X」等狀態
+        self.progress_sink: Optional[object] = None
+
+    def emit(self, event: dict) -> None:
+        """Best-effort 推事件到 progress_sink。若 sink 不存在或推失敗，靜默忽略。"""
+        sink = self.progress_sink
+        if sink is None:
+            return
+        try:
+            sink.put_nowait(event)
+        except Exception:
+            pass
+
 
 # ============================================================================
 # Node handlers — each returns NodeResult dict
@@ -348,6 +362,9 @@ async def _plan_and_execute(
     total_out = 0
     total_latency_ms = 0
 
+    # 開始 — 告訴前端「要用 plan-and-execute」
+    ctx.emit({"status": "thinking", "message": "規劃要呼叫哪些工具…"})
+
     # ─── Step 1: Plan ────────────────────────────────────────────────
     # 用 tools_payload（已轉成 LLM 標準格式，含正確 schema）做完整描述
     tools_desc_full = json.dumps(
@@ -453,6 +470,13 @@ async def _plan_and_execute(
     })
     print(f"[INFO] planning ok: {len(plan)} calls planned with {planner_model}", flush=True)
 
+    # 告訴前端：規劃了 N 個工具、即將平行執行
+    ctx.emit({
+        "status": "tool_plan",
+        "message": f"規劃了 {len(plan)} 個工具呼叫，即將平行執行",
+        "tools": [{"name": p.get("name"), "params": p.get("params")} for p in plan],
+    })
+
     # ─── Step 2: Parallel execute ────────────────────────────────────
     _start = time.time()
 
@@ -529,6 +553,7 @@ async def _plan_and_execute(
     async def _run_one(tc, allow_retry=True):
         name = tc.get("name")
         params = tc.get("params") or {}
+        ctx.emit({"status": "tool_start", "tool_name": name, "params": params})
         try:
             r = await tool_registry.execute_tool_by_name(
                 name=name, params=params, tools=ctx.db_tools,
@@ -537,6 +562,7 @@ async def _plan_and_execute(
         except Exception as e:
             r = {"error": str(e)}
             status = "error"
+        ctx.emit({"status": "tool_done", "tool_name": name, "ok": status == "ok"})
         # Retry with autofix for duplicate-card errors
         if status == "error" and allow_retry:
             err_str = json.dumps(r, ensure_ascii=False).lower()
@@ -576,6 +602,12 @@ async def _plan_and_execute(
         "latency_ms": _exec_lat,
         "text_preview": f"{ok_count}/{len(tool_results)} tools succeeded",
         "finish_reason": "executed",
+    })
+
+    # 告訴前端：工具都跑完了，現在整理回覆
+    ctx.emit({
+        "status": "synthesizing",
+        "message": f"整理 {ok_count} 個工具結果，正在撰寫回覆…",
     })
 
     # ─── Step 3: Synthesis ───────────────────────────────────────────
@@ -1476,6 +1508,7 @@ async def execute_dag(
     session_id: Optional[str] = None,
     persist: bool = False,
     pre_loaded_history: Optional[list[dict]] = None,
+    progress_sink: Optional[object] = None,
 ) -> dict:
     """執行一個 DAG 定義。
 
@@ -1507,6 +1540,7 @@ async def execute_dag(
         persist=persist,
         pre_loaded_history=pre_loaded_history,
     )
+    ctx.progress_sink = progress_sink
 
     order = _topological_order(nodes, edges)
     trace: list[dict] = []

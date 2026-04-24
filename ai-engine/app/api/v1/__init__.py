@@ -113,17 +113,32 @@ async def chat_stream(request: ChatRequest):
     async def generate():
         try:
             if settings.use_dag_executor_for_chat:
-                # DAG 路徑：執行完 DAG 後把 final_text 當成 stream 分塊送
+                # DAG 路徑：背景跑 DAG，同時從 progress queue 即時串流事件給前端
                 from app.core.pipeline.chat_adapter import process_via_dag
                 import asyncio as _asyncio
-                # 先回 session 占位（若 request 沒提供）
-                if not request.session_id:
-                    pass  # chat_adapter 會自己建 session；client 會從 done 事件拿到 message_id
-                response = await process_via_dag(request)
+                progress_queue: _asyncio.Queue = _asyncio.Queue()
+                dag_task = _asyncio.create_task(process_via_dag(request, progress_sink=progress_queue))
+                # 邊跑邊串 progress event
+                while not dag_task.done():
+                    try:
+                        event = await _asyncio.wait_for(progress_queue.get(), timeout=0.2)
+                        yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+                    except _asyncio.TimeoutError:
+                        continue
+                # 排完剩下的 progress events
+                while not progress_queue.empty():
+                    try:
+                        event = progress_queue.get_nowait()
+                        yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+                    except _asyncio.QueueEmpty:
+                        break
+                # 取 DAG 最終結果
+                response = await dag_task
                 if response.session_id:
                     yield f"data: {json.dumps({'session_id': response.session_id}, ensure_ascii=False)}\n\n"
                 # pseudo-stream：把 message 切成 ~40 字一塊，每塊間隔 20ms 模擬打字感
-                text = response.message or ""
+                # response.message 是 ChatMessage(role, content)，取 content
+                text = response.message.content if response.message else ""
                 chunk_size = 40
                 for i in range(0, len(text), chunk_size):
                     chunk = text[i:i + chunk_size]

@@ -24,8 +24,12 @@ from app.core.pipeline.dag_executor import execute_dag
 from app.db import crud
 
 
-async def process_via_dag(request: ChatRequest) -> ChatResponse:
-    """/chat 的 DAG 替代路徑。"""
+async def process_via_dag(request: ChatRequest, progress_sink: Optional[object] = None) -> ChatResponse:
+    """/chat 的 DAG 替代路徑。
+
+    若 progress_sink (asyncio.Queue) 傳入，DAG 的 call_model 會推
+    plan/tool/synthesis 進度事件（給 /chat/stream 即時串流）。
+    """
     # 1. 解析 user_id
     user_id = request.user_id
     if not user_id:
@@ -69,6 +73,7 @@ async def process_via_dag(request: ChatRequest) -> ChatResponse:
             session_id=session_id,
             persist=True,
             pre_loaded_history=history,
+            progress_sink=progress_sink,
         )
         # 對齊 agent.py:150-152：把 assistant_message_id 連結回 pipeline run
         run = current_run()

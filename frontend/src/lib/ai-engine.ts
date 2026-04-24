@@ -42,12 +42,22 @@ export async function sendMessage(req: ChatRequest): Promise<ChatResponse> {
   })
 }
 
-/** Streaming 對話 — 逐字回傳 */
+export interface StreamProgressEvent {
+  status: 'thinking' | 'tool_plan' | 'tool_start' | 'tool_done' | 'synthesizing' | string
+  message?: string
+  tool_name?: string
+  tools?: Array<{ name: string; params?: unknown }>
+  ok?: boolean
+  params?: unknown
+}
+
+/** Streaming 對話 — 逐字回傳，含工具呼叫進度事件 */
 export async function sendMessageStream(
   req: ChatRequest,
   onChunk: (content: string) => void,
-  onDone: (sessionId: string, messageId: string) => void,
+  onDone: (sessionId: string, messageId: string, widgets?: unknown[]) => void,
   onError?: (error: string) => void,
+  onProgress?: (event: StreamProgressEvent) => void,
 ): Promise<void> {
   const res = await fetch(`${AI_ENGINE_URL}/api/v1/chat/stream`, {
     method: 'POST',
@@ -78,7 +88,8 @@ export async function sendMessageStream(
         const data = JSON.parse(line.slice(6))
         if (data.session_id) sessionId = data.session_id
         if (data.content) onChunk(data.content)
-        if (data.done) onDone(sessionId, data.message_id)
+        if (data.status && onProgress) onProgress(data as StreamProgressEvent)
+        if (data.done) onDone(sessionId, data.message_id, data.widgets)
         if (data.error) onError?.(data.error)
       } catch {}
     }
