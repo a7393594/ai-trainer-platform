@@ -6,26 +6,60 @@ import { listDags, compareDags, type PipelineDAG, type ABCompareResult, type ABT
 
 type Verdict = 'a' | 'b' | 'tie' | null
 
-// ── Model pricing (USD per 1M tokens) ──────────────────────────────────────
-const MODEL_PRICING: Record<string, { in: number; out: number }> = {
-  'claude-haiku-4-5-20251001': { in: 0.25, out: 1.25 },
-  'claude-haiku-4-5': { in: 0.25, out: 1.25 },
-  'claude-haiku-3-5': { in: 0.8, out: 4.0 },
-  'claude-sonnet-4-20250514': { in: 3.0, out: 15.0 },
+// ── Model pricing fallback (USD per 1M tokens) ─────────────────────────────
+// Backend now returns cost_usd directly; this table is only used when the
+// backend payload doesn't include cost (legacy traces, single-iteration spans
+// without usage info, etc.). Keep aligned with ai-engine/app/core/llm_router/models.py.
+const MODEL_PRICING_FALLBACK: Record<string, { in: number; out: number }> = {
+  // Claude (current)
+  'claude-opus-4-6': { in: 5.0, out: 25.0 },
   'claude-sonnet-4-6': { in: 3.0, out: 15.0 },
-  'claude-sonnet-3-7': { in: 3.0, out: 15.0 },
-  'claude-opus-4-7': { in: 15.0, out: 75.0 },
-  'gpt-4o': { in: 2.5, out: 10.0 },
+  'claude-haiku-4-5': { in: 1.0, out: 5.0 },
+  'claude-haiku-4-5-20251001': { in: 1.0, out: 5.0 },
+  // Claude (older)
+  'claude-opus-4-5-20251101': { in: 5.0, out: 25.0 },
+  'claude-sonnet-4-5-20250929': { in: 3.0, out: 15.0 },
+  'claude-sonnet-4-20250514': { in: 3.0, out: 15.0 },
+  'claude-opus-4-20250514': { in: 15.0, out: 75.0 },
+  'claude-3-5-sonnet-20241022': { in: 3.0, out: 15.0 },
+  'claude-3-5-haiku-20241022': { in: 0.8, out: 4.0 },
+  'claude-3-haiku-20240307': { in: 0.25, out: 1.25 },
+  // OpenAI
+  'gpt-5.4': { in: 8.0, out: 24.0 },
+  'gpt-5.4-mini': { in: 0.15, out: 0.6 },
+  'gpt-5.4-nano': { in: 0.05, out: 0.15 },
   'gpt-4o-mini': { in: 0.15, out: 0.6 },
+  'gpt-4o': { in: 2.5, out: 10.0 },
+  'gpt-4.1': { in: 3.0, out: 12.0 },
+  // Google
+  'gemini-3.1-pro': { in: 1.25, out: 10.0 },
+  'gemini-3.1-flash': { in: 0.15, out: 0.6 },
+  'gemini-2.5-pro': { in: 1.25, out: 10.0 },
+  'gemini-2.5-flash': { in: 0.15, out: 0.6 },
+  'gemini-2.0-flash': { in: 0.075, out: 0.3 },
   'gemini-1.5-pro': { in: 1.25, out: 5.0 },
   'gemini-1.5-flash': { in: 0.075, out: 0.3 },
 }
 
-function calcCost(model: string, tokensIn: number, tokensOut: number): number {
-  const key = Object.keys(MODEL_PRICING).find((k) => model.includes(k)) ?? ''
-  const p = MODEL_PRICING[key]
-  if (!p) return 0
+function calcCostFallback(model: string, tokensIn: number, tokensOut: number): number {
+  if (!model || (!tokensIn && !tokensOut)) return 0
+  // Prefer exact match; fall back to longest substring match so versioned IDs
+  // (e.g. "gpt-5.4-mini") still pick up the base entry.
+  const exact = MODEL_PRICING_FALLBACK[model]
+  if (exact) return (tokensIn * exact.in + tokensOut * exact.out) / 1_000_000
+  const candidates = Object.keys(MODEL_PRICING_FALLBACK)
+    .filter((k) => model.includes(k))
+    .sort((a, b) => b.length - a.length)
+  const key = candidates[0]
+  if (!key) return 0
+  const p = MODEL_PRICING_FALLBACK[key]
   return (tokensIn * p.in + tokensOut * p.out) / 1_000_000
+}
+
+/** Resolve cost: prefer backend-provided value; fall back to client pricing table. */
+function resolveCost(side: { cost_usd?: number; model: string; tokens_in: number; tokens_out: number }): number {
+  if (typeof side.cost_usd === 'number' && side.cost_usd > 0) return side.cost_usd
+  return calcCostFallback(side.model, side.tokens_in, side.tokens_out)
 }
 
 // ── Status badge ───────────────────────────────────────────────────────────
@@ -385,7 +419,7 @@ function SidePanel({
   data: ABSideResult
   highlighted: boolean
 }) {
-  const cost = calcCost(data.model, data.tokens_in, data.tokens_out)
+  const cost = resolveCost(data)
   const borderCls = highlighted
     ? side === 'A' ? 'border-blue-500 bg-blue-500/10' : 'border-emerald-500 bg-emerald-500/10'
     : 'border-zinc-700 bg-zinc-900/50'
@@ -582,8 +616,8 @@ export default function DAGComparePage() {
               </span>
               {/* Aggregate cost */}
               {result.results.length > 0 && (() => {
-                const totalA = result.results.reduce((s, r) => s + calcCost(r.a.model, r.a.tokens_in, r.a.tokens_out), 0)
-                const totalB = result.results.reduce((s, r) => s + calcCost(r.b.model, r.b.tokens_in, r.b.tokens_out), 0)
+                const totalA = result.results.reduce((s, r) => s + resolveCost(r.a), 0)
+                const totalB = result.results.reduce((s, r) => s + resolveCost(r.b), 0)
                 if (totalA === 0 && totalB === 0) return null
                 return (
                   <span className="text-[10px] text-zinc-400">

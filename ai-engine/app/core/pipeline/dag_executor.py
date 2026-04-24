@@ -1970,6 +1970,7 @@ async def execute_dag(
         "response_metadata": ctx.response_metadata,
         "total_tokens_in": ctx.total_tokens_in,
         "total_tokens_out": ctx.total_tokens_out,
+        "total_cost_usd": ctx.total_cost_usd,
         "guardrail_triggered": ctx.guardrail_triggered,
         "trace": trace,
     }

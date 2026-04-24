@@ -30,7 +30,7 @@ import logging
 import re
 from typing import Any
 
-from app.core.llm_router.router import chat_completion
+from app.core.llm_router.router import calculate_cost, chat_completion
 from app.core.pipeline.template import render_template
 from app.core.tools.registry import tool_registry
 from app.db import crud
@@ -86,6 +86,20 @@ def _extract_first_json(text: str) -> dict | None:
                     except (ValueError, TypeError):
                         break
     return None
+
+
+def _accumulate_to_ctx(ctx: Any, model: str, tokens_in: int, tokens_out: int) -> float:
+    """Accumulate tokens + cost into ctx aggregates and return this call's cost.
+
+    Mirrors the legacy handle_call_model behaviour so total_tokens_in/out and
+    total_cost_usd remain the source of truth for downstream consumers (compare
+    endpoint, /chat metadata, pipeline_runs aggregate).
+    """
+    cost = calculate_cost(model, tokens_in, tokens_out)
+    ctx.total_tokens_in += int(tokens_in or 0)
+    ctx.total_tokens_out += int(tokens_out or 0)
+    ctx.total_cost_usd += float(cost or 0)
+    return cost
 
 
 def _build_user_message(cfg: dict, ctx: Any) -> str:
@@ -191,19 +205,23 @@ async def handle_model_call(node: dict, ctx: Any) -> dict:
 
         text = (resp.choices[0].message.content or "").strip()
         usage = getattr(resp, "usage", None)
-        output["tokens_in"] += int(getattr(usage, "prompt_tokens", 0) or 0) if usage else 0
-        output["tokens_out"] += int(getattr(usage, "completion_tokens", 0) or 0) if usage else 0
+        ti = int(getattr(usage, "prompt_tokens", 0) or 0) if usage else 0
+        to = int(getattr(usage, "completion_tokens", 0) or 0) if usage else 0
+        output["tokens_in"] += ti
+        output["tokens_out"] += to
+        output["cost_usd"] += _accumulate_to_ctx(ctx, model, ti, to)
         output["text"] = text
 
         if output_format == "text":
             ctx.llm_response_text = text  # bubble to ctx for output node
-            return {"status": "ok", "output": output, "summary": f"text · {len(text)} chars"}
+            return {"status": "ok", "output": output, "summary": f"text · {len(text)} chars · ${output['cost_usd']:.4f}"}
 
         # JSON mode
         parsed = _extract_first_json(text)
         if parsed is not None:
             output["json"] = parsed
-            return {"status": "ok", "output": output, "summary": f"json · keys={list(parsed)[:5] if isinstance(parsed, dict) else 'array'}"}
+            keys_summary = list(parsed)[:5] if isinstance(parsed, dict) else 'array'
+            return {"status": "ok", "output": output, "summary": f"json · keys={keys_summary} · ${output['cost_usd']:.4f}"}
         last_error = f"JSON parse failed; got: {text[:200]}"
         if attempt < retry_on_parse_fail:
             messages.append({"role": "user", "content": "Your last reply was not valid JSON. Please reply with ONLY valid JSON, no prose."})
@@ -231,11 +249,14 @@ async def _run_tool_calls_mode(
             )
             text = (resp.choices[0].message.content or "").strip()
             usage = getattr(resp, "usage", None)
+            ti = int(getattr(usage, "prompt_tokens", 0) or 0) if usage else 0
+            to = int(getattr(usage, "completion_tokens", 0) or 0) if usage else 0
             output["text"] = text
-            output["tokens_in"] = int(getattr(usage, "prompt_tokens", 0) or 0) if usage else 0
-            output["tokens_out"] = int(getattr(usage, "completion_tokens", 0) or 0) if usage else 0
+            output["tokens_in"] = ti
+            output["tokens_out"] = to
+            output["cost_usd"] = _accumulate_to_ctx(ctx, model, ti, to)
             ctx.llm_response_text = text
-            return {"status": "ok", "output": output, "summary": "no tools → text-only"}
+            return {"status": "ok", "output": output, "summary": f"no tools → text-only · ${output['cost_usd']:.4f}"}
         except Exception as e:
             return {"status": "error", "summary": f"LLM 呼叫失敗: {e}", "error": str(e)}
 
@@ -256,9 +277,11 @@ async def _run_tool_calls_mode(
 
         msg = resp.choices[0].message
         usage = getattr(resp, "usage", None)
-        if usage:
-            output["tokens_in"] += int(getattr(usage, "prompt_tokens", 0) or 0)
-            output["tokens_out"] += int(getattr(usage, "completion_tokens", 0) or 0)
+        ti = int(getattr(usage, "prompt_tokens", 0) or 0) if usage else 0
+        to = int(getattr(usage, "completion_tokens", 0) or 0) if usage else 0
+        output["tokens_in"] += ti
+        output["tokens_out"] += to
+        output["cost_usd"] += _accumulate_to_ctx(ctx, model, ti, to)
 
         tool_calls = getattr(msg, "tool_calls", None) or []
         text_part = (msg.content or "").strip() if msg.content else ""
@@ -312,5 +335,5 @@ async def _run_tool_calls_mode(
 
     output["text"] = final_text
     ctx.llm_response_text = final_text
-    summary = f"tool_calls · iter={output['iterations']}, text {len(final_text)} chars, {len(output['tool_results'])} tool calls"
+    summary = f"tool_calls · iter={output['iterations']} · {len(output['tool_results'])} tools · ${output['cost_usd']:.4f}"
     return {"status": "ok", "output": output, "summary": summary}

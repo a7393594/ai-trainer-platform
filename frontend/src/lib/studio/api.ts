@@ -309,6 +309,8 @@ export interface ABSideResult {
   model: string
   tokens_in: number
   tokens_out: number
+  /** Backend-computed cost (USD). Falls back to client estimate via calcCost when missing. */
+  cost_usd?: number
   latency_ms: number
   trace: ABTraceEntry[]
   error?: string | null

@@ -885,6 +885,7 @@ async def compare_dags(req: ABCompareRequest):
                     "model": _find_call_model(dag),
                     "tokens_in": result.get("total_tokens_in", 0),
                     "tokens_out": result.get("total_tokens_out", 0),
+                    "cost_usd": float(result.get("total_cost_usd", 0) or 0),
                     "latency_ms": sum(s.get("latency_ms", 0) for s in result.get("trace", [])),
                     "guardrail_triggered": result.get("guardrail_triggered", False),
                     "widget_count": len(result.get("widgets", [])),
@@ -897,7 +898,7 @@ async def compare_dags(req: ABCompareRequest):
                     continue
                 return {
                     "output": "", "model": _find_call_model(dag),
-                    "tokens_in": 0, "tokens_out": 0, "latency_ms": 0,
+                    "tokens_in": 0, "tokens_out": 0, "cost_usd": 0.0, "latency_ms": 0,
                     "trace": [], "error": str(e),
                 }
 
