@@ -93,6 +93,15 @@ class DAGContext:
         # load_knowledge 用 knowledge_points 做定向 RAG；compose_prompt 注入 warnings 和混合人格
         self.analysis: Optional[dict] = None
 
+        # ── New primitive infrastructure (MVP-1) ──────────────────────────────
+        # Per-node output snapshots, for {{node_id.field}} variable substitution
+        # in downstream model_call / branch nodes. Keyed by node_id, value is
+        # the handler's `output` dict.
+        self.node_outputs: dict[str, dict] = {}
+        # Set of node_ids that an upstream `branch` node decided NOT to take.
+        # The execute_dag loop checks this before running a node and skips if hit.
+        self.skipped_by_branch: set[str] = set()
+
     def emit(self, event: dict) -> None:
         """Best-effort 推事件到 progress_sink。若 sink 不存在或推失敗，靜默忽略。"""
         sink = self.progress_sink
@@ -1735,6 +1744,17 @@ HANDLERS: dict[str, NodeHandler] = {
     "workflow_continue": handle_workflow_continue,
 }
 
+# ── MVP-1: 3 primitive 註冊（新通用節點）─────────────────────────────
+# 直接 import + 註冊到 HANDLERS。新節點與舊節點並存，使用者可自由選用。
+try:
+    from app.core.pipeline.handlers.model_call import handle_model_call as _handle_model_call_v2
+    from app.core.pipeline.handlers.branch import handle_branch as _handle_branch
+    HANDLERS["model_call"] = _handle_model_call_v2  # 注意：取代舊 call_model 必須在 DB type_key migrate 後才會被使用
+    HANDLERS["branch"] = _handle_branch
+except ImportError as _e:
+    import logging as _logging
+    _logging.getLogger(__name__).warning("MVP-1 handler import failed: %s", _e)
+
 
 # ============================================================================
 # Executor
@@ -1867,6 +1887,8 @@ async def execute_dag(
     )
     ctx.progress_sink = progress_sink
     ctx.mode_prompt = mode_prompt
+    # MVP-1: branch handler needs edges to compute downstream skip set
+    ctx._dag_edges = edges  # type: ignore[attr-defined]
 
     order = _topological_order(nodes, edges)
     trace: list[dict] = []
@@ -1882,6 +1904,13 @@ async def execute_dag(
             "label": node.get("label"),
             "type_key": type_key,
         }
+
+        # MVP-1: branch upstream may have marked us as not-taken.
+        if node_id in ctx.skipped_by_branch:
+            entry.update({"status": "skipped", "summary": "上游 branch 未選此路", "latency_ms": 0})
+            trace.append(entry)
+            continue
+
         if not handler:
             entry.update({"status": "skipped", "summary": f"未知節點類型:{type_key}"})
             trace.append(entry)
@@ -1907,6 +1936,11 @@ async def execute_dag(
         entry.update(result)
         entry["latency_ms"] = latency
         trace.append(entry)
+
+        # MVP-1: snapshot this node's output for downstream {{node.field}} access.
+        out = result.get("output")
+        if isinstance(out, dict):
+            ctx.node_outputs[node_id] = out
 
         # Fatal error: stop
         if result.get("status") == "error" and type_key in ("call_model", "guardrail"):
