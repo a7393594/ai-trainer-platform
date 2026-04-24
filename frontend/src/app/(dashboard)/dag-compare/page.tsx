@@ -35,6 +35,148 @@ function StatusBadge({ status }: { status: string }) {
   return <span className="text-[9px] rounded px-1 bg-red-900/60 text-red-400">err</span>
 }
 
+// ── Node type metadata: 用途 + 作動方式 ────────────────────────────────────
+interface NodeInfo { purpose: string; behavior: string; fieldHints?: Record<string, string> }
+const NODE_TYPE_INFO: Record<string, NodeInfo> = {
+  user_input: {
+    purpose: '接收使用者訊息，把原始 input 放入執行上下文。',
+    behavior: '從請求參數讀 user_message，長度、字數就在此紀錄。後續所有節點都從 ctx.user_message 取用。',
+  },
+  load_history: {
+    purpose: '從資料庫載入歷史對話訊息，組成上下文一部分。',
+    behavior: '預設從 session_id 往前抓最近 20 則訊息；測試模式（DAG 測試）會跳過不連資料庫。',
+  },
+  triage: {
+    purpose: '意圖分類（關鍵字規則版），判斷使用者訊息屬於一般對話、capability rule、或進行中 workflow。',
+    behavior: '用固定關鍵字 + 正則掃 user_message，比對 project 的 capability rules；設定在 ctx.intent_type / ctx.intent_rule。',
+  },
+  triage_llm: {
+    purpose: '意圖分類（LLM 版），用便宜模型判斷該不該走某個 capability rule。',
+    behavior: '列出所有 project capability rules 給分類器，要求輸出 `{"type":"general"}` 或 `{"type":"capability_rule","rule_index":N}`。失敗降級到 keyword 分類。',
+    fieldHints: {
+      intent_type: '最終分類結果：general / capability_rule / active_workflow',
+      matched: '若為 capability_rule，對應的規則描述',
+      action_type: 'capability_rule 的處理動作（tool_call / workflow / handoff / widget）',
+      model_used: '實際用的分類模型',
+    },
+  },
+  capability_tool_call: {
+    purpose: 'Capability rule 走 tool_call 動作 — 直接呼叫預設工具組。',
+    behavior: 'condition 要求 intent_type=capability_rule AND action_type=tool_call 才執行；跳過就是條件不符。',
+  },
+  capability_workflow: {
+    purpose: 'Capability rule 走 workflow 動作 — 啟動一個 workflow 模板。',
+    behavior: 'condition 要求 action_type=workflow；啟動後 ctx.intent_type 會變成 active_workflow。',
+  },
+  capability_handoff: {
+    purpose: 'Capability rule 走 handoff 動作 — 轉交給真人或特定 agent。',
+    behavior: 'condition 要求 action_type=handoff；寫入 handoff 訊息到輸出。',
+  },
+  capability_widget: {
+    purpose: 'Capability rule 走 widget 動作 — 回傳預定義 widget + 可選的 LLM 文字回覆。',
+    behavior: 'condition 要求 action_type=widget。',
+  },
+  workflow_continue: {
+    purpose: '若目前 session 正在跑 workflow，繼續下一步。',
+    behavior: 'condition 要求 intent_type=active_workflow 才執行。',
+  },
+  load_knowledge: {
+    purpose: 'RAG 檢索 — 找與 user_message 相關的知識片段。',
+    behavior: '優先走 Qdrant 向量搜尋，失敗 fallback 到 pgvector 再 fallback 到 keyword；結果寫到 ctx.rag_context。',
+    fieldHints: {
+      chunk_count: '取回的片段數量',
+      total_chars: 'RAG 內容字數',
+      rag_preview: '前 1000 字預覽（完整內容會帶進 prompt）',
+      query: '實際做搜尋的查詢字串',
+    },
+  },
+  compose_prompt: {
+    purpose: '把 system prompt 前綴 + project active prompt + WIDGET_INSTRUCTION 組合；組完後連同 RAG、history、user message 形成 ctx.messages。',
+    behavior: '讀 active prompt（A/B 變體感知）；若 config.system_prompt_prefix 有值會插在最前面。',
+    fieldHints: {
+      message_count: '最終訊息陣列長度（system + rag + history + user）',
+      system_prompt_length: 'system prompt 字數',
+      system_prompt_preview: 'system prompt 前 1500 字',
+      has_rag: '是否有 RAG 內容',
+      has_prefix: '是否設了 prefix',
+      history_count: '歷史訊息數',
+      user_message: '原始使用者問題',
+    },
+  },
+  call_model: {
+    purpose: '主模型呼叫 — 執行 tool_loop 或 plan_and_execute（若啟用）。',
+    behavior: 'planning_mode=false 時走傳統迴圈：模型決定呼叫工具、執行、回塞結果、再問。最多 max_iterations 輪。若耗盡仍無文字 → 三層合成（L1 tool_choice=none / L2 乾淨上下文 / L3 工具結果純文字）。planning_mode=true 時改用 planner 一次列全部 tool、平行執行、合成。',
+    fieldHints: {
+      model: '主模型（tool_loop 用）',
+      synthesis_model: '合成階段用的模型（可與主模型不同，例如 Haiku）',
+      planner_model: 'planning_mode 下的規劃模型',
+      planning_mode: '啟用 plan-and-execute 架構（省 ~80% 成本）',
+      max_iterations: 'tool_loop 最多迭代次數（達到後進入合成）',
+      iterations: '實際跑的 iteration 次數',
+      tool_calls_total: '執行的 tool_call 總數',
+      synthesis_layer: '實際觸發的合成層（L1/L2/L3 或空 = 模型自然返回文字）',
+      iteration_details: '每輪詳細：phase / tokens / latency / finish_reason',
+    },
+  },
+  execute_tools: {
+    purpose: '顯示 call_model 節點內已執行的工具結果（不另外執行工具）。',
+    behavior: '讀 ctx.tool_results 彙整；實際執行是在 call_model 裡同步發生。',
+    fieldHints: {
+      iterations: 'call_model 走了幾輪',
+      total_calls: '工具呼叫總數',
+      results: '每次呼叫的 params / result / status 完整紀錄',
+    },
+  },
+  parse_widget: {
+    purpose: '從主模型回應抽取 widget 標記，分離出純文字答覆。',
+    behavior: '正則找 `<!--WIDGET:{json}-->`，JSON 放 ctx.widgets，剩下 text 放 ctx.clean_text。',
+    fieldHints: {
+      widget_count: '抽出的 widget 數量',
+      clean_length: '移掉 widget 標記後的文字字數',
+      raw_length: '原始 llm_response_text 字數',
+      clean_preview: 'clean_text 前 500 字',
+    },
+  },
+  guardrail: {
+    purpose: '禁用詞檢查；觸發後可選擇警告、阻擋、或重試。',
+    behavior: '對 ctx.llm_response_text 做不分大小寫的子字串比對；action=block 時覆寫回應為固定字串。',
+  },
+  retry: {
+    purpose: '標記前一節點若失敗要重試（MVP 尚未接入實際重試邏輯）。',
+    behavior: 'config 讀 max_retries / backoff_ms，但目前 DAG executor 未支援真正重試。',
+  },
+  output: {
+    purpose: '組最終輸出；生產模式會寫 ait_training_messages。',
+    behavior: 'final_text = ctx.clean_text || ctx.llm_response_text。metadata 帶 widgets / tool_results。測試模式不落庫。',
+    fieldHints: {
+      final_text_length: '輸出字數',
+      final_text_preview: '前 1000 字預覽',
+      widget_count: 'metadata 裡的 widget 數',
+      total_tokens_in: '整條 pipeline 累積輸入 tokens',
+      total_tokens_out: '整條 pipeline 累積輸出 tokens',
+      tool_call_count: '整條 pipeline 的工具呼叫數',
+      assistant_message_id: '若有落庫，對應的 message id',
+    },
+  },
+}
+
+function NodeTypeInfoBlock({ typeKey }: { typeKey: string }) {
+  const info = NODE_TYPE_INFO[typeKey]
+  if (!info) return null
+  return (
+    <div className="mb-2 p-2 rounded bg-blue-950/20 border border-blue-900/40 space-y-1">
+      <div>
+        <span className="text-[9px] uppercase text-blue-400 font-semibold">用途</span>
+        <p className="text-[10px] text-zinc-300 leading-relaxed">{info.purpose}</p>
+      </div>
+      <div>
+        <span className="text-[9px] uppercase text-blue-400 font-semibold">作動方式</span>
+        <p className="text-[10px] text-zinc-300 leading-relaxed">{info.behavior}</p>
+      </div>
+    </div>
+  )
+}
+
 // ── Per-node detail view ──────────────────────────────────────────────────
 function IterationTable({ iters }: { iters: Array<Record<string, unknown>> }) {
   return (
@@ -101,19 +243,42 @@ function ToolResultList({ results }: { results: Array<Record<string, unknown>> }
   )
 }
 
-function NodeDetail({ output }: { output: Record<string, unknown> }) {
+function FieldLabel({ fieldKey, hints }: { fieldKey: string; hints?: Record<string, string> }) {
+  const hint = hints?.[fieldKey]
+  return (
+    <span className="text-[9px] text-zinc-500" title={hint || fieldKey}>
+      {fieldKey}
+      {hint && <span className="ml-1 text-zinc-600">— {hint}</span>}
+      ：
+    </span>
+  )
+}
+
+function NodeDetail({ output, typeKey }: { output: Record<string, unknown>; typeKey?: string }) {
+  const info = typeKey ? NODE_TYPE_INFO[typeKey] : undefined
+  const fieldHints = info?.fieldHints
   if (!output || Object.keys(output).length === 0) {
-    return <div className="text-[9px] text-zinc-500 italic">無詳細資料</div>
+    return (
+      <div>
+        {typeKey && <NodeTypeInfoBlock typeKey={typeKey} />}
+        <div className="text-[9px] text-zinc-500 italic">此節點未輸出執行資料（可能被 skip 或是純中繼）。</div>
+      </div>
+    )
   }
   const entries = Object.entries(output)
   return (
-    <div className="space-y-1 text-[10px]">
+    <div>
+      {typeKey && <NodeTypeInfoBlock typeKey={typeKey} />}
+      <div className="mb-1">
+        <span className="text-[9px] uppercase text-emerald-400 font-semibold">目前執行內容</span>
+      </div>
+      <div className="space-y-1 text-[10px]">
       {entries.map(([key, value]) => {
         // Special renderings
         if (key === 'iteration_details' && Array.isArray(value)) {
           return (
             <div key={key}>
-              <div className="text-[9px] text-zinc-500 mb-0.5">iteration_details：</div>
+              <FieldLabel fieldKey={key} hints={fieldHints} />
               <IterationTable iters={value as Array<Record<string, unknown>>} />
             </div>
           )
@@ -121,7 +286,7 @@ function NodeDetail({ output }: { output: Record<string, unknown> }) {
         if (key === 'results' && Array.isArray(value)) {
           return (
             <div key={key}>
-              <div className="text-[9px] text-zinc-500 mb-0.5">results：</div>
+              <FieldLabel fieldKey={key} hints={fieldHints} />
               <ToolResultList results={value as Array<Record<string, unknown>>} />
             </div>
           )
@@ -130,7 +295,7 @@ function NodeDetail({ output }: { output: Record<string, unknown> }) {
         if (typeof value === 'string' && value.length > 80) {
           return (
             <div key={key}>
-              <div className="text-[9px] text-zinc-500">{key}：</div>
+              <FieldLabel fieldKey={key} hints={fieldHints} />
               <pre className="text-[10px] text-zinc-300 whitespace-pre-wrap bg-zinc-950/40 border border-zinc-700/40 rounded p-1 max-h-40 overflow-y-auto">{value}</pre>
             </div>
           )
@@ -139,33 +304,35 @@ function NodeDetail({ output }: { output: Record<string, unknown> }) {
         if (typeof value === 'object' && value !== null) {
           return (
             <div key={key}>
-              <div className="text-[9px] text-zinc-500">{key}：</div>
+              <FieldLabel fieldKey={key} hints={fieldHints} />
               <pre className="text-[9px] text-zinc-400 whitespace-pre-wrap bg-zinc-950/40 border border-zinc-700/40 rounded p-1 max-h-40 overflow-y-auto">{JSON.stringify(value, null, 2)}</pre>
             </div>
           )
         }
         // Scalar → inline
         return (
-          <div key={key} className="flex gap-2">
-            <span className="text-[9px] text-zinc-500 shrink-0">{key}：</span>
+          <div key={key} className="flex gap-2 items-baseline">
+            <FieldLabel fieldKey={key} hints={fieldHints} />
             <span className="text-[10px] text-zinc-300 break-all">{String(value)}</span>
           </div>
         )
       })}
+      </div>
     </div>
   )
 }
 
 function TraceRow({ t, index }: { t: ABTraceEntry; index: number }) {
   const [open, setOpen] = useState(false)
-  const hasDetail = !!(t.output && Object.keys(t.output).length > 0)
+  // Even nodes without output have a type_key description worth showing
+  const hasContent = !!((t.output && Object.keys(t.output).length > 0) || (t.type_key && NODE_TYPE_INFO[t.type_key]))
   return (
     <div className="border-b border-zinc-800/50 last:border-b-0">
       <button
-        onClick={() => hasDetail && setOpen((v) => !v)}
-        className={`w-full flex items-start gap-2 py-1 px-1 text-left ${hasDetail ? 'hover:bg-zinc-800/30 cursor-pointer' : 'cursor-default'}`}
+        onClick={() => hasContent && setOpen((v) => !v)}
+        className={`w-full flex items-start gap-2 py-1 px-1 text-left ${hasContent ? 'hover:bg-zinc-800/30 cursor-pointer' : 'cursor-default'}`}
       >
-        <span className="text-[9px] text-zinc-600 w-4 shrink-0">{hasDetail ? (open ? '▾' : '▸') : ' '}</span>
+        <span className="text-[9px] text-zinc-600 w-4 shrink-0">{hasContent ? (open ? '▾' : '▸') : ' '}</span>
         <span className="text-[9px] text-zinc-600 w-5 shrink-0">{index + 1}</span>
         <StatusBadge status={t.status} />
         <span className="text-[10px] text-zinc-400 shrink-0 w-28 truncate" title={t.label}>{t.label || t.type_key}</span>
@@ -174,9 +341,9 @@ function TraceRow({ t, index }: { t: ABTraceEntry; index: number }) {
           {t.latency_ms > 0 ? `${t.latency_ms}ms` : '—'}
         </span>
       </button>
-      {open && hasDetail && (
+      {open && (
         <div className="pl-6 pr-2 pb-2 pt-1 bg-zinc-950/30 border-t border-zinc-800/50">
-          <NodeDetail output={t.output as Record<string, unknown>} />
+          <NodeDetail output={(t.output as Record<string, unknown>) || {}} typeKey={t.type_key} />
         </div>
       )}
     </div>

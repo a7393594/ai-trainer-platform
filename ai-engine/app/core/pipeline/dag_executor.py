@@ -404,7 +404,12 @@ async def _plan_and_execute(
 1. 涵蓋問題的**所有**情境，不要偷懶只列一兩個。
 2. 若問題涉及多種比較（例如「AA 對各種牌」），列出所有該比較的對手牌型。
 3. **params 欄位名稱必須完全照上方 schema 的 properties 來**，不要自己發明欄位名。
-4. 每個呼叫參數必須合法（不要重複牌、格式正確）。
+4. 每個呼叫參數必須合法：
+   - 撲克牌面計算：若 hero 和 villain 手牌會共用花色（例如 AA vs AKs 都有 A），**必須指定具體花色**避免重複。
+     範例（正確）：AA vs AK → 用 `["AhAs", "KdAc"]` 或 `["AsAh", "KdQd"]`（AK 拿不同 suit 的 A）
+     範例（錯誤）：`["AA", "AKs"]` — 會觸發 duplicate cards 錯誤。
+   - 單一花色牌型（suited）用 `s` 後綴代表同花（例：`AKs`）；`o` 代表不同花（例：`AKo`）。
+   - 撲克用詞簡寫：`AA`=雙 A、`22`=雙 2、`AKs`=同花 AK、`AKo`=不同花 AK。
 5. 最多列 12 個呼叫。
 
 輸出**純 JSON**（不要加任何說明、不要 markdown code block），格式：
@@ -451,7 +456,77 @@ async def _plan_and_execute(
     # ─── Step 2: Parallel execute ────────────────────────────────────
     _start = time.time()
 
-    async def _run_one(tc):
+    def _autofix_duplicate_cards(params: dict) -> dict:
+        """若 players 是簡寫（AA、AKs）且偵測到會衝突，轉成具體花色字串避免 duplicate cards。"""
+        if not isinstance(params, dict):
+            return params
+        players = params.get("players")
+        if not isinstance(players, list) or len(players) < 2:
+            return params
+        # 僅當所有 player 都是 ≤3 字元的簡寫時，做 disambiguation
+        shorthand_suits = ['s', 'h', 'd', 'c']
+        used_cards: set[str] = set()
+        fixed = []
+        for hand in players:
+            if not isinstance(hand, str):
+                fixed.append(hand)
+                continue
+            h = hand.strip()
+            # 已是具體格式（4 字元如 AhAs）就保留
+            if len(h) == 4 and all(c in "23456789TJQKA" or c in "shdc" for c in h):
+                fixed.append(h)
+                used_cards.add(h[:2]); used_cards.add(h[2:])
+                continue
+            # 簡寫：Pair (AA / 22) 或 AKs / AKo
+            if len(h) == 2 and h[0] == h[1]:  # Pair: AA, KK, ...
+                rank = h[0]
+                # 找兩個未用的花色
+                picks = []
+                for s in shorthand_suits:
+                    card = rank + s
+                    if card not in used_cards:
+                        picks.append(card)
+                        if len(picks) == 2:
+                            break
+                if len(picks) == 2:
+                    new_hand = picks[0] + picks[1]
+                    fixed.append(new_hand)
+                    used_cards.add(picks[0]); used_cards.add(picks[1])
+                else:
+                    fixed.append(h)  # fallback
+            elif len(h) == 3 and h[-1] in ('s', 'o'):  # AKs / AKo
+                r1, r2, kind = h[0], h[1], h[2]
+                if kind == 's':
+                    # 找一個未用的花色給兩張牌
+                    for s in shorthand_suits:
+                        c1, c2 = r1 + s, r2 + s
+                        if c1 not in used_cards and c2 not in used_cards:
+                            fixed.append(c1 + c2)
+                            used_cards.add(c1); used_cards.add(c2)
+                            break
+                    else:
+                        fixed.append(h)
+                else:  # 'o' offsuit
+                    picked1, picked2 = None, None
+                    for s in shorthand_suits:
+                        if r1 + s not in used_cards:
+                            picked1 = r1 + s; break
+                    for s in shorthand_suits:
+                        if r2 + s not in used_cards and (not picked1 or s != picked1[1]):
+                            picked2 = r2 + s; break
+                    if picked1 and picked2:
+                        fixed.append(picked1 + picked2)
+                        used_cards.add(picked1); used_cards.add(picked2)
+                    else:
+                        fixed.append(h)
+            else:
+                fixed.append(h)
+                # 嘗試 extract used cards from specific format
+        new_params = dict(params)
+        new_params["players"] = fixed
+        return new_params
+
+    async def _run_one(tc, allow_retry=True):
         name = tc.get("name")
         params = tc.get("params") or {}
         try:
@@ -462,6 +537,22 @@ async def _plan_and_execute(
         except Exception as e:
             r = {"error": str(e)}
             status = "error"
+        # Retry with autofix for duplicate-card errors
+        if status == "error" and allow_retry:
+            err_str = json.dumps(r, ensure_ascii=False).lower()
+            if "duplicate" in err_str and "players" in params:
+                fixed_params = _autofix_duplicate_cards(params)
+                if fixed_params != params:
+                    print(f"[INFO] retrying {name} with autofixed params: {fixed_params}", flush=True)
+                    try:
+                        r2 = await tool_registry.execute_tool_by_name(
+                            name=name, params=fixed_params, tools=ctx.db_tools,
+                        )
+                        r2_status = "ok" if not (isinstance(r2, dict) and r2.get("status") == "error") else "error"
+                        if r2_status == "ok":
+                            return {"name": name, "params": fixed_params, "result": r2, "status": "ok"}
+                    except Exception:
+                        pass
         return {"name": name, "params": params, "result": r, "status": status}
 
     tool_results = await _asyncio.gather(*[_run_one(tc) for tc in plan])
