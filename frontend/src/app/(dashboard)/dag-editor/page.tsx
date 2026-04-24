@@ -1075,6 +1075,229 @@ function NodeConfigPanel({ node, nodeType, config, projectDefaultModel, tenantId
         </div>
       )}
 
+      {/* ─── MVP-2 New primitive fields ─────────────────────────── */}
+
+      {fields.includes('user_prompt_template') && (
+        <div>
+          <label className="text-[10px] uppercase text-zinc-500 block mb-1">User Prompt 模板</label>
+          <textarea
+            value={(config.user_prompt_template as string) || ''}
+            onChange={(e) => onChange({ user_prompt_template: e.target.value || undefined })}
+            rows={5}
+            placeholder="留空 = 用對話訊息原文。可用 {{node_id.field}} 引用上游節點輸出，例：{{n_classifier.json.intent}}"
+            className="w-full rounded border border-zinc-700 bg-zinc-900 px-2 py-1.5 text-xs text-zinc-200 outline-none focus:border-blue-500 font-mono"
+          />
+          <p className="text-[10px] text-zinc-600 mt-1">語法：<code className="text-zinc-400">{`{{node_id.field.path}}`}</code> 例如 <code className="text-zinc-400">{`{{user_input.message}}`}</code> 或 <code className="text-zinc-400">{`{{n_intent.json.actions}}`}</code></p>
+        </div>
+      )}
+
+      {fields.includes('output_format') && (
+        <div>
+          <label className="text-[10px] uppercase text-zinc-500 block mb-1">輸出格式</label>
+          <select
+            value={(config.output_format as string) || 'text'}
+            onChange={(e) => onChange({ output_format: e.target.value === 'text' ? undefined : e.target.value })}
+            className="w-full rounded border border-zinc-700 bg-zinc-900 px-2 py-1 text-xs text-zinc-200 outline-none focus:border-blue-500"
+          >
+            <option value="text">text — 純文字</option>
+            <option value="json">json — 結構化（自動 retry-on-parse-fail）</option>
+            <option value="tool_calls">tool_calls — 模型可呼叫工具</option>
+          </select>
+        </div>
+      )}
+
+      {fields.includes('output_schema') && (config.output_format === 'json') && (
+        <div>
+          <label className="text-[10px] uppercase text-zinc-500 block mb-1">JSON Schema（可選）</label>
+          <textarea
+            value={(() => {
+              const v = config.output_schema
+              if (!v) return ''
+              if (typeof v === 'string') return v
+              try { return JSON.stringify(v, null, 2) } catch { return String(v) }
+            })()}
+            onChange={(e) => {
+              const txt = e.target.value
+              if (!txt.trim()) { onChange({ output_schema: undefined }); return }
+              try { onChange({ output_schema: JSON.parse(txt) }) } catch { onChange({ output_schema: txt }) }
+            }}
+            rows={4}
+            placeholder='{"type":"object","properties":{"intent":{"type":"string"}}}'
+            className="w-full rounded border border-zinc-700 bg-zinc-900 px-2 py-1.5 text-[11px] text-zinc-200 outline-none focus:border-blue-500 font-mono"
+          />
+        </div>
+      )}
+
+      {fields.includes('tools') && (
+        <div>
+          <label className="block mb-1">
+            <span className="text-[10px] uppercase text-zinc-500">可用工具</span>
+            <span className="ml-1 text-[9px] text-zinc-600">
+              （{((config.tools as string[]) || []).length} / {tools.length}）
+            </span>
+          </label>
+          {tools.length === 0 ? (
+            <p className="text-[10px] text-zinc-600">此 tenant 尚無註冊工具</p>
+          ) : (
+            <div className="max-h-32 overflow-y-auto space-y-0.5 rounded border border-zinc-800 bg-zinc-900 p-1">
+              {tools.map((t) => {
+                const selected = ((config.tools as string[]) || []).includes(t.id)
+                return (
+                  <button
+                    key={t.id}
+                    onClick={() => {
+                      const cur = new Set((config.tools as string[]) || [])
+                      if (cur.has(t.id)) cur.delete(t.id)
+                      else cur.add(t.id)
+                      onChange({ tools: cur.size === 0 ? undefined : Array.from(cur) })
+                    }}
+                    className={`w-full text-left px-2 py-1 rounded text-[10px] flex items-center gap-1.5 ${
+                      selected ? 'bg-blue-500/20 text-blue-300' : 'text-zinc-400 hover:bg-zinc-800'
+                    }`}
+                  >
+                    <span className={`w-3 h-3 rounded border flex items-center justify-center text-[8px] ${
+                      selected ? 'bg-blue-500 border-blue-500 text-white' : 'border-zinc-600'
+                    }`}>{selected && '✓'}</span>
+                    <span className="font-mono">{t.name}</span>
+                  </button>
+                )
+              })}
+            </div>
+          )}
+        </div>
+      )}
+
+      {fields.includes('auto_execute_tools') && (config.output_format === 'tool_calls') && (
+        <div>
+          <label className="flex items-center gap-2 text-[11px] text-zinc-300">
+            <input
+              type="checkbox"
+              checked={config.auto_execute_tools !== false}
+              onChange={(e) => onChange({ auto_execute_tools: e.target.checked })}
+              className="rounded border-zinc-700 bg-zinc-800"
+            />
+            自動執行工具（loop 直到模型決定停止）
+          </label>
+          <p className="text-[10px] text-zinc-600 mt-1 ml-5">關閉時，工具呼叫會交給下游 execute_tools 節點處理</p>
+        </div>
+      )}
+
+      {fields.includes('retry_on_parse_fail') && (config.output_format === 'json') && (
+        <div>
+          <label className="flex items-center justify-between mb-1">
+            <span className="text-[10px] uppercase text-zinc-500">JSON 解析失敗重試</span>
+            <span className="text-[10px] font-mono text-zinc-400">{String(config.retry_on_parse_fail ?? 1)}</span>
+          </label>
+          <input
+            type="number"
+            min="0" max="3" step="1"
+            value={(config.retry_on_parse_fail as number) ?? 1}
+            onChange={(e) => onChange({ retry_on_parse_fail: e.target.value ? parseInt(e.target.value, 10) : undefined })}
+            className="w-full rounded border border-zinc-700 bg-zinc-900 px-2 py-1 text-xs text-zinc-200 outline-none focus:border-blue-500"
+          />
+        </div>
+      )}
+
+      {fields.includes('include_history') && (
+        <div>
+          <label className="flex items-center gap-2 text-[11px] text-zinc-300">
+            <input
+              type="checkbox"
+              checked={!!config.include_history}
+              onChange={(e) => onChange({ include_history: e.target.checked })}
+              className="rounded border-zinc-700 bg-zinc-800"
+            />
+            包含對話歷史（需先有 load_history 節點）
+          </label>
+        </div>
+      )}
+
+      {fields.includes('condition') && (
+        <div>
+          <label className="text-[10px] uppercase text-zinc-500 block mb-1">分支條件</label>
+          <div className="space-y-1.5 rounded border border-zinc-800 bg-zinc-900/50 p-2">
+            <input
+              type="text"
+              value={((config.condition as Record<string, unknown> | undefined)?.source as string) || ''}
+              onChange={(e) => onChange({ condition: { ...((config.condition as object) || {}), source: e.target.value || undefined } })}
+              placeholder="變數 ref，例：n_classifier.json.tool_call"
+              className="w-full rounded border border-zinc-700 bg-zinc-900 px-2 py-1 text-xs text-zinc-200 outline-none focus:border-blue-500 font-mono"
+            />
+            <div className="flex gap-1">
+              <select
+                value={((config.condition as Record<string, unknown> | undefined)?.operator as string) || '=='}
+                onChange={(e) => onChange({ condition: { ...((config.condition as object) || {}), operator: e.target.value } })}
+                className="flex-1 rounded border border-zinc-700 bg-zinc-900 px-2 py-1 text-xs text-zinc-200 outline-none focus:border-blue-500"
+              >
+                <option value="==">==</option>
+                <option value="!=">!=</option>
+                <option value=">">{'>'}</option>
+                <option value="<">{'<'}</option>
+                <option value=">=">{'>='}</option>
+                <option value="<=">{'<='}</option>
+                <option value="contains">contains</option>
+                <option value="exists">exists</option>
+              </select>
+              <input
+                type="text"
+                value={(() => {
+                  const v = (config.condition as Record<string, unknown> | undefined)?.value
+                  if (v === undefined || v === null) return ''
+                  if (typeof v === 'string') return v
+                  return JSON.stringify(v)
+                })()}
+                onChange={(e) => {
+                  const txt = e.target.value
+                  if (!txt) { onChange({ condition: { ...((config.condition as object) || {}), value: undefined } }); return }
+                  // Try to coerce to bool/number/json, else keep string
+                  let parsed: unknown = txt
+                  if (txt === 'true') parsed = true
+                  else if (txt === 'false') parsed = false
+                  else if (/^-?\d+(\.\d+)?$/.test(txt)) parsed = Number(txt)
+                  else { try { parsed = JSON.parse(txt) } catch { parsed = txt } }
+                  onChange({ condition: { ...((config.condition as object) || {}), value: parsed } })
+                }}
+                placeholder="比對值（true/false/數字/字串）"
+                className="flex-1 rounded border border-zinc-700 bg-zinc-900 px-2 py-1 text-xs text-zinc-200 outline-none focus:border-blue-500 font-mono"
+              />
+            </div>
+          </div>
+          <p className="text-[10px] text-zinc-600 mt-1">condition 為 true 時走 route_to_when_true 路徑，其他下游節點自動 skip</p>
+        </div>
+      )}
+
+      {fields.includes('route_to_when_true') && (
+        <div>
+          <label className="text-[10px] uppercase text-zinc-500 block mb-1">True 路徑（節點 ID 列表）</label>
+          <input
+            type="text"
+            value={((config.route_to_when_true as string[]) || []).join(',')}
+            onChange={(e) => {
+              const arr = e.target.value.split(',').map(s => s.trim()).filter(Boolean)
+              onChange({ route_to_when_true: arr.length ? arr : undefined })
+            }}
+            placeholder="n_main, n_other"
+            className="w-full rounded border border-zinc-700 bg-zinc-900 px-2 py-1 text-xs text-zinc-200 outline-none focus:border-blue-500 font-mono"
+          />
+        </div>
+      )}
+
+      {fields.includes('route_to_when_false') && (
+        <div>
+          <label className="text-[10px] uppercase text-zinc-500 block mb-1">False 路徑（可選）</label>
+          <input
+            type="text"
+            value={((config.route_to_when_false as string[]) || []).join(',')}
+            onChange={(e) => {
+              const arr = e.target.value.split(',').map(s => s.trim()).filter(Boolean)
+              onChange({ route_to_when_false: arr.length ? arr : undefined })
+            }}
+            placeholder="n_default（留空 = 不指定 false 路徑）"
+            className="w-full rounded border border-zinc-700 bg-zinc-900 px-2 py-1 text-xs text-zinc-200 outline-none focus:border-blue-500 font-mono"
+          />
+        </div>
+      )}
+
       {hasCustom && (
         <div className="border-t border-zinc-800 pt-2">
           <button

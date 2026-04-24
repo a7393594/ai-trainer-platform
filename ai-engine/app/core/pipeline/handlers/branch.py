@@ -94,19 +94,9 @@ def _evaluate(operator: str, lhs: Any, rhs: Any) -> bool:
     return False
 
 
-def _collect_downstream(start_node_id: str, edges: list[dict]) -> set[str]:
-    """BFS from `start_node_id` over edges. Returns set of all reachable downstream node_ids."""
-    out: set[str] = set()
-    queue = [start_node_id]
-    while queue:
-        cur = queue.pop()
-        for e in edges:
-            if e.get("from") == cur:
-                dst = e.get("to")
-                if dst and dst not in out:
-                    out.add(dst)
-                    queue.append(dst)
-    return out
+def _immediate_children(start_node_id: str, edges: list[dict]) -> set[str]:
+    """Direct children of `start_node_id` (one hop downstream)."""
+    return {e.get("to") for e in edges if e.get("from") == start_node_id and e.get("to")}
 
 
 async def handle_branch(node: dict, ctx: Any) -> dict:
@@ -123,18 +113,21 @@ async def handle_branch(node: dict, ctx: Any) -> dict:
     route_true: list[str] = list(cfg.get("route_to_when_true") or [])
     route_false: list[str] = list(cfg.get("route_to_when_false") or [])
 
-    # Need DAG edges to know who's downstream of this branch — execute_dag stashes them on ctx.
+    # Mark only IMMEDIATE children that aren't on the chosen path. The executor
+    # handles cascading skip — if a downstream node loses ALL its predecessors to
+    # skipped/error, the executor marks it skipped too. This way diamond patterns
+    # (n_output reached via two parents) still run when at least one path survives.
     edges: list[dict] = getattr(ctx, "_dag_edges", []) or []
     my_id = node.get("id") or ""
-    all_downstream = _collect_downstream(my_id, edges) if my_id else set()
+    children = _immediate_children(my_id, edges) if my_id else set()
 
     chosen = set(route_true) if matched else set(route_false)
     if not chosen:
-        # No explicit route on this side → fall through to ALL downstream (no skipping).
+        # No explicit route on this side → all immediate children proceed.
         skipped: set[str] = set()
     else:
-        # Skip every downstream node not in chosen route.
-        skipped = all_downstream - chosen
+        # Skip immediate children not in chosen route.
+        skipped = children - chosen
 
     ctx.skipped_by_branch.update(skipped)
 

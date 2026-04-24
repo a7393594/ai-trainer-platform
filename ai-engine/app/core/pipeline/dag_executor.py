@@ -1911,6 +1911,18 @@ async def execute_dag(
             trace.append(entry)
             continue
 
+        # Cascade skip: if every incoming predecessor was skipped (by branch or by
+        # cascade), this node has no live upstream and should also skip. Nodes with
+        # no incoming edges (sources) are exempt.
+        preds = [e.get("from") for e in edges if e.get("to") == node_id and e.get("from")]
+        if preds:
+            all_dead = all((p in ctx.skipped_by_branch) for p in preds)
+            if all_dead:
+                ctx.skipped_by_branch.add(node_id)
+                entry.update({"status": "skipped", "summary": "所有上游節點已 skip", "latency_ms": 0})
+                trace.append(entry)
+                continue
+
         if not handler:
             entry.update({"status": "skipped", "summary": f"未知節點類型:{type_key}"})
             trace.append(entry)
