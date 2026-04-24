@@ -259,24 +259,28 @@ async def get_session_messages(project_id: str, session_id: str):
 # ============================================
 
 @router.get("/prompts/{project_id}")
-async def list_prompts(project_id: str):
-    """列出專案的所有 Prompt 版本"""
-    versions = crud.list_prompt_versions(project_id)
+async def list_prompts(project_id: str, slot: Optional[str] = None):
+    """列出專案的 Prompt 版本。
+
+    - slot=None：列所有 slot 的版本（跨 slot 的完整歷史）
+    - slot='xxx'：只列某 slot（舊 UI 常帶 slot='base'）
+    """
+    versions = crud.list_prompt_versions(project_id, slot=slot)
     return {"versions": versions}
 
 
 @router.get("/prompts/{project_id}/active")
-async def get_active_prompt(project_id: str):
-    """取得當前 active 的 Prompt"""
-    prompt = crud.get_active_prompt(project_id)
+async def get_active_prompt(project_id: str, slot: str = "base"):
+    """取得某 slot 的 active Prompt（預設 base）"""
+    prompt = crud.get_active_prompt(project_id, slot=slot)
     if not prompt:
-        raise HTTPException(status_code=404, detail="沒有 active 的 Prompt")
+        raise HTTPException(status_code=404, detail=f"沒有 active 的 Prompt (slot={slot})")
     return prompt
 
 
 @router.post("/prompts/{project_id}/activate/{version_id}")
 async def activate_prompt(project_id: str, version_id: str):
-    """切換 active Prompt 版本"""
+    """切換 active 版本（自動依該 row 的 slot 做 scope）"""
     result = crud.activate_prompt_version(version_id, project_id)
     if not result:
         raise HTTPException(status_code=404, detail="Prompt 版本不存在")
@@ -287,25 +291,54 @@ async def activate_prompt(project_id: str, version_id: str):
 async def create_prompt(project_id: str, data: dict):
     """建立新 Prompt 版本。
 
-    body: { content: str, change_notes?: str, activate?: bool }
-    版本號 = 目前最大版本 + 1
-    activate=true 時直接啟用並停用其他版本
+    body: {
+      content: str,           # 必填
+      slot?: str,             # 預設 'base'
+      change_notes?: str,
+      activate?: bool,        # 預設 false；true 則停用該 slot 其他版本
+      title?: str,
+      description?: str,
+      icon?: str,
+      category?: str,         # system / persona / custom
+    }
+    版本號 = 該 slot 目前最大版本 + 1
     """
     content = data.get("content", "").strip()
     if not content:
         raise HTTPException(400, "content required")
-    change_notes = data.get("change_notes", "")
-    activate = bool(data.get("activate", False))
-
-    next_version = crud.get_next_version_number(project_id)
+    slot = data.get("slot", "base")
+    next_version = crud.get_next_version_number(project_id, slot=slot)
     created = crud.create_prompt_version(
         project_id=project_id,
         content=content,
         version=next_version,
-        is_active=activate,
-        change_notes=change_notes,
+        slot=slot,
+        is_active=bool(data.get("activate", False)),
+        change_notes=data.get("change_notes"),
+        title=data.get("title"),
+        description=data.get("description"),
+        icon=data.get("icon"),
+        category=data.get("category"),
     )
     return created
+
+
+# ============================================
+# Prompt Library — 跨 slot 管理（新 UI）
+# ============================================
+
+@router.get("/prompt-library/{project_id}")
+async def get_prompt_library(project_id: str):
+    """列出該 project 所有 slot 的 active 版本 + 版本計數（UI 列表用）"""
+    slots = crud.list_prompt_slots_summary(project_id)
+    return {"slots": slots}
+
+
+@router.get("/prompt-library/{project_id}/{slot}/versions")
+async def list_slot_versions(project_id: str, slot: str):
+    """列某 slot 的完整版本歷史"""
+    versions = crud.list_prompt_versions(project_id, slot=slot)
+    return {"slot": slot, "versions": versions}
 
 
 # ============================================

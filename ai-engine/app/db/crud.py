@@ -591,18 +591,24 @@ def create_prompt_version(
     project_id: str,
     content: str,
     version: int,
+    slot: str = "base",
     is_active: bool = False,
     created_by: Optional[str] = None,
     change_notes: Optional[str] = None,
+    title: Optional[str] = None,
+    description: Optional[str] = None,
+    icon: Optional[str] = None,
+    category: Optional[str] = None,
 ) -> dict:
-    # 如果要設為 active，先把其他版本停用
+    # 如果要設為 active，先把其他同 slot 版本停用
     if is_active:
         get_supabase().table(T_PROMPTS).update(
             {"is_active": False}
-        ).eq("project_id", project_id).eq("is_active", True).execute()
+        ).eq("project_id", project_id).eq("slot", slot).eq("is_active", True).execute()
 
     data: dict = {
         "project_id": project_id,
+        "slot": slot,
         "content": content,
         "version": version,
         "is_active": is_active,
@@ -611,15 +617,24 @@ def create_prompt_version(
         data["created_by"] = created_by
     if change_notes:
         data["change_notes"] = change_notes
+    if title:
+        data["title"] = title
+    if description:
+        data["description"] = description
+    if icon:
+        data["icon"] = icon
+    if category:
+        data["category"] = category
     result = get_supabase().table(T_PROMPTS).insert(data).execute()
     return result.data[0]
 
 
-def get_active_prompt(project_id: str) -> Optional[dict]:
+def get_active_prompt(project_id: str, slot: str = "base") -> Optional[dict]:
     result = (
         get_supabase().table(T_PROMPTS)
         .select("*")
         .eq("project_id", project_id)
+        .eq("slot", slot)
         .eq("is_active", True)
         .limit(1)
         .execute()
@@ -632,22 +647,63 @@ def get_prompt_version(version_id: str) -> Optional[dict]:
     return r.data[0] if r.data else None
 
 
-def list_prompt_versions(project_id: str) -> list[dict]:
-    result = (
+def list_prompt_versions(project_id: str, slot: Optional[str] = None) -> list[dict]:
+    """列出提示詞版本。slot=None 回全部，slot='xxx' 只回某 slot。"""
+    q = (
         get_supabase().table(T_PROMPTS)
         .select("*")
         .eq("project_id", project_id)
+        .order("slot", desc=False)
         .order("version", desc=True)
-        .execute()
     )
-    return result.data
+    if slot is not None:
+        q = q.eq("slot", slot)
+    return q.execute().data
+
+
+def list_prompt_slots_summary(project_id: str) -> list[dict]:
+    """列出每個 slot 的 active 版本資訊（UI 列表用）。"""
+    rows = (
+        get_supabase().table(T_PROMPTS)
+        .select("*")
+        .eq("project_id", project_id)
+        .eq("is_active", True)
+        .execute()
+        .data
+    )
+    # 補充 version count per slot
+    all_rows = (
+        get_supabase().table(T_PROMPTS)
+        .select("slot,version")
+        .eq("project_id", project_id)
+        .execute()
+        .data
+    )
+    count_by_slot: dict[str, int] = {}
+    for r in all_rows:
+        count_by_slot[r["slot"]] = count_by_slot.get(r["slot"], 0) + 1
+    for r in rows:
+        r["total_versions"] = count_by_slot.get(r["slot"], 1)
+    return rows
 
 
 def activate_prompt_version(version_id: str, project_id: str) -> dict:
-    """切換 active 版本：停用舊的，啟用指定的"""
+    """切換 active 版本：停用同 slot 舊的，啟用指定的。"""
+    # 先查這筆 version 的 slot
+    target = (
+        get_supabase().table(T_PROMPTS)
+        .select("slot")
+        .eq("id", version_id)
+        .single()
+        .execute()
+    )
+    if not target.data:
+        return {}
+    slot = target.data["slot"] or "base"
+
     get_supabase().table(T_PROMPTS).update(
         {"is_active": False}
-    ).eq("project_id", project_id).eq("is_active", True).execute()
+    ).eq("project_id", project_id).eq("slot", slot).eq("is_active", True).execute()
 
     result = (
         get_supabase().table(T_PROMPTS)
@@ -658,11 +714,12 @@ def activate_prompt_version(version_id: str, project_id: str) -> dict:
     return result.data[0] if result.data else {}
 
 
-def get_next_version_number(project_id: str) -> int:
+def get_next_version_number(project_id: str, slot: str = "base") -> int:
     result = (
         get_supabase().table(T_PROMPTS)
         .select("version")
         .eq("project_id", project_id)
+        .eq("slot", slot)
         .order("version", desc=True)
         .limit(1)
         .execute()
@@ -670,6 +727,33 @@ def get_next_version_number(project_id: str) -> int:
     if result.data:
         return result.data[0]["version"] + 1
     return 1
+
+
+def resolve_prompt(
+    project_id: str,
+    ref: Optional[str] = None,
+    ref_version_id: Optional[str] = None,
+    raw_text: Optional[str] = None,
+    fallback: Optional[str] = None,
+) -> Optional[str]:
+    """解析 prompt 內容，優先序：
+
+      1. ref_version_id（釘版本）→ 查特定 version row
+      2. ref（追 active）→ 查 slot=ref 的 is_active=true
+      3. raw_text → 直接使用
+      4. fallback → 最後備援
+    """
+    if ref_version_id:
+        v = get_prompt_version(ref_version_id)
+        if v:
+            return v.get("content")
+    if ref:
+        v = get_active_prompt(project_id, slot=ref)
+        if v:
+            return v.get("content")
+    if raw_text:
+        return raw_text
+    return fallback
 
 
 # ============================================

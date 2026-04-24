@@ -278,7 +278,6 @@ async def handle_analyze_intent(node: dict, ctx: DAGContext) -> dict:
 
     cfg = node.get("config") or {}
     model = cfg.get("model") or "claude-haiku-4-5-20251001"
-    custom_sys = cfg.get("system_prompt")
 
     available_modes = ", ".join(f"{k}（{v['label']}：{v['description']}）" for k, v in MODE_PROMPTS.items())
 
@@ -300,7 +299,15 @@ async def handle_analyze_intent(node: dict, ctx: DAGContext) -> dict:
   "knowledge_points": ["...", "..."],
   "response_styles":  ["coach"]
 }}"""
-    sys_content = custom_sys or default_sys
+    # 優先序：cfg.system_prompt_ref_version（釘版本）> cfg.system_prompt_ref（追 active）
+    # > cfg.system_prompt（raw）> DB slot='analyze_intent' active > 程式預設
+    sys_content = crud.resolve_prompt(
+        project_id=ctx.project_id,
+        ref_version_id=cfg.get("system_prompt_ref_version"),
+        ref=cfg.get("system_prompt_ref") or "analyze_intent",
+        raw_text=cfg.get("system_prompt"),
+        fallback=default_sys,
+    )
 
     try:
         ctx.emit({"status": "analyzing", "message": "分析問題需要哪些工具和知識…"})
@@ -337,8 +344,26 @@ async def handle_analyze_intent(node: dict, ctx: DAGContext) -> dict:
         }
         ctx.analysis = analysis
 
-        # 用 analysis 組 ctx.mode_prompt（let compose_prompt 用現有機制消化）
-        ctx.mode_prompt = build_blended_prompt(analysis["response_styles"])
+        # 用 analysis 組 ctx.mode_prompt：每個 style 優先從 DB slot='mode_{id}' 讀 active 版本，
+        # 失敗 fallback 到 code 預設（mode_prompts.MODE_PROMPTS）。
+        mode_parts: list[str] = []
+        for style_id in analysis["response_styles"]:
+            fallback = MODE_PROMPTS.get(style_id, {}).get("prompt", "")
+            content = crud.resolve_prompt(
+                project_id=ctx.project_id,
+                ref=f"mode_{style_id}",
+                fallback=fallback,
+            )
+            if content:
+                mode_parts.append(content)
+        if len(mode_parts) == 1:
+            ctx.mode_prompt = mode_parts[0]
+        elif mode_parts:
+            labels = [MODE_PROMPTS[s]["label"] for s in analysis["response_styles"] if s in MODE_PROMPTS]
+            header = f"# 本題要融合以下 {len(mode_parts)} 種人格風格回覆：{' + '.join(labels)}\n"
+            ctx.mode_prompt = header + "\n" + "\n\n---\n\n".join(mode_parts)
+        else:
+            ctx.mode_prompt = build_blended_prompt(analysis["response_styles"])  # final fallback
 
         ctx.emit({
             "status": "analyzed",
