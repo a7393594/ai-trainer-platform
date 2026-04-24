@@ -1,18 +1,23 @@
 """Fernet-based symmetric encryption for provider API keys stored at rest.
 
-The master key comes from env var ``PROVIDER_KEYS_SECRET``. To rotate, set the
-value to a comma-separated list where the first entry is the new write key and
-the remaining entries are legacy read keys — existing ciphertexts written with
-the older keys stay readable until next write re-encrypts them with the new one.
+Master key resolution order:
+  1. env var ``PROVIDER_KEYS_SECRET`` (preferred — highest separation from data)
+  2. Supabase table ``ait_system_config`` row with key='provider_keys_secret'
+     (fallback, auto-provisioned so the app works without env var plumbing)
+
+Both support a comma-separated list for rotation — first entry is the new
+write key, the rest are legacy read keys kept around until data is re-encrypted.
 """
 from __future__ import annotations
 
+import logging
 from functools import lru_cache
-from typing import Optional
 
 from cryptography.fernet import Fernet, MultiFernet, InvalidToken
 
 from app.config import settings
+
+logger = logging.getLogger(__name__)
 
 
 class ProviderKeysSecretMissing(RuntimeError):
@@ -23,14 +28,42 @@ class ProviderKeysDecryptError(RuntimeError):
     pass
 
 
+def _read_secret_from_db() -> str | None:
+    """Read master key from ait_system_config. Returns None if table or row missing."""
+    try:
+        from app.db.supabase import get_supabase
+        res = (
+            get_supabase()
+            .table("ait_system_config")
+            .select("value")
+            .eq("key", "provider_keys_secret")
+            .limit(1)
+            .execute()
+        )
+        rows = res.data or []
+        if rows:
+            return rows[0].get("value")
+    except Exception as e:
+        logger.warning("cannot read provider_keys_secret from DB: %s", e)
+    return None
+
+
+def _resolve_secret() -> str:
+    env = (settings.provider_keys_secret or "").strip()
+    if env:
+        return env
+    db_val = _read_secret_from_db()
+    if db_val:
+        return db_val.strip()
+    raise ProviderKeysSecretMissing(
+        "No master key found. Either set PROVIDER_KEYS_SECRET env var or "
+        "insert a row into ait_system_config (key='provider_keys_secret')."
+    )
+
+
 @lru_cache(maxsize=1)
 def _get_fernet() -> MultiFernet:
-    raw = (settings.provider_keys_secret or "").strip()
-    if not raw:
-        raise ProviderKeysSecretMissing(
-            "PROVIDER_KEYS_SECRET env var is not set. "
-            "Generate one with: python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())'"
-        )
+    raw = _resolve_secret()
     keys = [k.strip().encode() for k in raw.split(",") if k.strip()]
     fernets = [Fernet(k) for k in keys]
     return MultiFernet(fernets)
@@ -57,8 +90,10 @@ def last4(plaintext: str) -> str:
 
 
 def is_configured() -> bool:
-    """Return True if PROVIDER_KEYS_SECRET is set — callers use this to gate features."""
-    return bool((settings.provider_keys_secret or "").strip())
+    """Return True if a master key is available (env var OR DB fallback)."""
+    if (settings.provider_keys_secret or "").strip():
+        return True
+    return bool(_read_secret_from_db())
 
 
 def reset_cache_for_tests() -> None:
