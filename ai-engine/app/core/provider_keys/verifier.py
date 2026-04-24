@@ -10,8 +10,9 @@ logger = logging.getLogger(__name__)
 # Cheapest non-free model per provider; 1-token ping.
 PROVIDER_TEST_MODELS: dict[str, str] = {
     "openai": "gpt-5.4-nano",
-    # gemini-1.5-flash is stable (non-preview), widely available on free tier
-    "google": "gemini/gemini-1.5-flash",
+    # gemini-2.0-flash is the current stable Gemini model available on free tier.
+    # Google retires preview models often — keep this aligned with models.py.
+    "google": "gemini/gemini-2.0-flash",
     "groq": "groq/llama-3.1-8b-instant",
     "deepseek": "deepseek/deepseek-chat",
     "openrouter": "openrouter/meta-llama/llama-3.3-70b-instruct:free",
