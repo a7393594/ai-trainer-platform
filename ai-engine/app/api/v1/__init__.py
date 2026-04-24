@@ -80,6 +80,29 @@ async def get_demo_context(email: str = Query(default=None)):
 # 對話（核心端點）
 # ============================================
 
+async def _preprocess_images(request: ChatRequest) -> None:
+    """Run vision describe on each attached image and prepend the results to `request.message`.
+
+    Mutates request in place so downstream code (DAG / orchestrator) sees a text-only message.
+    """
+    if not request.images:
+        return
+    from app.core.vision.preprocess import describe_images, build_message_with_image_descriptions
+    # Resolve tenant for per-tenant provider key (anthropic uses env, passthrough for others)
+    tenant_id: Optional[str] = None
+    if request.user_id:
+        try:
+            from app.db import crud as _crud
+            user = _crud.get_user(request.user_id)
+            tenant_id = user.get("tenant_id") if user else None
+        except Exception:
+            pass
+    descriptions = await describe_images(request.images, tenant_id=tenant_id)
+    request.message = build_message_with_image_descriptions(request.message, descriptions)
+    # Clear so downstream doesn't re-process (e.g. chat_stream path)
+    request.images = []
+
+
 @router.post("/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest):
     """核心對話端點。
@@ -88,9 +111,12 @@ async def chat(request: ChatRequest):
       - True  → chat_adapter.process_via_dag(request)(DAG Executor)
       - False → orchestrator.process(request)(AgentOrchestrator,預設)
 
-    /chat/stream 與 /chat/widget-response 不受此 flag 影響。
+    若帶 `images`,會先做一次 vision describe,把圖片內容以文字形式 prepend 進 `message`,
+    之後流程不變。/chat/stream 與 /chat/widget-response 不受 dag flag 影響,但也做同樣的
+    圖片預處理。
     """
     try:
+        await _preprocess_images(request)
         if settings.use_dag_executor_for_chat:
             from app.core.pipeline.chat_adapter import process_via_dag
             return await process_via_dag(request)
@@ -112,6 +138,8 @@ async def chat_stream(request: ChatRequest):
 
     async def generate():
         try:
+            # 若有圖片,先做 vision describe（text 化）再進入原本流程
+            await _preprocess_images(request)
             if settings.use_dag_executor_for_chat:
                 # DAG 路徑：背景跑 DAG，同時從 progress queue 即時串流事件給前端
                 # 事件類型：status: analyzing|analyzed|thinking|tool_plan|tool_start|tool_done|synthesizing

@@ -40,6 +40,10 @@ class ChatRequest(BaseModel):
     message: str
     model: Optional[str] = None       # None = 用專案預設模型
     mode_prompt: Optional[str] = None  # 前端 mode（教練/研究/課程/對戰）對應的 system prompt 前綴
+    # Base64 data URLs of images to consider along with `message`. The server does a
+    # one-shot vision pass to extract a text description and prepends it to `message`
+    # before the normal DAG / orchestrator flow runs. Max ~5MB per image is recommended.
+    images: list[str] = []
 
 
 class ChatResponse(BaseModel):
