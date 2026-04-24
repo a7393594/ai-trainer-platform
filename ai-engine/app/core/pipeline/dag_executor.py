@@ -619,9 +619,16 @@ async def _plan_and_execute(
 **絕對不要**自己發明欄位名稱（例如 hero_hand、villain_hand、opponent 等都是錯的）。
 只能使用上方 schema properties 裡列出的欄位名稱。"""
 
+    # 從 analysis 拿 actions 當強制提示
+    analysis_hint = ""
+    if ctx.analysis:
+        acts = ctx.analysis.get("actions") or []
+        if acts:
+            analysis_hint = "\n\n分析層已列出本題需要執行的 actions（必須對應到工具呼叫）：\n" + "\n".join(f"- {a}" for a in acts)
+
     plan_prompt = f"""你是工具呼叫規劃器。根據使用者問題，規劃所有需要的工具呼叫（可多個）。
 
-使用者問題：{ctx.user_message}
+使用者問題：{ctx.user_message}{analysis_hint}
 
 可用工具（完整 JSON schema）：
 {tools_desc_full}
@@ -638,6 +645,27 @@ async def _plan_and_execute(
    - 單一花色牌型（suited）用 `s` 後綴代表同花（例：`AKs`）；`o` 代表不同花（例：`AKo`）。
    - 撲克用詞簡寫：`AA`=雙 A、`22`=雙 2、`AKs`=同花 AK、`AKo`=不同花 AK。
 5. 最多列 12 個呼叫。
+
+## 【必規劃工具的觸發關鍵字】（硬規則）
+若使用者問題含以下任一情境，**必須**規劃對應工具，不可回傳空 array：
+
+A. 問題含「勝率 / equity / 打得如何 / 評價這手 / 算一下」
+   → 規劃 `calculate_equity`，參數取自問題中提到的手牌 / 牌面
+
+B. 問題含「pot odds / 底池賠率 / 跟注是否正確」
+   → 規劃 `calculate_pot_odds` + `calculate_equity` 兩個
+
+C. 問題含 `[手牌紀錄]` 或 `=== AI 分析資料 ===` 區塊
+   → 必從該 JSON 抓出：
+     * hero.hand (例 "8s9s") + villain.hand (例 "KhJh") + board (例 "Jd9d8d5cQc")
+     * 規劃 `calculate_equity` with params {{"players": [hero.hand, villain.hand], "board": board}}
+     * 若有完整 pot_by_street → 也規劃 `calculate_pot_odds`
+   → **禁止**因為「牌已經看得出輸贏」就不呼叫 — 硬規則就是要呼叫驗證
+
+D. 問題含「EV / 期望值」
+   → 規劃 `calculate_ev`
+
+若以上都不符合（純概念教學、閒聊），可回傳 `[]` 空 array。
 
 輸出**純 JSON**（不要加任何說明、不要 markdown code block），格式：
 [{{"name": "tool_name", "params": {{...}}}}, ...]"""
