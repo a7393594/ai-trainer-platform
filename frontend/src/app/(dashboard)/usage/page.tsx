@@ -6,8 +6,13 @@ import { useI18n } from '@/lib/i18n'
 
 const AI = process.env.NEXT_PUBLIC_AI_ENGINE_URL || 'http://localhost:8000'
 
+type Project = { id: string; name: string }
+
 export default function UsagePage() {
-  const [projectId, setProjectId] = useState('')
+  const [tenantId, setTenantId] = useState('')
+  const [projects, setProjects] = useState<Project[]>([])
+  // 預設「全部專案」，避免使用者誤會某個專案的成本是 0
+  const [projectId, setProjectId] = useState<string>('all')
   const [loading, setLoading] = useState(true)
   const [data, setData] = useState<any>(null)
   const [days, setDays] = useState(30)
@@ -15,15 +20,17 @@ export default function UsagePage() {
 
   useEffect(() => {
     getDemoContext().then((ctx) => {
-      setProjectId(ctx.project_id)
-      loadData(ctx.project_id, days)
+      setTenantId(ctx.tenant_id)
+      setProjects(ctx.projects || [])
+      loadData('all', days, ctx.tenant_id)
     }).catch(() => setLoading(false))
   }, [])
 
-  const loadData = async (pid: string, d: number) => {
+  const loadData = async (pid: string, d: number, tid: string) => {
     setLoading(true)
     try {
-      const r = await fetch(`${AI}/api/v1/usage/cost/${pid}?days=${d}`)
+      const tenantParam = pid === 'all' ? `&tenant_id=${tid}` : ''
+      const r = await fetch(`${AI}/api/v1/usage/cost/${pid}?days=${d}${tenantParam}`)
       setData(await r.json())
     } catch {}
     setLoading(false)
@@ -31,10 +38,15 @@ export default function UsagePage() {
 
   const changePeriod = (d: number) => {
     setDays(d)
-    if (projectId) loadData(projectId, d)
+    loadData(projectId, d, tenantId)
   }
 
-  if (loading) return <div className="flex h-full items-center justify-center bg-zinc-900"><div className="h-4 w-4 animate-spin rounded-full border-2 border-zinc-600 border-t-blue-500" /></div>
+  const changeProject = (pid: string) => {
+    setProjectId(pid)
+    loadData(pid, days, tenantId)
+  }
+
+  if (loading && !data) return <div className="flex h-full items-center justify-center bg-zinc-900"><div className="h-4 w-4 animate-spin rounded-full border-2 border-zinc-600 border-t-blue-500" /></div>
 
   return (
     <div className="h-full bg-zinc-900 p-6 overflow-auto">
@@ -44,12 +56,24 @@ export default function UsagePage() {
             <h1 className="text-lg font-medium text-zinc-200">{t('usage.title')}</h1>
             <p className="text-xs text-zinc-500">{t('usage.desc')}</p>
           </div>
-          <div className="flex gap-1">
-            {[7, 30, 90].map(d => (
-              <button key={d} onClick={() => changePeriod(d)} className={`rounded px-3 py-1 text-xs ${days === d ? 'bg-blue-600 text-white' : 'bg-zinc-800 text-zinc-400'}`}>
-                {d}D
-              </button>
-            ))}
+          <div className="flex items-center gap-2">
+            <select
+              value={projectId}
+              onChange={(e) => changeProject(e.target.value)}
+              className="rounded bg-zinc-800 text-zinc-300 border border-zinc-700 text-xs px-2 py-1"
+            >
+              <option value="all">{t('usage.allProjects') || '全部專案'}</option>
+              {projects.map(p => (
+                <option key={p.id} value={p.id}>{p.name}</option>
+              ))}
+            </select>
+            <div className="flex gap-1">
+              {[7, 30, 90].map(d => (
+                <button key={d} onClick={() => changePeriod(d)} className={`rounded px-3 py-1 text-xs ${days === d ? 'bg-blue-600 text-white' : 'bg-zinc-800 text-zinc-400'}`}>
+                  {d}D
+                </button>
+              ))}
+            </div>
           </div>
         </div>
 
@@ -94,6 +118,56 @@ export default function UsagePage() {
                 <p className="text-xs text-zinc-500 text-center py-4">{t('usage.noData')}</p>
               )}
             </div>
+
+            {/* By Project (only show when viewing all) */}
+            {projectId === 'all' && data.by_project && Object.keys(data.by_project).length > 0 && (
+              <div className="rounded-lg border border-zinc-700 bg-zinc-800 p-4">
+                <h3 className="text-sm font-medium text-zinc-200 mb-3">按專案</h3>
+                <div className="space-y-2">
+                  {Object.entries(data.by_project).sort((a: any, b: any) => b[1].cost - a[1].cost).map(([pid, stats]: [string, any]) => {
+                    const maxCost = Math.max(...Object.values(data.by_project).map((s: any) => s.cost))
+                    return (
+                      <div key={pid} className="flex items-center gap-3">
+                        <span className="text-xs text-zinc-300 w-40 truncate">{stats.name}</span>
+                        <div className="flex-1 h-2 bg-zinc-700 rounded-full overflow-hidden">
+                          <div className="h-full bg-blue-500 rounded-full" style={{ width: `${maxCost > 0 ? (stats.cost / maxCost) * 100 : 0}%` }} />
+                        </div>
+                        <span className="text-xs font-mono text-blue-400 w-20 text-right">${stats.cost?.toFixed(4)}</span>
+                        <span className="text-[10px] text-zinc-500 w-16 text-right">{stats.calls} calls</span>
+                      </div>
+                    )
+                  })}
+                </div>
+              </div>
+            )}
+
+            {/* By Endpoint */}
+            {data.by_endpoint && Object.keys(data.by_endpoint).length > 0 && (
+              <div className="rounded-lg border border-zinc-700 bg-zinc-800 p-4">
+                <h3 className="text-sm font-medium text-zinc-200 mb-3">按端點</h3>
+                <div className="space-y-2">
+                  {Object.entries(data.by_endpoint).sort((a: any, b: any) => b[1].cost - a[1].cost).map(([ep, stats]: [string, any]) => {
+                    const maxCost = Math.max(...Object.values(data.by_endpoint).map((s: any) => s.cost))
+                    return (
+                      <div key={ep} className="flex items-center gap-3">
+                        <span className="text-xs text-zinc-300 w-36 truncate font-mono">{ep}</span>
+                        <div className="flex-1 h-2 bg-zinc-700 rounded-full overflow-hidden">
+                          <div className="h-full bg-amber-500 rounded-full" style={{ width: `${maxCost > 0 ? (stats.cost / maxCost) * 100 : 0}%` }} />
+                        </div>
+                        <span className="text-xs font-mono text-amber-400 w-20 text-right">${stats.cost?.toFixed(4)}</span>
+                        <span className="text-[10px] text-zinc-500 w-16 text-right">{stats.calls} calls</span>
+                      </div>
+                    )
+                  })}
+                </div>
+              </div>
+            )}
+
+            {data.row_cap_hit && (
+              <div className="rounded border border-amber-700 bg-amber-900/30 px-3 py-2 text-xs text-amber-300">
+                資料量超過 5 萬筆，僅顯示部分結果。請縮短期間或選擇單一專案。
+              </div>
+            )}
 
             {/* Daily Trend Chart (SVG) */}
             <div className="rounded-lg border border-zinc-700 bg-zinc-800 p-4">

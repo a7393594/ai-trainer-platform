@@ -154,7 +154,7 @@ class RAGPipeline:
     # --------------------------
 
     async def _create_embeddings(self, project_id: str, doc_id: str, chunks: list[str]) -> None:
-        import litellm  # lazy
+        from app.core.llm_router.router import get_embedding
 
         use_qdrant = qdrant_db.is_qdrant_available()
         if use_qdrant:
@@ -162,8 +162,7 @@ class RAGPipeline:
 
         db = get_supabase()
         for i, chunk in enumerate(chunks):
-            resp = await litellm.aembedding(model=settings.embedding_model, input=[chunk])
-            embedding = resp.data[0]["embedding"]
+            embedding = await get_embedding(chunk, project_id=project_id, endpoint="rag_index")
 
             # 1) pgvector
             try:
@@ -199,10 +198,9 @@ class RAGPipeline:
     # --------------------------
 
     async def _pgvector_search(self, project_id: str, query: str, top_k: int) -> list[dict]:
-        import litellm  # lazy
+        from app.core.llm_router.router import get_embedding
 
-        resp = await litellm.aembedding(model=settings.embedding_model, input=[query])
-        query_embedding = resp.data[0]["embedding"]
+        query_embedding = await get_embedding(query, project_id=project_id, endpoint="rag_search")
         db = get_supabase()
         result = db.rpc(
             "ait_search_knowledge",
@@ -211,10 +209,9 @@ class RAGPipeline:
         return [{"content": r["content"], "similarity": r["similarity"]} for r in result.data]
 
     async def _qdrant_search(self, project_id: str, query: str, top_k: int) -> list[dict]:
-        import litellm  # lazy
+        from app.core.llm_router.router import get_embedding
 
-        resp = await litellm.aembedding(model=settings.embedding_model, input=[query])
-        query_embedding = resp.data[0]["embedding"]
+        query_embedding = await get_embedding(query, project_id=project_id, endpoint="rag_search")
         return qdrant_db.search(project_id, query_embedding, limit=top_k)
 
 

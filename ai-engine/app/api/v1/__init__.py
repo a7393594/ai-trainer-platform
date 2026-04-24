@@ -1282,52 +1282,102 @@ async def recommend_model(run_id: str):
 # ============================================
 
 @router.get("/usage/cost/{project_id}")
-async def get_project_cost(project_id: str, days: int = 30):
-    """取得專案成本統計"""
+async def get_project_cost(project_id: str, days: int = 30, tenant_id: str | None = None):
+    """取得成本統計。
+
+    project_id == "all" 時聚合該 tenant 下所有專案（需傳 tenant_id），
+    否則只看單一專案。回應額外帶 by_project / by_endpoint / row_cap_hit。
+    """
     from app.db.supabase import get_supabase
-    from datetime import datetime, timedelta
-    since = (datetime.utcnow() - timedelta(days=days)).isoformat()
-    data = (
-        get_supabase().table("ait_llm_usage")
-        .select("model, input_tokens, output_tokens, total_tokens, cost_usd, latency_ms, endpoint, created_at")
-        .eq("project_id", project_id)
-        .gte("created_at", since)
-        .order("created_at", desc=True)
-        .execute()
-    ).data
+    from datetime import datetime, timezone, timedelta
+    sb = get_supabase()
+    since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+
+    # 取得目標 project_id 集合
+    project_meta: dict[str, str] = {}
+    if project_id == "all":
+        if not tenant_id:
+            raise HTTPException(status_code=400, detail="tenant_id is required when project_id='all'")
+        projs = sb.table("ait_projects").select("id, name").eq("tenant_id", tenant_id).execute().data or []
+        project_meta = {p["id"]: p["name"] for p in projs}
+        if not project_meta:
+            return {"total_cost": 0, "total_tokens": 0, "total_calls": 0, "by_model": {}, "by_project": {}, "by_endpoint": {}, "daily_trend": [], "period_days": days, "row_cap_hit": False}
+    else:
+        proj = sb.table("ait_projects").select("id, name").eq("id", project_id).limit(1).execute().data or []
+        project_meta = {p["id"]: p["name"] for p in proj} or {project_id: project_id[:8]}
+
+    # Postgrest 預設一頁 1000 筆，手動分頁直到讀完，避免高流量專案被截斷
+    PAGE = 1000
+    data: list[dict] = []
+    offset = 0
+    while True:
+        q = (
+            sb.table("ait_llm_usage")
+            .select("project_id, model, input_tokens, output_tokens, total_tokens, cost_usd, latency_ms, endpoint, created_at, cache_creation_input_tokens, cache_read_input_tokens")
+            .gte("created_at", since)
+            .order("created_at", desc=True)
+            .range(offset, offset + PAGE - 1)
+        )
+        if project_id == "all":
+            q = q.in_("project_id", list(project_meta.keys()))
+        else:
+            q = q.eq("project_id", project_id)
+        page = q.execute().data or []
+        data.extend(page)
+        if len(page) < PAGE:
+            break
+        offset += PAGE
+        if offset > 50_000:  # 安全上限
+            break
+    row_cap_hit = offset > 50_000
 
     total_cost = sum(r.get("cost_usd", 0) or 0 for r in data)
     total_tokens = sum(r.get("total_tokens", 0) or 0 for r in data)
     total_calls = len(data)
 
     by_model: dict = {}
+    by_endpoint: dict = {}
+    by_project: dict = {}
     for r in data:
-        m = r["model"]
-        if m not in by_model:
-            by_model[m] = {"calls": 0, "tokens": 0, "cost": 0, "total_latency": 0}
-        by_model[m]["calls"] += 1
-        by_model[m]["tokens"] += r.get("total_tokens", 0) or 0
-        by_model[m]["cost"] += r.get("cost_usd", 0) or 0
-        by_model[m]["total_latency"] += r.get("latency_ms", 0) or 0
+        m = r.get("model", "unknown")
+        ep = r.get("endpoint") or "unknown"
+        pid = r.get("project_id", "unknown")
+        cost = r.get("cost_usd", 0) or 0
+        tokens = r.get("total_tokens", 0) or 0
+        lat = r.get("latency_ms", 0) or 0
+
+        s = by_model.setdefault(m, {"calls": 0, "tokens": 0, "cost": 0, "total_latency": 0})
+        s["calls"] += 1; s["tokens"] += tokens; s["cost"] += cost; s["total_latency"] += lat
+
+        e = by_endpoint.setdefault(ep, {"calls": 0, "tokens": 0, "cost": 0})
+        e["calls"] += 1; e["tokens"] += tokens; e["cost"] += cost
+
+        p = by_project.setdefault(pid, {"name": project_meta.get(pid, pid[:8]), "calls": 0, "tokens": 0, "cost": 0})
+        p["calls"] += 1; p["tokens"] += tokens; p["cost"] += cost
+
     for s in by_model.values():
         s["avg_latency"] = round(s["total_latency"] / s["calls"]) if s["calls"] else 0
 
     daily: dict = {}
     for r in data:
-        day = r["created_at"][:10]
-        if day not in daily:
-            daily[day] = {"calls": 0, "cost": 0, "tokens": 0}
-        daily[day]["calls"] += 1
-        daily[day]["cost"] += r.get("cost_usd", 0) or 0
-        daily[day]["tokens"] += r.get("total_tokens", 0) or 0
+        day = (r.get("created_at") or "")[:10]
+        if not day:
+            continue
+        d = daily.setdefault(day, {"calls": 0, "cost": 0, "tokens": 0})
+        d["calls"] += 1
+        d["cost"] += r.get("cost_usd", 0) or 0
+        d["tokens"] += r.get("total_tokens", 0) or 0
 
     return {
         "total_cost": round(total_cost, 4),
         "total_tokens": total_tokens,
         "total_calls": total_calls,
         "by_model": {k: {**v, "cost": round(v["cost"], 4)} for k, v in by_model.items()},
+        "by_endpoint": {k: {**v, "cost": round(v["cost"], 4)} for k, v in by_endpoint.items()},
+        "by_project": {k: {**v, "cost": round(v["cost"], 4)} for k, v in by_project.items()},
         "daily_trend": [{"date": k, **v, "cost": round(v["cost"], 4)} for k, v in sorted(daily.items())],
         "period_days": days,
+        "row_cap_hit": row_cap_hit,
     }
 
 

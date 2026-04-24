@@ -3,6 +3,7 @@ LLM Router — 多模型切換器 + 成本追蹤
 透過 LiteLLM 統一介面呼叫任何 LLM（Claude / GPT / Gemini / Llama ...）
 """
 import asyncio
+import logging
 import time
 from collections import deque
 from typing import Deque, Optional, Tuple
@@ -11,7 +12,20 @@ from app.config import settings
 
 from app.core.llm_router.models import get_model_pricing
 
-MODEL_PRICING = get_model_pricing()
+logger = logging.getLogger(__name__)
+
+# Embedding pricing per 1M tokens (USD). Only input is billed.
+EMBEDDING_PRICING = {
+    "text-embedding-3-small": 0.02,
+    "text-embedding-3-large": 0.13,
+    "text-embedding-ada-002": 0.10,
+}
+
+# Anthropic prompt caching multipliers applied to base input price:
+#   cache write (creation) = 1.25x base input
+#   cache read             = 0.10x base input
+ANTHROPIC_CACHE_WRITE_MULTIPLIER = 1.25
+ANTHROPIC_CACHE_READ_MULTIPLIER = 0.10
 
 
 # ---------------------------------------------------------------------------
@@ -93,14 +107,74 @@ def _apply_anthropic_cache(messages: list[dict], model: str) -> list[dict]:
     return new_messages
 
 
-def calculate_cost(model: str, input_tokens: int, output_tokens: int) -> float:
-    pricing = MODEL_PRICING.get(model, {"input": 0, "output": 0})
-    return (input_tokens * pricing["input"] + output_tokens * pricing["output"]) / 1_000_000
+def calculate_cost(
+    model: str,
+    input_tokens: int,
+    output_tokens: int,
+    cache_creation_input_tokens: int = 0,
+    cache_read_input_tokens: int = 0,
+) -> float:
+    """Cost in USD. Reads pricing fresh each call so model edits take effect without restart.
+
+    For Anthropic prompt caching:
+      - `input_tokens` should already EXCLUDE cached portions (LiteLLM behaviour).
+      - cache write tokens billed at 1.25x base input price.
+      - cache read tokens billed at 0.10x base input price.
+    """
+    pricing = get_model_pricing().get(model, {"input": 0, "output": 0})
+    base_input = pricing["input"]
+    base_output = pricing["output"]
+    return (
+        input_tokens * base_input
+        + output_tokens * base_output
+        + cache_creation_input_tokens * base_input * ANTHROPIC_CACHE_WRITE_MULTIPLIER
+        + cache_read_input_tokens * base_input * ANTHROPIC_CACHE_READ_MULTIPLIER
+    ) / 1_000_000
 
 
-def _log_usage(project_id: Optional[str], session_id: Optional[str], model: str,
-               input_tokens: int, output_tokens: int, cost: float, latency_ms: int, endpoint: str = "chat"):
-    """Fire-and-forget usage logging"""
+def calculate_embedding_cost(model: str, input_tokens: int) -> float:
+    # `model` may arrive as "openai/text-embedding-3-small" — strip provider prefix.
+    bare = model.split("/", 1)[1] if "/" in model else model
+    rate = EMBEDDING_PRICING.get(bare, 0)
+    return (input_tokens * rate) / 1_000_000
+
+
+def _extract_anthropic_cache_tokens(usage) -> tuple[int, int]:
+    """Pull cache_creation_input_tokens / cache_read_input_tokens from a LiteLLM usage object.
+
+    LiteLLM exposes these on the top-level usage object for Anthropic responses, but field
+    names vary across versions. Returns (cache_creation, cache_read), defaulting to 0.
+    """
+    if not usage:
+        return 0, 0
+    cache_creation = (
+        getattr(usage, "cache_creation_input_tokens", None)
+        or getattr(usage, "prompt_tokens_details", None)
+        and getattr(usage.prompt_tokens_details, "cached_tokens_creation", 0)
+        or 0
+    )
+    cache_read = (
+        getattr(usage, "cache_read_input_tokens", None)
+        or getattr(usage, "prompt_tokens_details", None)
+        and getattr(usage.prompt_tokens_details, "cached_tokens", 0)
+        or 0
+    )
+    return int(cache_creation or 0), int(cache_read or 0)
+
+
+def _log_usage(
+    project_id: Optional[str],
+    session_id: Optional[str],
+    model: str,
+    input_tokens: int,
+    output_tokens: int,
+    cost: float,
+    latency_ms: int,
+    endpoint: str = "chat",
+    cache_creation_input_tokens: int = 0,
+    cache_read_input_tokens: int = 0,
+):
+    """Insert one row into ait_llm_usage. Logs (but doesn't raise) on failure."""
     try:
         from app.db.supabase import get_supabase
         get_supabase().table("ait_llm_usage").insert({
@@ -109,13 +183,18 @@ def _log_usage(project_id: Optional[str], session_id: Optional[str], model: str,
             "model": model,
             "input_tokens": input_tokens,
             "output_tokens": output_tokens,
-            "total_tokens": input_tokens + output_tokens,
+            "total_tokens": input_tokens + output_tokens + cache_creation_input_tokens + cache_read_input_tokens,
             "cost_usd": round(cost, 8),
             "latency_ms": latency_ms,
             "endpoint": endpoint,
+            "cache_creation_input_tokens": cache_creation_input_tokens,
+            "cache_read_input_tokens": cache_read_input_tokens,
         }).execute()
-    except Exception:
-        pass  # non-critical
+    except Exception as e:
+        logger.warning(
+            "ait_llm_usage insert failed (model=%s, endpoint=%s, cost=%.6f): %s",
+            model, endpoint, cost, e,
+        )
 
 
 def init_llm_router():
@@ -140,7 +219,7 @@ def init_llm_router():
     # 開啟成本追蹤
     litellm.success_callback = ["langfuse"] if settings.langfuse_public_key else []
 
-    model_count = len(MODEL_PRICING)
+    model_count = len(get_model_pricing())
     print(f"[OK] LLM Router initialized ({model_count} models)")
 
 
@@ -181,15 +260,20 @@ async def chat_completion(
     response = await litellm.acompletion(**kwargs)
     latency = int((time.time() - start) * 1000)
 
-    # Extract token usage
+    # Extract token usage. For Anthropic, prompt_tokens already EXCLUDES cached tokens
+    # (which are reported separately as cache_creation_input_tokens / cache_read_input_tokens).
     usage = getattr(response, 'usage', None)
     input_tokens = getattr(usage, 'prompt_tokens', 0) if usage else 0
     output_tokens = getattr(usage, 'completion_tokens', 0) if usage else 0
-    cost = calculate_cost(model, input_tokens, output_tokens)
+    cache_creation, cache_read = _extract_anthropic_cache_tokens(usage)
+    cost = calculate_cost(model, input_tokens, output_tokens, cache_creation, cache_read)
 
-    # Log usage
     if project_id:
-        _log_usage(project_id, session_id, model, input_tokens, output_tokens, cost, latency)
+        _log_usage(
+            project_id, session_id, model, input_tokens, output_tokens, cost, latency,
+            cache_creation_input_tokens=cache_creation,
+            cache_read_input_tokens=cache_read,
+        )
 
     # Pipeline Studio tracer hook — no-op if no pipeline_run context
     try:
@@ -238,41 +322,66 @@ async def stream_chat_completion(
 
     收集完整文字後會補記一個 model span 到 Pipeline Studio tracer,成本由 messages 估算。
     """
+    # 套用 Anthropic prompt caching（與非 streaming 路徑一致）
+    effective_messages = _apply_anthropic_cache(messages, model)
+
     kwargs = {
         "model": model,
-        "messages": messages,
+        "messages": effective_messages,
         "temperature": temperature,
         "max_tokens": max_tokens,
         "stream": True,
+        # 要求最後一個 chunk 帶 usage（OpenAI/Anthropic 都支援；LiteLLM 統一轉發）
+        "stream_options": {"include_usage": True},
         "metadata": {"tenant_id": tenant_id} if tenant_id else {},
     }
     await _rate_limiter.acquire(_estimate_tokens(messages))
 
     start = time.time()
     full_text = ""
+    final_usage = None
     response = await litellm.acompletion(**kwargs)
     async for chunk in response:
-        delta = chunk.choices[0].delta
+        # usage 通常只在最後一個 chunk 出現，可能 choices=[]
+        chunk_usage = getattr(chunk, "usage", None)
+        if chunk_usage is not None:
+            final_usage = chunk_usage
+        choices = getattr(chunk, "choices", None) or []
+        if not choices:
+            continue
+        delta = choices[0].delta
         if delta and delta.content:
             full_text += delta.content
             yield delta.content
 
     latency = int((time.time() - start) * 1000)
-    # LiteLLM streaming 通常不回 usage 欄位,這裡用簡單 heuristic 估 token 數:
-    # 每個字元約 0.3 tokens(粗估,用於 Pipeline Studio 顯示成本)。
-    input_chars = sum(
-        len(m.get("content", "")) if isinstance(m.get("content"), str) else 0
-        for m in messages
-    )
-    input_tokens = max(1, int(input_chars * 0.3))
-    output_tokens = max(1, int(len(full_text) * 0.3))
-    cost = calculate_cost(model, input_tokens, output_tokens)
+
+    if final_usage is not None:
+        input_tokens = int(getattr(final_usage, "prompt_tokens", 0) or 0)
+        output_tokens = int(getattr(final_usage, "completion_tokens", 0) or 0)
+        cache_creation, cache_read = _extract_anthropic_cache_tokens(final_usage)
+        token_estimate = False
+    else:
+        # Provider 沒回 usage（少見，但 fallback 仍要存在）。
+        # 改用 LiteLLM 內建的 token_counter 取代 chars*0.3 — 對中文也準確。
+        try:
+            input_tokens = litellm.token_counter(model=model, messages=messages)
+            output_tokens = litellm.token_counter(model=model, text=full_text)
+        except Exception:
+            input_tokens = max(1, sum(len(str(m.get("content", ""))) for m in messages) // 4)
+            output_tokens = max(1, len(full_text) // 4)
+        cache_creation, cache_read = 0, 0
+        token_estimate = True
+
+    cost = calculate_cost(model, input_tokens, output_tokens, cache_creation, cache_read)
 
     if project_id:
         _log_usage(
             project_id, session_id, model,
             input_tokens, output_tokens, cost, latency,
             endpoint="chat_stream",
+            cache_creation_input_tokens=cache_creation,
+            cache_read_input_tokens=cache_read,
         )
 
     # Pipeline Studio tracer hook
@@ -287,16 +396,36 @@ async def stream_chat_completion(
             tokens_out=output_tokens,
             cost_usd=cost,
             latency_ms=latency,
-            metadata={"streaming": True, "token_estimate": True},
+            metadata={"streaming": True, "token_estimate": token_estimate},
         )
     except Exception:
         pass
 
 
-async def get_embedding(text: str) -> list[float]:
-    """取得文字的 Embedding 向量"""
-    response = await litellm.aembedding(
-        model=f"{settings.embedding_provider}/{settings.embedding_model}",
-        input=[text],
-    )
+async def get_embedding(
+    text: str,
+    project_id: Optional[str] = None,
+    session_id: Optional[str] = None,
+    endpoint: str = "embedding",
+) -> list[float]:
+    """取得文字的 Embedding 向量，並記錄成本到 ait_llm_usage。"""
+    model = f"{settings.embedding_provider}/{settings.embedding_model}"
+    start = time.time()
+    response = await litellm.aembedding(model=model, input=[text])
+    latency = int((time.time() - start) * 1000)
+
+    usage = getattr(response, "usage", None)
+    input_tokens = int(getattr(usage, "prompt_tokens", 0) or 0) if usage else 0
+    cost = calculate_embedding_cost(model, input_tokens)
+
+    if project_id:
+        _log_usage(
+            project_id, session_id, model,
+            input_tokens=input_tokens,
+            output_tokens=0,
+            cost=cost,
+            latency_ms=latency,
+            endpoint=endpoint,
+        )
+
     return response.data[0]["embedding"]

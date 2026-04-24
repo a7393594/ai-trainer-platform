@@ -85,7 +85,7 @@ class IntentClassifier:
             return self._empty()
 
         msg_lower = message.lower().strip()
-        msg_embedding = await self._embed(message) if mode in ("semantic", "hybrid") else None
+        msg_embedding = await self._embed(message, project_id=project_id) if mode in ("semantic", "hybrid") else None
 
         best, best_score, best_keywords, best_method = None, 0.0, [], "keyword"
         for rule in rules:
@@ -171,18 +171,12 @@ class IntentClassifier:
             return 0.0
         return max(0.0, _cosine(msg_embedding, trigger_emb))
 
-    async def _embed(self, text: str) -> list[float] | None:
+    async def _embed(self, text: str, project_id: str | None = None) -> list[float] | None:
         """取得文字的 embedding；失敗回 None 讓流程降級為 keyword-only。"""
         try:
-            import litellm  # lazy
+            from app.core.llm_router.router import get_embedding
 
-            from app.config import settings
-
-            resp = await litellm.aembedding(
-                model=settings.embedding_model,
-                input=[text],
-            )
-            return resp.data[0]["embedding"]
+            return await get_embedding(text, project_id=project_id, endpoint="intent_classify")
         except Exception:
             return None
 
