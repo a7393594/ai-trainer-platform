@@ -357,6 +357,8 @@ export interface DAGTestResult {
   widgets: unknown[]
   total_tokens_in: number
   total_tokens_out: number
+  /** Backend-aggregated cost across all model_call nodes in this run. */
+  total_cost_usd?: number
   guardrail_triggered: boolean
   trace: DAGTestTraceEntry[]
 }

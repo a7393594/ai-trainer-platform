@@ -12,7 +12,7 @@
  * - 切換 active DAG
  */
 
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import React, { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   Background, Controls, ReactFlow, ReactFlowProvider,
   addEdge, applyEdgeChanges, applyNodeChanges,
@@ -28,6 +28,7 @@ import {
 import { listTools } from '@/lib/ai-engine'
 import { ModelSelector } from '@/components/shared/ModelSelector'
 import { PromptPicker } from '@/components/shared/PromptPicker'
+import { VariablePicker, insertAtCursor, type UpstreamNode } from '@/components/dag/VariablePicker'
 
 interface XYNodeData extends Record<string, unknown> {
   label: string
@@ -481,6 +482,8 @@ export default function DAGEditorPage() {
               projectDefaultModel={currentProject?.default_model}
               tenantId={tenantId}
               tools={tools}
+              allNodes={nodes}
+              allEdges={edges}
               onChange={(patch) => updateNodeConfig(selectedNode.id, patch)}
               onLabelChange={(newLabel) => {
                 setNodes((nds) => nds.map((n) =>
@@ -559,18 +562,8 @@ export default function DAGEditorPage() {
 
               {testResult && (
                 <div className="space-y-3">
-                  {/* Summary */}
-                  <div className="rounded border border-zinc-700 bg-zinc-800/50 p-3 space-y-1">
-                    <div className="flex items-center justify-between text-[10px] text-zinc-400">
-                      <span>總覽</span>
-                      <span className="font-mono">
-                        {testResult.trace.length} 節點 · {testResult.trace.reduce((a, b) => a + (b.latency_ms || 0), 0)}ms · tokens {testResult.total_tokens_in}→{testResult.total_tokens_out}
-                      </span>
-                    </div>
-                    {testResult.guardrail_triggered && (
-                      <p className="text-[11px] text-yellow-400">🛡️ Guardrail 觸發</p>
-                    )}
-                  </div>
+                  {/* Summary + cost breakdown */}
+                  <TestSummaryPanel result={testResult} />
 
                   {/* Final output */}
                   <div>
@@ -642,6 +635,10 @@ interface NodeConfigPanelProps {
   projectDefaultModel?: string
   tenantId?: string
   tools: Tool[]
+  /** 整個 DAG 的所有節點，給 VariablePicker 找上游 */
+  allNodes: Node<XYNodeData>[]
+  /** 整個 DAG 的所有 edges，給 VariablePicker BFS 找祖先 */
+  allEdges: Edge[]
   onChange: (patch: Record<string, unknown>) => void
   onLabelChange: (newLabel: string) => void
 }
@@ -724,7 +721,30 @@ function PromptRefField({
   )
 }
 
-function NodeConfigPanel({ node, nodeType, config, projectDefaultModel, tenantId, tools, onChange, onLabelChange }: NodeConfigPanelProps) {
+function NodeConfigPanel({ node, nodeType, config, projectDefaultModel, tenantId, tools, allNodes, allEdges, onChange, onLabelChange }: NodeConfigPanelProps) {
+  // 計算上游節點（所有透過 edges 反向 BFS 能到達的祖先），給 VariablePicker 用
+  const upstreamNodes: UpstreamNode[] = useMemo(() => {
+    const ancestors = new Set<string>()
+    const queue = [node.id]
+    while (queue.length) {
+      const cur = queue.pop()!
+      for (const e of allEdges) {
+        if (e.target === cur && !ancestors.has(e.source) && e.source !== node.id) {
+          ancestors.add(e.source)
+          queue.push(e.source)
+        }
+      }
+    }
+    return Array.from(ancestors)
+      .map((id): UpstreamNode | null => {
+        const n = allNodes.find((x) => x.id === id)
+        if (!n) return null
+        const data = n.data as XYNodeData
+        return { id, label: data.label, type_key: data.typeKey }
+      })
+      .filter((x): x is UpstreamNode => x !== null)
+  }, [node.id, allNodes, allEdges])
+
   const fields = nodeType.schema?.fields || []
   const hasCustom = Object.keys(config).length > 0
 
@@ -1079,17 +1099,11 @@ function NodeConfigPanel({ node, nodeType, config, projectDefaultModel, tenantId
       {/* ─── MVP-2 New primitive fields ─────────────────────────── */}
 
       {fields.includes('user_prompt_template') && (
-        <div>
-          <label className="text-[10px] uppercase text-zinc-500 block mb-1">User Prompt 模板</label>
-          <textarea
-            value={(config.user_prompt_template as string) || ''}
-            onChange={(e) => onChange({ user_prompt_template: e.target.value || undefined })}
-            rows={5}
-            placeholder="留空 = 用對話訊息原文。可用 {{node_id.field}} 引用上游節點輸出，例：{{n_classifier.json.intent}}"
-            className="w-full rounded border border-zinc-700 bg-zinc-900 px-2 py-1.5 text-xs text-zinc-200 outline-none focus:border-blue-500 font-mono"
-          />
-          <p className="text-[10px] text-zinc-600 mt-1">語法：<code className="text-zinc-400">{`{{node_id.field.path}}`}</code> 例如 <code className="text-zinc-400">{`{{user_input.message}}`}</code> 或 <code className="text-zinc-400">{`{{n_intent.json.actions}}`}</code></p>
-        </div>
+        <UserPromptTemplateField
+          value={(config.user_prompt_template as string) || ''}
+          onChange={(v) => onChange({ user_prompt_template: v || undefined })}
+          upstream={upstreamNodes}
+        />
       )}
 
       {fields.includes('output_format') && (
@@ -1217,13 +1231,21 @@ function NodeConfigPanel({ node, nodeType, config, projectDefaultModel, tenantId
         <div>
           <label className="text-[10px] uppercase text-zinc-500 block mb-1">分支條件</label>
           <div className="space-y-1.5 rounded border border-zinc-800 bg-zinc-900/50 p-2">
-            <input
-              type="text"
-              value={((config.condition as Record<string, unknown> | undefined)?.source as string) || ''}
-              onChange={(e) => onChange({ condition: { ...((config.condition as object) || {}), source: e.target.value || undefined } })}
-              placeholder="變數 ref，例：n_classifier.json.tool_call"
-              className="w-full rounded border border-zinc-700 bg-zinc-900 px-2 py-1 text-xs text-zinc-200 outline-none focus:border-blue-500 font-mono"
-            />
+            <div className="flex gap-1">
+              <input
+                type="text"
+                value={((config.condition as Record<string, unknown> | undefined)?.source as string) || ''}
+                onChange={(e) => onChange({ condition: { ...((config.condition as object) || {}), source: e.target.value || undefined } })}
+                placeholder="變數 ref"
+                className="flex-1 rounded border border-zinc-700 bg-zinc-900 px-2 py-1 text-xs text-zinc-200 outline-none focus:border-blue-500 font-mono"
+              />
+              <VariablePicker
+                upstream={upstreamNodes}
+                buttonLabel="挑變數"
+                compact
+                onPick={(ref) => onChange({ condition: { ...((config.condition as object) || {}), source: ref } })}
+              />
+            </div>
             <div className="flex gap-1">
               <select
                 value={((config.condition as Record<string, unknown> | undefined)?.operator as string) || '=='}
@@ -1310,6 +1332,146 @@ function NodeConfigPanel({ node, nodeType, config, projectDefaultModel, tenantId
             清除此節點所有自訂
           </button>
         </div>
+      )}
+    </div>
+  )
+}
+
+// ============================================================================
+// TestSummaryPanel — 測試結果上方的成本/節點/延遲總覽 + 各節點 cost 佔比
+// ============================================================================
+
+function TestSummaryPanel({ result }: { result: DAGTestResult }) {
+  const totalLatency = result.trace.reduce((a, b) => a + (b.latency_ms || 0), 0)
+  const totalCost = result.total_cost_usd ?? 0
+
+  // 每個 model_call 節點的實際 cost（從 trace.output.cost_usd 抓）
+  const llmNodes = result.trace
+    .filter((t) => t.type_key === 'model_call' || t.type_key === 'call_model')
+    .map((t) => {
+      const out = (t.output as Record<string, unknown> | null) || {}
+      const cost = typeof out.cost_usd === 'number' ? out.cost_usd : 0
+      const model = typeof out.model === 'string' ? out.model : '?'
+      const tokensIn = typeof out.tokens_in === 'number' ? out.tokens_in : 0
+      const tokensOut = typeof out.tokens_out === 'number' ? out.tokens_out : 0
+      return {
+        label: t.label || t.node_id,
+        model,
+        cost,
+        tokensIn,
+        tokensOut,
+        pct: totalCost > 0 ? (cost / totalCost) * 100 : 0,
+      }
+    })
+    .filter((x) => x.cost > 0 || x.tokensIn > 0)
+
+  return (
+    <div className="space-y-2">
+      <div className="rounded border border-zinc-700 bg-zinc-800/50 p-3 space-y-1.5">
+        <div className="flex items-center justify-between text-[10px] text-zinc-400">
+          <span>總覽</span>
+          <span className="font-mono">{result.trace.length} 節點 · {totalLatency}ms</span>
+        </div>
+        <div className="flex items-center justify-between text-xs">
+          <span className="text-zinc-300">
+            tokens <span className="font-mono text-blue-300">{result.total_tokens_in.toLocaleString()}</span> → <span className="font-mono text-emerald-300">{result.total_tokens_out.toLocaleString()}</span>
+          </span>
+          <span className="text-zinc-300">
+            cost <span className="font-mono text-emerald-400">${totalCost < 0.0001 ? totalCost.toExponential(2) : totalCost.toFixed(4)}</span>
+          </span>
+        </div>
+        {result.guardrail_triggered && (
+          <p className="text-[11px] text-yellow-400">🛡️ Guardrail 觸發</p>
+        )}
+      </div>
+
+      {/* Per-LLM-node cost breakdown */}
+      {llmNodes.length > 0 && (
+        <div className="rounded border border-zinc-700 bg-zinc-800/30 p-2">
+          <p className="text-[10px] uppercase text-zinc-500 mb-1.5">LLM 成本分佈</p>
+          <div className="space-y-1">
+            {llmNodes.map((n, i) => (
+              <div key={i} className="flex items-center gap-2 text-[10px]">
+                <span className="text-zinc-300 w-32 truncate" title={n.label}>{n.label}</span>
+                <span className="text-zinc-500 font-mono w-24 truncate" title={n.model}>{n.model.split('-').slice(0, 3).join('-')}</span>
+                <div className="flex-1 h-1.5 bg-zinc-800 rounded overflow-hidden">
+                  <div className="h-full bg-emerald-600" style={{ width: `${Math.min(n.pct, 100)}%` }} />
+                </div>
+                <span className="text-emerald-400 font-mono w-16 text-right">${n.cost < 0.0001 ? n.cost.toExponential(2) : n.cost.toFixed(4)}</span>
+                <span className="text-zinc-600 font-mono w-10 text-right">{n.pct.toFixed(0)}%</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ============================================================================
+// UserPromptTemplateField — textarea + 變數 picker（游標位置插入）+ 即時驗證
+// ============================================================================
+
+function UserPromptTemplateField({
+  value, onChange, upstream,
+}: {
+  value: string
+  onChange: (v: string) => void
+  upstream: UpstreamNode[]
+}) {
+  const ref = React.useRef<HTMLTextAreaElement>(null)
+
+  const handlePick = (ref_: string) => {
+    const el = ref.current
+    const { next, cursor } = insertAtCursor(el, value, `{{${ref_}}}`)
+    onChange(next)
+    // 還原游標位置（textarea 重新 render 後）
+    requestAnimationFrame(() => {
+      if (el) {
+        el.focus()
+        el.setSelectionRange(cursor, cursor)
+      }
+    })
+  }
+
+  // Edit-time validation：找出 {{...}} 引用了不在 upstream 的節點
+  const upstreamIds = new Set(upstream.map((u) => u.id))
+  // user_input / ctx 是特殊根（template engine 接受）
+  upstreamIds.add('user_input')
+  upstreamIds.add('ctx')
+  const refs = (value || '').match(/\{\{\s*([^{}]+?)\s*\}\}/g) || []
+  const unknownRefs = refs
+    .map((r) => r.replace(/^\{\{\s*|\s*\}\}$/g, '').split('.')[0])
+    .filter((id) => !upstreamIds.has(id))
+  const hasWarning = unknownRefs.length > 0
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-1">
+        <label className="text-[10px] uppercase text-zinc-500">User Prompt 模板</label>
+        <VariablePicker upstream={upstream} onPick={handlePick} compact />
+      </div>
+      <textarea
+        ref={ref}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        rows={5}
+        placeholder="留空 = 用對話訊息原文。點右上「+ 插入變數」從上游節點挑欄位。"
+        className={`w-full rounded border bg-zinc-900 px-2 py-1.5 text-xs text-zinc-200 outline-none focus:border-blue-500 font-mono ${
+          hasWarning ? 'border-yellow-700' : 'border-zinc-700'
+        }`}
+      />
+      {hasWarning && (
+        <p className="text-[10px] text-yellow-400 mt-1">
+          ⚠ 引用了未知節點：<span className="font-mono">{Array.from(new Set(unknownRefs)).join(', ')}</span>（不存在於上游或拼錯）
+        </p>
+      )}
+      {!hasWarning && (
+        <p className="text-[10px] text-zinc-600 mt-1">
+          {refs.length > 0
+            ? `已引用 ${refs.length} 個變數`
+            : '可用變數：上游 ' + upstream.length + ' 個節點 + user_input.message'}
+        </p>
       )}
     </div>
   )
