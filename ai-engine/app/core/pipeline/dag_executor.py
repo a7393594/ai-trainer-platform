@@ -539,6 +539,55 @@ async def handle_compose_prompt(node: dict, ctx: DAGContext) -> dict:
     }
 
 
+# ============================================================================
+# Synthesis model auto-upgrade
+# ============================================================================
+
+SONNET_MODEL = "claude-sonnet-4-20250514"
+
+
+def _maybe_upgrade_synthesis_model(
+    ctx: DAGContext,
+    cfg: dict,
+    current_model: str,
+) -> tuple[str, str | None]:
+    """複雜題自動把 Haiku synthesis 升級到 Sonnet。
+
+    Returns (model, upgrade_reason or None)。保留 cfg["synthesis_auto_upgrade"]=false
+    讓配置可關閉；非 Haiku 模型不動。
+
+    Why: Haiku 在 multi-step 推理 + 牌力判讀 + 算術三個維度都比 Sonnet 弱，容易把
+    工具結果合成成錯誤結論（曾發生 K♥J♥ 被判定成順子等事件）。複雜分析題（多工具、
+    多人格、多知識點，或手牌紀錄區塊）自動升級回 Sonnet 確保合成品質。
+    """
+    if cfg.get("synthesis_auto_upgrade") is False:
+        return current_model, None
+    cur = (current_model or "").lower()
+    if "haiku" not in cur:
+        return current_model, None
+
+    analysis = ctx.analysis or {}
+    actions = analysis.get("actions") or []
+    knowledge = analysis.get("knowledge_points") or []
+    styles = analysis.get("response_styles") or []
+    msg = ctx.user_message or ""
+
+    reasons: list[str] = []
+    if len(actions) >= 3:
+        reasons.append(f"actions={len(actions)}")
+    if len(knowledge) >= 5:
+        reasons.append(f"knowledge_points={len(knowledge)}")
+    if len(styles) >= 2:
+        reasons.append(f"multi-persona={'+'.join(styles)}")
+    if "=== AI 分析資料 ===" in msg or "[手牌紀錄]" in msg:
+        reasons.append("hand-record-block")
+
+    if not reasons:
+        return current_model, None
+
+    return SONNET_MODEL, ", ".join(reasons)
+
+
 async def _plan_and_execute(
     node: dict,
     ctx: DAGContext,
@@ -556,6 +605,10 @@ async def _plan_and_execute(
 
     planner_model = cfg.get("planner_model") or cfg.get("synthesis_model") or ctx.model
     syn_model = cfg.get("synthesis_model") or ctx.model
+    _upgraded_syn, _upgrade_reason = _maybe_upgrade_synthesis_model(ctx, cfg, syn_model)
+    if _upgrade_reason:
+        print(f"[INFO] synthesis auto-upgrade: {syn_model} → {_upgraded_syn} (reason: {_upgrade_reason})", flush=True)
+        syn_model = _upgraded_syn
     syn_sys = crud.resolve_prompt(
         project_id=ctx.project_id,
         ref_version_id=cfg.get("synthesis_system_prompt_ref_version"),
@@ -1160,6 +1213,10 @@ async def handle_call_model(node: dict, ctx: DAGContext) -> dict:
                             )
                             # 允許 node config 覆寫：synthesis_model / synthesis_system_prompt
                             _syn_model = cfg.get("synthesis_model") or ctx.model
+                            _upgraded, _reason = _maybe_upgrade_synthesis_model(ctx, cfg, _syn_model)
+                            if _reason:
+                                print(f"[INFO] synthesis L2 auto-upgrade: {_syn_model} → {_upgraded} (reason: {_reason})", flush=True)
+                                _syn_model = _upgraded
                             _syn_sys_prompt = cfg.get("synthesis_system_prompt") or (
                                 "你是一個助手。根據以下工具執行結果，用繁體中文提供清楚完整的回答。"
                             )
