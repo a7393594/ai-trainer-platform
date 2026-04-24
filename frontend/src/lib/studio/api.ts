@@ -366,6 +366,30 @@ export async function testDag(dagId: string, userMessage: string): Promise<DAGTe
   })
 }
 
+/**
+ * 測試「未儲存」的 DAG 草稿 — 直接把 in-memory nodes/edges 送出，
+ * 後端不查 DB、不影響 active 版本。
+ */
+export async function testDagInline(
+  projectId: string,
+  userMessage: string,
+  nodes: DAGNode[],
+  edges: DAGEdge[],
+  options?: { user_id?: string; name?: string },
+): Promise<DAGTestResult> {
+  return request<DAGTestResult>(`/api/v1/pipeline/dag/test-inline`, {
+    method: 'POST',
+    body: JSON.stringify({
+      project_id: projectId,
+      user_message: userMessage,
+      nodes,
+      edges,
+      ...(options?.user_id ? { user_id: options.user_id } : {}),
+      ...(options?.name ? { name: options.name } : {}),
+    }),
+  })
+}
+
 export async function selectComparison(
   runId: string,
   nodeId: string,

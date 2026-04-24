@@ -551,14 +551,15 @@ def _maybe_upgrade_synthesis_model(
     cfg: dict,
     current_model: str,
 ) -> tuple[str, str | None]:
-    """複雜題自動把 Haiku synthesis 升級到 Sonnet。
+    """複雜題時把 Haiku synthesis 升級到較強模型。
 
-    Returns (model, upgrade_reason or None)。保留 cfg["synthesis_auto_upgrade"]=false
-    讓配置可關閉；非 Haiku 模型不動。
+    Returns (model, upgrade_reason or None)。
 
-    Why: Haiku 在 multi-step 推理 + 牌力判讀 + 算術三個維度都比 Sonnet 弱，容易把
-    工具結果合成成錯誤結論（曾發生 K♥J♥ 被判定成順子等事件）。複雜分析題（多工具、
-    多人格、多知識點，或手牌紀錄區塊）自動升級回 Sonnet 確保合成品質。
+    Toggles (per-node config on call_model):
+      - `synthesis_auto_upgrade` (bool, default True) — False 時整個機制關閉
+      - `synthesis_upgrade_model` (str, default "claude-sonnet-4-20250514") — 升級目標
+
+    非 Haiku 模型永遠不動（不會被「降級」），因為使用者明確選了一個非便宜模型。
     """
     if cfg.get("synthesis_auto_upgrade") is False:
         return current_model, None
@@ -585,7 +586,8 @@ def _maybe_upgrade_synthesis_model(
     if not reasons:
         return current_model, None
 
-    return SONNET_MODEL, ", ".join(reasons)
+    upgrade_target = cfg.get("synthesis_upgrade_model") or SONNET_MODEL
+    return upgrade_target, ", ".join(reasons)
 
 
 async def _plan_and_execute(

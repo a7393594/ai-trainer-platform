@@ -22,7 +22,7 @@ import '@xyflow/react/dist/style.css'
 import { useProject } from '@/lib/project-context'
 import {
   getActiveDag, listDags, listNodeTypes, createDag, updateDag, activateDag, deleteDag,
-  testDag,
+  testDagInline,
   type PipelineDAG, type NodeType, type DAGNode, type DAGEdge, type DAGTestResult,
 } from '@/lib/studio/api'
 import { listTools } from '@/lib/ai-engine'
@@ -312,19 +312,24 @@ export default function DAGEditorPage() {
   }
 
   const handleTestDag = async () => {
-    if (!currentDag) return
+    if (!currentDag || !projectId) return
     setTestRunning(true)
     setTestError(null)
     setTestResult(null)
     try {
-      // If dirty, warn user first
-      if (dirty) {
-        if (!confirm('當前變更尚未儲存，測試會使用已儲存的版本。是否繼續？')) {
-          setTestRunning(false)
-          return
-        }
-      }
-      const res = await testDag(currentDag.id, testInput)
+      // Test the editor's CURRENT in-memory state — does not touch DB,
+      // does not require save/activate, does not affect production /chat.
+      const dagNodes: DAGNode[] = nodes.map((n) => ({
+        id: n.id,
+        type_key: (n.data as XYNodeData).typeKey,
+        label: (n.data as XYNodeData).label,
+        config: nodeConfigs[n.id] || {},
+        position: n.position,
+      }))
+      const dagEdges: DAGEdge[] = edges.map((e) => ({ from: e.source, to: e.target }))
+      const res = await testDagInline(projectId, testInput, dagNodes, dagEdges, {
+        name: `${currentDag.name} (inline test)`,
+      })
       setTestResult(res)
     } catch (e) {
       setTestError(e instanceof Error ? e.message : '測試失敗')
@@ -396,7 +401,7 @@ export default function DAGEditorPage() {
           onClick={() => setTestModalOpen(true)}
           disabled={!currentDag}
           className="rounded bg-purple-600 px-3 py-1.5 text-xs text-white hover:bg-purple-500 disabled:opacity-50"
-          title="用測試 input 跑此 DAG，看每個節點結果"
+          title="用當前編輯器狀態（含未儲存變更）跑一次，不會影響線上版本"
         >
           ▶ 測試此 DAG
         </button>
@@ -879,6 +884,38 @@ function NodeConfigPanel({ node, nodeType, config, projectDefaultModel, tenantId
             className="w-full"
           />
           <p className="text-[10px] text-zinc-600 mt-1">工具呼叫耗盡後合成回覆用的模型；未設定則同主模型</p>
+        </div>
+      )}
+
+      {fields.includes('synthesis_auto_upgrade') && (
+        <div>
+          <label className="flex items-center gap-2 text-[11px] text-zinc-300">
+            <input
+              type="checkbox"
+              checked={config.synthesis_auto_upgrade !== false}
+              onChange={(e) => onChange({ synthesis_auto_upgrade: e.target.checked })}
+              className="rounded border-zinc-700 bg-zinc-800"
+            />
+            複雜問題自動升級合成模型
+          </label>
+          <p className="text-[10px] text-zinc-600 mt-1 ml-5">
+            合成模型為 Haiku 且遇到「多動作 / 多知識點 / 多人格 / 含手牌紀錄」時，自動改用下方模型以確保品質。
+            關閉後無論題目多複雜都維持原設模型。
+          </p>
+          {config.synthesis_auto_upgrade !== false && fields.includes('synthesis_upgrade_model') && (
+            <div className="mt-2 ml-5">
+              <label className="text-[10px] uppercase text-zinc-500 block mb-1">升級目標模型</label>
+              <ModelSelector
+                value={(config.synthesis_upgrade_model as string) || ''}
+                onChange={(v) => onChange({ synthesis_upgrade_model: v })}
+                projectDefault={projectDefaultModel}
+                tenantId={tenantId}
+                showWarning
+                className="w-full"
+              />
+              <p className="text-[10px] text-zinc-600 mt-1">未設定則用 Claude Sonnet 4（預設）</p>
+            </div>
+          )}
         </div>
       )}
 

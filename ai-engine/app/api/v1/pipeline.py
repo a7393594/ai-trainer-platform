@@ -22,7 +22,7 @@ import uuid
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.core.comparison.engine import run_single_prompt_parallel
 from app.db import crud
@@ -925,9 +925,10 @@ class DAGTestRequest(BaseModel):
 
 @router.post("/dag/{dag_id}/test")
 async def test_dag(dag_id: str, req: DAGTestRequest):
-    """Execute a DAG with a test input and return trace + final output.
+    """Execute a SAVED DAG with a test input and return trace + final output.
 
-    不寫入 ait_training_messages，純測試用。
+    不寫入 ait_training_messages，純測試用。如要測試編輯器中尚未儲存的變更，
+    請改用 /dag/test-inline。
     """
     from app.core.pipeline.dag_executor import execute_dag
     dag = crud.get_dag(dag_id)
@@ -945,6 +946,73 @@ async def test_dag(dag_id: str, req: DAGTestRequest):
             "dag_id": dag_id,
             "dag_name": dag.get("name"),
             "dag_version": dag.get("version"),
+            **result,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"DAG execution failed: {e}")
+
+
+# --- Inline DAG test ---------------------------------------------------------
+
+class InlineDAGNode(BaseModel):
+    id: str
+    type_key: str
+    label: Optional[str] = None
+    config: dict = {}
+    position: Optional[dict] = None
+
+
+class InlineDAGEdge(BaseModel):
+    from_: str = Field(..., alias="from")
+    to: str
+
+    class Config:
+        populate_by_name = True
+
+
+class DAGInlineTestRequest(BaseModel):
+    project_id: str
+    user_message: str
+    nodes: list[InlineDAGNode]
+    edges: list[InlineDAGEdge] = []
+    user_id: Optional[str] = None
+    name: Optional[str] = "__inline_test__"
+
+
+@router.post("/dag/test-inline")
+async def test_dag_inline(req: DAGInlineTestRequest):
+    """Execute a DAG defined inline in the request body — does NOT touch DB.
+
+    Used by the DAG editor's "Test" button so the user can iterate without
+    saving / activating. Bypasses crud.get_dag entirely; nothing is persisted
+    and the project's active DAG is unaffected.
+    """
+    from app.core.pipeline.dag_executor import execute_dag
+
+    if not req.nodes:
+        raise HTTPException(status_code=400, detail="nodes cannot be empty")
+
+    dag = {
+        "id": "__inline__",
+        "project_id": req.project_id,
+        "name": req.name or "__inline_test__",
+        "version": 0,
+        "is_active": False,
+        "nodes": [n.model_dump() for n in req.nodes],
+        "edges": [{"from": e.from_, "to": e.to} for e in req.edges],
+    }
+
+    try:
+        result = await execute_dag(
+            dag=dag,
+            project_id=req.project_id,
+            user_message=req.user_message,
+            user_id=req.user_id,
+        )
+        return {
+            "dag_id": "__inline__",
+            "dag_name": dag["name"],
+            "dag_version": 0,
             **result,
         }
     except Exception as e:
