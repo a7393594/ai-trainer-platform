@@ -84,12 +84,12 @@ async def _preprocess_images(request: ChatRequest) -> None:
     """Run vision describe on each attached image and prepend the results to `request.message`.
 
     Mutates request in place so downstream code (DAG / orchestrator) sees a text-only message.
+    Failures degrade gracefully: message gets a short marker; the full error is logged only.
     """
     if not request.images:
         return
     import logging as _logging
     _log = _logging.getLogger(__name__)
-    _log.warning("[vision] _preprocess_images: count=%d, first_img_type=%s", len(request.images), request.images[0][:30] if request.images else "")
 
     from app.core.vision.preprocess import describe_images, build_message_with_image_descriptions
     tenant_id: Optional[str] = None
@@ -105,17 +105,20 @@ async def _preprocess_images(request: ChatRequest) -> None:
     except Exception as e:
         _log.warning("[vision] describe_images raised: %s", str(e)[:300])
         descriptions = []
-    # describe_image returns "" for empty input, "ERR:<msg>" on exception, or real text on success.
-    successes = [d for d in descriptions if d and not d.startswith("ERR:")]
-    errors = [d[4:] for d in descriptions if d.startswith("ERR:")]
-    _log.warning("[vision] descriptions: total=%d successes=%d errors=%d", len(descriptions), len(successes), len(errors))
-    if successes:
-        request.message = build_message_with_image_descriptions(request.message, [d if not d.startswith("ERR:") else "" for d in descriptions])
-    elif errors:
-        # Surface first error to DB so operator can diagnose without Render log access.
-        request.message = f"[圖片視覺分析失敗: {errors[0][:200]}]\n{request.message}"
+
+    # describe_image returns "" for empty input, "ERR:<msg>" on failure, or real text on success.
+    cleaned = [d for d in descriptions if d and not d.startswith("ERR:")]
+    for d in descriptions:
+        if d.startswith("ERR:"):
+            _log.warning("[vision] describe error: %s", d[4:300])
+    if cleaned:
+        request.message = build_message_with_image_descriptions(
+            request.message,
+            [d if (d and not d.startswith("ERR:")) else "" for d in descriptions],
+        )
     else:
-        request.message = f"[圖片上傳但無有效內容]\n{request.message}"
+        # Succinct user-facing marker; detailed error stays in logs only.
+        request.message = f"[無法讀取圖片內容]\n{request.message}"
     request.images = []
 
 
