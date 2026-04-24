@@ -114,6 +114,7 @@ async def chat_stream(request: ChatRequest):
         try:
             if settings.use_dag_executor_for_chat:
                 # DAG 路徑：背景跑 DAG，同時從 progress queue 即時串流事件給前端
+                # 事件類型：status: analyzing|analyzed|thinking|tool_plan|tool_start|tool_done|synthesizing
                 from app.core.pipeline.chat_adapter import process_via_dag
                 import asyncio as _asyncio
                 progress_queue: _asyncio.Queue = _asyncio.Queue()
