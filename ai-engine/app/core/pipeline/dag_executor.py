@@ -41,9 +41,11 @@ class DAGContext:
         session_id: Optional[str] = None,
         persist: bool = False,
         pre_loaded_history: Optional[list[dict]] = None,
+        tenant_id: Optional[str] = None,
     ):
         self.project_id = project_id
         self.user_id = user_id
+        self.tenant_id = tenant_id  # for per-tenant LLM provider key resolution
         self.user_message = user_message
 
         # 生產整合欄位（adapter 注入）
@@ -1854,6 +1856,7 @@ async def execute_dag(
     pre_loaded_history: Optional[list[dict]] = None,
     progress_sink: Optional[object] = None,
     mode_prompt: Optional[str] = None,
+    tenant_id: Optional[str] = None,
 ) -> dict:
     """執行一個 DAG 定義。
 
@@ -1884,6 +1887,7 @@ async def execute_dag(
         session_id=session_id,
         persist=persist,
         pre_loaded_history=pre_loaded_history,
+        tenant_id=tenant_id,
     )
     ctx.progress_sink = progress_sink
     ctx.mode_prompt = mode_prompt

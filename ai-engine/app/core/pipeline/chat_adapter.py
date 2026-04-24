@@ -57,6 +57,14 @@ async def process_via_dag(request: ChatRequest, progress_sink: Optional[object] 
     # 5. 取 active DAG — 沒就懶建立
     dag = await ensure_active_dag(request.project_id)
 
+    # 5b. 解析 tenant_id（給 model_call handler 找 per-tenant provider key）
+    tenant_id_for_dag: Optional[str] = None
+    try:
+        proj = crud.get_project(request.project_id)
+        tenant_id_for_dag = (proj or {}).get("tenant_id")
+    except Exception:
+        tenant_id_for_dag = None
+
     # 6. 包 pipeline_run_context,讓 Pipeline Studio 追蹤此輪
     async with pipeline_run_context(
         project_id=request.project_id,
@@ -75,6 +83,7 @@ async def process_via_dag(request: ChatRequest, progress_sink: Optional[object] 
             pre_loaded_history=history,
             progress_sink=progress_sink,
             mode_prompt=request.mode_prompt,
+            tenant_id=tenant_id_for_dag,
         )
         # 對齊 agent.py:150-152：把 assistant_message_id 連結回 pipeline run
         run = current_run()

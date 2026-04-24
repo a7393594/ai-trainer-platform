@@ -377,7 +377,7 @@ export async function testDagInline(
   userMessage: string,
   nodes: DAGNode[],
   edges: DAGEdge[],
-  options?: { user_id?: string; name?: string },
+  options?: { user_id?: string; name?: string; tenant_id?: string },
 ): Promise<DAGTestResult> {
   return request<DAGTestResult>(`/api/v1/pipeline/dag/test-inline`, {
     method: 'POST',
@@ -387,6 +387,7 @@ export async function testDagInline(
       nodes,
       edges,
       ...(options?.user_id ? { user_id: options.user_id } : {}),
+      ...(options?.tenant_id ? { tenant_id: options.tenant_id } : {}),
       ...(options?.name ? { name: options.name } : {}),
     }),
   })

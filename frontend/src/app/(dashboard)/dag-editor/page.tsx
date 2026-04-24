@@ -329,6 +329,7 @@ export default function DAGEditorPage() {
       const dagEdges: DAGEdge[] = edges.map((e) => ({ from: e.source, to: e.target }))
       const res = await testDagInline(projectId, testInput, dagNodes, dagEdges, {
         name: `${currentDag.name} (inline test)`,
+        tenant_id: tenantId,
       })
       setTestResult(res)
     } catch (e) {

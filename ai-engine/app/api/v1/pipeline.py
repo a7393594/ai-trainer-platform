@@ -977,6 +977,7 @@ class DAGInlineTestRequest(BaseModel):
     nodes: list[InlineDAGNode]
     edges: list[InlineDAGEdge] = []
     user_id: Optional[str] = None
+    tenant_id: Optional[str] = None  # for per-tenant provider key resolution
     name: Optional[str] = "__inline_test__"
 
 
@@ -987,11 +988,22 @@ async def test_dag_inline(req: DAGInlineTestRequest):
     Used by the DAG editor's "Test" button so the user can iterate without
     saving / activating. Bypasses crud.get_dag entirely; nothing is persisted
     and the project's active DAG is unaffected.
+
+    tenant_id is needed for per-tenant LLM provider key resolution (Settings →
+    Provider API Keys). If not given but user_id is, we look it up from ait_users.
     """
     from app.core.pipeline.dag_executor import execute_dag
 
     if not req.nodes:
         raise HTTPException(status_code=400, detail="nodes cannot be empty")
+
+    tenant_id = req.tenant_id
+    if not tenant_id and req.user_id:
+        try:
+            user = crud.get_user(req.user_id)
+            tenant_id = user.get("tenant_id") if user else None
+        except Exception:
+            tenant_id = None
 
     dag = {
         "id": "__inline__",
@@ -1009,6 +1021,7 @@ async def test_dag_inline(req: DAGInlineTestRequest):
             project_id=req.project_id,
             user_message=req.user_message,
             user_id=req.user_id,
+            tenant_id=tenant_id,
         )
         return {
             "dag_id": "__inline__",
