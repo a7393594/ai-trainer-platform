@@ -916,7 +916,10 @@ D. 問題含「EV / 期望值」
         {"role": "user", "content": (
             f"問題：{ctx.user_message}\n\n"
             f"工具結果（共 {len(tool_results)} 個）：\n{tool_text}\n\n"
-            "請根據以上工具結果提供完整且具體的最終回覆。"
+            "請根據以上工具結果提供完整且具體的最終回覆。\n\n"
+            "【硬規則】禁止自行推斷雙方最終牌型名稱（如順子/兩對/同花/三條/葫蘆/同花順）。"
+            "牌型名稱需要完整 5 張牌組合計算，工具結果沒有明確告訴你就不要說。"
+            "若 equity=100%，只說『工具確認 Hero 100% 獲勝』，不要猜測是哪種牌力。"
         )},
     ]
     _start = time.time()
@@ -1034,10 +1037,17 @@ async def handle_call_model(node: dict, ctx: DAGContext) -> dict:
     # 比傳統 tool_loop 省 ~80% 成本（避開每輪重送完整歷史）
     if cfg.get("planning_mode") and tools_payload:
         try:
-            return await _plan_and_execute(
+            _pe_result = await _plan_and_execute(
                 node, ctx, cfg, tools_payload,
                 iteration_details=iteration_details,
             )
+            # 把 synthesis_model 冒泡到 response_metadata，方便前端 / debug
+            _pe_out = _pe_result.get("output") or {}
+            if _pe_out.get("synthesis_model"):
+                ctx.response_metadata["synthesis_model"] = _pe_out["synthesis_model"]
+            if _pe_out.get("planner_model"):
+                ctx.response_metadata["planner_model"] = _pe_out["planner_model"]
+            return _pe_result
         except Exception as _pe:
             # fallback 到傳統 tool_loop
             print(f"[WARN] plan_and_execute failed, falling back to tool_loop: {_pe}", flush=True)
