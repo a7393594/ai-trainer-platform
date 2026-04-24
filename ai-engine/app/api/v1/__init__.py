@@ -87,8 +87,11 @@ async def _preprocess_images(request: ChatRequest) -> None:
     """
     if not request.images:
         return
+    import logging as _logging
+    _log = _logging.getLogger(__name__)
+    _log.warning("[vision] _preprocess_images: count=%d, first_img_type=%s", len(request.images), request.images[0][:30] if request.images else "")
+
     from app.core.vision.preprocess import describe_images, build_message_with_image_descriptions
-    # Resolve tenant for per-tenant provider key (anthropic uses env, passthrough for others)
     tenant_id: Optional[str] = None
     if request.user_id:
         try:
@@ -97,9 +100,18 @@ async def _preprocess_images(request: ChatRequest) -> None:
             tenant_id = user.get("tenant_id") if user else None
         except Exception:
             pass
-    descriptions = await describe_images(request.images, tenant_id=tenant_id)
-    request.message = build_message_with_image_descriptions(request.message, descriptions)
-    # Clear so downstream doesn't re-process (e.g. chat_stream path)
+    try:
+        descriptions = await describe_images(request.images, tenant_id=tenant_id)
+    except Exception as e:
+        _log.warning("[vision] describe_images raised: %s", str(e)[:300])
+        descriptions = []
+    non_empty = [d for d in descriptions if d]
+    _log.warning("[vision] descriptions: total=%d non_empty=%d, preview=%r", len(descriptions), len(non_empty), (non_empty[0][:120] if non_empty else None))
+    if non_empty:
+        request.message = build_message_with_image_descriptions(request.message, descriptions)
+    else:
+        # Emit a visible marker so the DB message shows the vision attempt happened even if descriptions failed.
+        request.message = f"[圖片上傳但視覺分析失敗,請改用文字描述]\n{request.message}"
     request.images = []
 
 
