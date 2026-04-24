@@ -609,7 +609,7 @@ async def _plan_and_execute(
     if _upgrade_reason:
         print(f"[INFO] synthesis auto-upgrade: {syn_model} → {_upgraded_syn} (reason: {_upgrade_reason})", flush=True)
         syn_model = _upgraded_syn
-    syn_sys = crud.resolve_prompt(
+    _syn_base = crud.resolve_prompt(
         project_id=ctx.project_id,
         ref_version_id=cfg.get("synthesis_system_prompt_ref_version"),
         ref=cfg.get("synthesis_system_prompt_ref"),
@@ -620,6 +620,10 @@ async def _plan_and_execute(
             "不要憑空添加未在資料中出現的內容。"
         ),
     )
+    # 合併主對話 system prompt（含人格規則）到 synthesis，確保 synthesis 也遵守
+    # 例如：mode_coach 禁止憑眼睛推斷牌型名稱，必須也作用於 synthesis 步驟
+    _main_sys = ctx.system_prompt or ""
+    syn_sys = (f"{_main_sys}\n\n---\n{_syn_base}") if _main_sys else _syn_base
 
     total_in = 0
     total_out = 0
