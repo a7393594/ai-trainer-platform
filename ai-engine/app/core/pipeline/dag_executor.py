@@ -722,6 +722,11 @@ C. 問題含 `[手牌紀錄]` 或 `=== AI 分析資料 ===` 區塊
 D. 問題含「EV / 期望值」
    → 規劃 `calculate_ev`
 
+E. 問題含 `[手牌紀錄]` 或 `=== AI 分析資料 ===` 區塊，且問題涉及「為什麼贏/輸 / 哪種牌型 / 牌力 / 比較牌型 / 誰的手更好」
+   → 除了 `calculate_equity`，**也規劃** `evaluate_hand`
+   → params: {{"players": [hero.hand, villain.hand], "board": board}}
+   → 理由：`calculate_equity` 只給勝率，`evaluate_hand` 給確切牌型名稱（如兩對/一對），避免 AI 憑眼睛腦補
+
 若以上都不符合（純概念教學、閒聊），可回傳 `[]` 空 array。
 
 輸出**純 JSON**（不要加任何說明、不要 markdown code block），格式：
