@@ -373,6 +373,7 @@ export default function PipelineConfigPage() {
                           value={cfg.model || ''}
                           onChange={(v) => updateNodeConfig(node.label, { model: v })}
                           projectDefault={currentProject?.default_model}
+                          tenantId={tenantId}
                           showWarning
                           className="w-full"
                         />

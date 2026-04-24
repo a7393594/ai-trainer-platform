@@ -473,6 +473,7 @@ export default function DAGEditorPage() {
               nodeType={selectedNodeType}
               config={nodeConfigs[selectedNode.id] || {}}
               projectDefaultModel={currentProject?.default_model}
+              tenantId={tenantId}
               tools={tools}
               onChange={(patch) => updateNodeConfig(selectedNode.id, patch)}
               onLabelChange={(newLabel) => {
@@ -633,6 +634,7 @@ interface NodeConfigPanelProps {
   nodeType: NodeType
   config: Record<string, unknown>
   projectDefaultModel?: string
+  tenantId?: string
   tools: Tool[]
   onChange: (patch: Record<string, unknown>) => void
   onLabelChange: (newLabel: string) => void
@@ -716,7 +718,7 @@ function PromptRefField({
   )
 }
 
-function NodeConfigPanel({ node, nodeType, config, projectDefaultModel, tools, onChange, onLabelChange }: NodeConfigPanelProps) {
+function NodeConfigPanel({ node, nodeType, config, projectDefaultModel, tenantId, tools, onChange, onLabelChange }: NodeConfigPanelProps) {
   const fields = nodeType.schema?.fields || []
   const hasCustom = Object.keys(config).length > 0
 
@@ -760,6 +762,7 @@ function NodeConfigPanel({ node, nodeType, config, projectDefaultModel, tools, o
             value={(config.model as string) || ''}
             onChange={(v) => onChange({ model: v })}
             projectDefault={projectDefaultModel}
+            tenantId={tenantId}
             showWarning
             className="w-full"
           />
@@ -871,6 +874,7 @@ function NodeConfigPanel({ node, nodeType, config, projectDefaultModel, tools, o
             value={(config.synthesis_model as string) || ''}
             onChange={(v) => onChange({ synthesis_model: v })}
             projectDefault={projectDefaultModel}
+            tenantId={tenantId}
             showWarning
             className="w-full"
           />
@@ -900,6 +904,7 @@ function NodeConfigPanel({ node, nodeType, config, projectDefaultModel, tools, o
             value={(config.planner_model as string) || ''}
             onChange={(v) => onChange({ planner_model: v })}
             projectDefault={projectDefaultModel}
+            tenantId={tenantId}
             showWarning
             className="w-full"
           />

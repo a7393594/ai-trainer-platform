@@ -355,7 +355,59 @@ export interface ModelInfo {
   available?: boolean
 }
 
-/** 列出可用模型（含 provider availability 資訊） */
-export async function listModels() {
-  return request<{ models: ModelInfo[] }>('/api/v1/models')
+/** 列出可用模型（含 provider availability 資訊）。
+ *
+ * 帶 tenantId 會把該 tenant 在 `ait_provider_keys` 已驗證的 provider 也算入 available。
+ */
+export async function listModels(tenantId?: string) {
+  const qs = tenantId ? `?tenant_id=${encodeURIComponent(tenantId)}` : ''
+  return request<{ models: ModelInfo[] }>(`/api/v1/models${qs}`)
+}
+
+// ============================================
+// Provider API Keys（使用者自備的 LLM key — 例：OpenAI / Gemini / Groq）
+// ============================================
+
+export interface ProviderKeyRow {
+  provider: 'openai' | 'google' | 'groq' | 'deepseek' | 'openrouter'
+  last4: string | null
+  verified_at: string | null
+  last_error: string | null
+  last_verified_model: string | null
+  updated_at: string | null
+  has_key: boolean
+}
+
+export async function listProviderKeys(tenantId: string) {
+  return request<{ keys: ProviderKeyRow[] }>(
+    `/api/v1/provider-keys?tenant_id=${encodeURIComponent(tenantId)}`,
+  )
+}
+
+export async function setProviderKey(tenantId: string, provider: string, apiKey: string) {
+  return request<{
+    provider: string
+    last4: string
+    verified: boolean
+    verified_at: string | null
+    last_error: string | null
+    last_verified_model: string | null
+  }>(`/api/v1/provider-keys/${provider}?tenant_id=${encodeURIComponent(tenantId)}`, {
+    method: 'PUT',
+    body: JSON.stringify({ api_key: apiKey }),
+  })
+}
+
+export async function verifyProviderKey(tenantId: string, provider: string) {
+  return request<{ provider: string; verified: boolean; last_error: string | null; last_verified_model: string | null }>(
+    `/api/v1/provider-keys/${provider}/verify?tenant_id=${encodeURIComponent(tenantId)}`,
+    { method: 'POST' },
+  )
+}
+
+export async function removeProviderKey(tenantId: string, provider: string) {
+  return request<{ deleted: boolean; provider: string }>(
+    `/api/v1/provider-keys/${provider}?tenant_id=${encodeURIComponent(tenantId)}`,
+    { method: 'DELETE' },
+  )
 }

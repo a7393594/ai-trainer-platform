@@ -1,7 +1,15 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { getDemoContext } from '@/lib/ai-engine'
+import {
+  getDemoContext,
+  listProviderKeys,
+  setProviderKey,
+  verifyProviderKey,
+  removeProviderKey,
+  type ProviderKeyRow,
+} from '@/lib/ai-engine'
+import { invalidateModelsCache } from '@/components/shared/ModelSelector'
 import { useI18n } from '@/lib/i18n'
 import { useProject } from '@/lib/project-context'
 import dynamic from 'next/dynamic'
@@ -12,7 +20,7 @@ const AI = process.env.NEXT_PUBLIC_AI_ENGINE_URL || 'http://localhost:8000'
 
 // Models loaded dynamically from API
 
-type Tab = 'project' | 'finetune' | 'eval'
+type Tab = 'project' | 'providers' | 'finetune' | 'eval'
 
 export default function SettingsPage() {
   const { currentProject } = useProject()
@@ -118,9 +126,12 @@ function TrainerSettings() {
         <p className="text-xs text-zinc-500 mb-4">{t('settings.desc')}</p>
 
         <div className="flex gap-1 mb-4">
-          {(['project', 'finetune', 'eval'] as const).map(k => (
+          {(['project', 'providers', 'finetune', 'eval'] as const).map(k => (
             <button key={k} onClick={() => setTab(k)} className={`px-4 py-1.5 rounded text-xs ${tab === k ? 'bg-blue-600 text-white' : 'bg-zinc-800 text-zinc-400'}`}>
-              {k === 'project' ? t('settings.projectTab') : k === 'finetune' ? t('settings.finetuneTab') : t('settings.evalTab')}
+              {k === 'project' ? t('settings.projectTab')
+                : k === 'providers' ? 'Provider API Keys'
+                : k === 'finetune' ? t('settings.finetuneTab')
+                : t('settings.evalTab')}
             </button>
           ))}
         </div>
@@ -158,6 +169,11 @@ function TrainerSettings() {
               ))}
             </div>
           </div>
+        )}
+
+        {/* Provider API Keys Tab */}
+        {tab === 'providers' && context?.tenant_id && (
+          <ProviderKeysPanel tenantId={context.tenant_id} />
         )}
 
         {/* Finetune Tab */}
@@ -247,6 +263,200 @@ function TrainerSettings() {
             )}
           </div>
         )}
+      </div>
+    </div>
+  )
+}
+
+// ────────────────────────────────────────────────────────────────
+// Provider API Keys panel
+// ────────────────────────────────────────────────────────────────
+
+const PROVIDER_META: Record<string, { label: string; docs?: string; docsLabel?: string; hint?: string }> = {
+  openai: { label: 'OpenAI (GPT)', docs: 'https://platform.openai.com/api-keys', docsLabel: 'platform.openai.com', hint: 'sk-... 格式' },
+  google: { label: 'Google (Gemini)', docs: 'https://aistudio.google.com/apikey', docsLabel: 'aistudio.google.com', hint: 'AIza... 格式' },
+  groq: { label: 'Groq (Llama/Qwen 免費)', docs: 'https://console.groq.com/keys', docsLabel: 'console.groq.com', hint: 'gsk_... 格式' },
+  deepseek: { label: 'DeepSeek', docs: 'https://platform.deepseek.com/api_keys', docsLabel: 'platform.deepseek.com', hint: 'sk-... 格式' },
+  openrouter: { label: 'OpenRouter (多家聚合)', docs: 'https://openrouter.ai/keys', docsLabel: 'openrouter.ai', hint: 'sk-or-... 格式' },
+}
+
+function ProviderKeysPanel({ tenantId }: { tenantId: string }) {
+  const [rows, setRows] = useState<ProviderKeyRow[]>([])
+  const [loading, setLoading] = useState(true)
+  const [busy, setBusy] = useState<string>('')  // provider currently being acted on
+  const [editing, setEditing] = useState<string>('')
+  const [draftKey, setDraftKey] = useState<string>('')
+
+  const load = async () => {
+    setLoading(true)
+    try {
+      const res = await listProviderKeys(tenantId)
+      setRows(res.keys || [])
+    } catch (e) {
+      setRows([])
+    }
+    setLoading(false)
+  }
+
+  useEffect(() => { load() }, [tenantId])
+
+  const handleSave = async (provider: string) => {
+    if (!draftKey.trim()) return
+    setBusy(provider)
+    try {
+      await setProviderKey(tenantId, provider, draftKey.trim())
+      setEditing(''); setDraftKey('')
+      invalidateModelsCache(tenantId)
+      await load()
+    } catch (e: any) {
+      alert(`儲存失敗：${e?.message || String(e)}`)
+    } finally {
+      setBusy('')
+    }
+  }
+
+  const handleVerify = async (provider: string) => {
+    setBusy(provider)
+    try {
+      await verifyProviderKey(tenantId, provider)
+      invalidateModelsCache(tenantId)
+      await load()
+    } catch (e: any) {
+      alert(`驗證失敗：${e?.message || String(e)}`)
+    } finally {
+      setBusy('')
+    }
+  }
+
+  const handleRemove = async (provider: string) => {
+    if (!confirm(`確定要刪除 ${PROVIDER_META[provider]?.label || provider} 的 API key 嗎？`)) return
+    setBusy(provider)
+    try {
+      await removeProviderKey(tenantId, provider)
+      invalidateModelsCache(tenantId)
+      await load()
+    } finally {
+      setBusy('')
+    }
+  }
+
+  if (loading) {
+    return <div className="text-xs text-zinc-500">載入中...</div>
+  }
+
+  return (
+    <div className="space-y-3">
+      <div className="rounded border border-zinc-700 bg-zinc-800/50 p-3 text-xs text-zinc-400">
+        <p className="text-zinc-300 font-medium mb-1">你自己的 LLM Provider API Key</p>
+        <p>設定後，DAG 編輯器就能在節點中挑選對應 provider 的模型（GPT / Gemini / Groq / DeepSeek / OpenRouter）。Key 會加密存在資料庫裡，呼叫時動態注入，伺服器記憶體中不留副本。</p>
+        <p className="mt-1 text-zinc-500">Anthropic (Claude) 由伺服器環境變數統一提供，不走這個表。</p>
+      </div>
+
+      {rows.map((row) => {
+        const meta = PROVIDER_META[row.provider]
+        const verified = !!row.verified_at
+        const failed = !verified && !!row.last_error
+        const isEditing = editing === row.provider
+        const isBusy = busy === row.provider
+
+        return (
+          <div key={row.provider} className="rounded-lg border border-zinc-700 bg-zinc-800 p-4">
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-2">
+                  <span className="text-sm font-medium text-zinc-200">{meta?.label || row.provider}</span>
+                  {isBusy ? (
+                    <span className="rounded bg-amber-500/20 px-1.5 py-0.5 text-[10px] text-amber-300">⋯ 處理中</span>
+                  ) : verified ? (
+                    <span className="rounded bg-green-500/20 px-1.5 py-0.5 text-[10px] text-green-400" title={`last verified with ${row.last_verified_model || ''}`}>✓ Verified</span>
+                  ) : failed ? (
+                    <span className="rounded bg-red-500/20 px-1.5 py-0.5 text-[10px] text-red-400" title={row.last_error || ''}>✗ Failed</span>
+                  ) : row.has_key ? (
+                    <span className="rounded bg-zinc-600/30 px-1.5 py-0.5 text-[10px] text-zinc-400">– Not tested</span>
+                  ) : (
+                    <span className="rounded bg-zinc-700 px-1.5 py-0.5 text-[10px] text-zinc-500">– Not set</span>
+                  )}
+                </div>
+                <div className="mt-1 text-[11px] text-zinc-500 font-mono">
+                  {row.has_key ? `••••••••••${row.last4 || ''}` : '(未設定)'}
+                </div>
+                {row.last_error && !verified && (
+                  <p className="mt-1 text-[11px] text-red-400 truncate" title={row.last_error}>錯誤：{row.last_error}</p>
+                )}
+                {meta?.docs && !isEditing && (
+                  <p className="mt-1 text-[11px] text-zinc-500">
+                    申請 key：<a href={meta.docs} target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:underline">{meta.docsLabel}</a>
+                    {meta.hint && <span className="ml-2 text-zinc-600">({meta.hint})</span>}
+                  </p>
+                )}
+              </div>
+
+              {!isEditing && (
+                <div className="flex gap-1 shrink-0">
+                  <button
+                    onClick={() => { setEditing(row.provider); setDraftKey('') }}
+                    disabled={isBusy}
+                    className="rounded border border-zinc-600 px-2.5 py-1 text-[11px] text-zinc-200 hover:bg-zinc-700 disabled:opacity-50"
+                  >
+                    {row.has_key ? 'Edit' : 'Set Key'}
+                  </button>
+                  {row.has_key && (
+                    <button
+                      onClick={() => handleVerify(row.provider)}
+                      disabled={isBusy}
+                      className="rounded border border-zinc-600 px-2.5 py-1 text-[11px] text-zinc-200 hover:bg-zinc-700 disabled:opacity-50"
+                    >
+                      Test
+                    </button>
+                  )}
+                  {row.has_key && (
+                    <button
+                      onClick={() => handleRemove(row.provider)}
+                      disabled={isBusy}
+                      className="rounded border border-red-600/50 px-2.5 py-1 text-[11px] text-red-400 hover:bg-red-900/30 disabled:opacity-50"
+                    >
+                      Remove
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
+
+            {isEditing && (
+              <div className="mt-3 flex gap-2">
+                <input
+                  type="password"
+                  autoFocus
+                  value={draftKey}
+                  onChange={(e) => setDraftKey(e.target.value)}
+                  placeholder={meta?.hint || '貼上 API key'}
+                  className="flex-1 rounded border border-zinc-600 bg-zinc-900 px-3 py-1.5 text-sm text-zinc-200 outline-none focus:border-blue-500 font-mono"
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') handleSave(row.provider)
+                    if (e.key === 'Escape') { setEditing(''); setDraftKey('') }
+                  }}
+                />
+                <button
+                  onClick={() => handleSave(row.provider)}
+                  disabled={!draftKey.trim() || isBusy}
+                  className="rounded bg-blue-600 px-3 py-1.5 text-xs text-white disabled:opacity-50"
+                >
+                  Save & Test
+                </button>
+                <button
+                  onClick={() => { setEditing(''); setDraftKey('') }}
+                  className="rounded border border-zinc-600 px-3 py-1.5 text-xs text-zinc-300"
+                >
+                  Cancel
+                </button>
+              </div>
+            )}
+          </div>
+        )
+      })}
+
+      <div className="rounded border border-zinc-700/60 bg-zinc-800/30 p-3 text-xs text-zinc-500">
+        <span className="text-zinc-400">Anthropic (Claude)</span>　— 由伺服器環境變數 <code className="text-zinc-400">ANTHROPIC_API_KEY</code> 管理，不需在此設定。
       </div>
     </div>
   )

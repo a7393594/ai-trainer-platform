@@ -28,6 +28,25 @@ ANTHROPIC_CACHE_WRITE_MULTIPLIER = 1.25
 ANTHROPIC_CACHE_READ_MULTIPLIER = 0.10
 
 
+def _inject_api_key(kwargs: dict, model: str, tenant_id: Optional[str]) -> None:
+    """Resolve per-tenant key (DB > env) and set kwargs['api_key'] so LiteLLM uses it.
+
+    Does nothing for Anthropic (LiteLLM reads litellm.anthropic_key set at init),
+    and for providers with no resolvable key (LiteLLM will fall back to env var
+    or error out with a clear auth message).
+    """
+    try:
+        from app.core.provider_keys.resolver import parse_provider, resolve_api_key
+    except Exception:
+        return  # provider_keys module optional at import time
+    provider = parse_provider(model)
+    if not provider or provider == "anthropic":
+        return
+    key = resolve_api_key(tenant_id, provider)
+    if key:
+        kwargs["api_key"] = key
+
+
 # ---------------------------------------------------------------------------
 # Sliding-window token bucket — 防止觸及 Anthropic 30K tokens/min rate limit
 # 超標時排隊等待，而非直接回傳 rate_limit_error 給前端。
@@ -253,6 +272,8 @@ async def chat_completion(
         kwargs["tools"] = tools
         kwargs["tool_choice"] = "auto"
 
+    _inject_api_key(kwargs, model, tenant_id)
+
     # 排隊等待 quota，避免 Anthropic rate_limit_error
     await _rate_limiter.acquire(_estimate_tokens(messages))
 
@@ -335,6 +356,7 @@ async def stream_chat_completion(
         "stream_options": {"include_usage": True},
         "metadata": {"tenant_id": tenant_id} if tenant_id else {},
     }
+    _inject_api_key(kwargs, model, tenant_id)
     await _rate_limiter.acquire(_estimate_tokens(messages))
 
     start = time.time()
@@ -407,11 +429,14 @@ async def get_embedding(
     project_id: Optional[str] = None,
     session_id: Optional[str] = None,
     endpoint: str = "embedding",
+    tenant_id: Optional[str] = None,
 ) -> list[float]:
     """取得文字的 Embedding 向量，並記錄成本到 ait_llm_usage。"""
     model = f"{settings.embedding_provider}/{settings.embedding_model}"
     start = time.time()
-    response = await litellm.aembedding(model=model, input=[text])
+    emb_kwargs: dict = {"model": model, "input": [text]}
+    _inject_api_key(emb_kwargs, model, tenant_id)
+    response = await litellm.aembedding(**emb_kwargs)
     latency = int((time.time() - start) * 1000)
 
     usage = getattr(response, "usage", None)

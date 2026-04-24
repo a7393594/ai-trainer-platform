@@ -30,6 +30,10 @@ class Settings(BaseSettings):
 
     # 加密
     encryption_key: str = ""
+    # Fernet master key for encrypting per-tenant provider API keys at rest.
+    # Generate with: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+    # Comma-separated list supports rotation (first = write key, rest = legacy read keys).
+    provider_keys_secret: Optional[str] = None
 
     # LangFuse
     langfuse_public_key: Optional[str] = None

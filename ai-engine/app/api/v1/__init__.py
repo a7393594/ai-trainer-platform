@@ -1740,7 +1740,11 @@ async def get_project_detail(project_id: str):
 # ============================================
 
 @router.get("/models")
-async def list_available_models():
-    """列出所有可用 LLM 模型（從集中模型定義讀取）"""
+async def list_available_models(tenant_id: str | None = Query(default=None)):
+    """列出所有可用 LLM 模型（從集中模型定義讀取）。
+
+    若帶 tenant_id，會把該 tenant 的 DB-stored 已驗證 provider key 也算入
+    `available`。
+    """
     from app.core.llm_router.models import get_models_for_api
-    return {"models": get_models_for_api()}
+    return {"models": get_models_for_api(tenant_id=tenant_id)}

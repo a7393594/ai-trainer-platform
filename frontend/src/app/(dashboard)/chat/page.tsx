@@ -108,6 +108,7 @@ function TrainerChat() {
               value={model}
               onChange={setModel}
               projectDefault={projectDefaultModel}
+              tenantId={context?.tenant_id}
               showWarning
               className="w-[220px]"
             />

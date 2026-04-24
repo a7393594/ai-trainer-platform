@@ -96,7 +96,7 @@ def get_model_by_id(model_id: str) -> dict | None:
 
 
 def get_available_providers() -> set[str]:
-    """Detect which providers have valid API keys configured."""
+    """Detect which providers have valid API keys configured via env vars."""
     from app.config import settings
     available = set()
     if settings.anthropic_api_key:
@@ -114,13 +114,24 @@ def get_available_providers() -> set[str]:
     return available
 
 
-def get_models_for_api() -> list[dict]:
+def _get_db_verified_providers(tenant_id: str) -> set[str]:
+    """Providers with a verified key stored in ait_provider_keys for this tenant."""
+    try:
+        from app.core.provider_keys.service import get_verified_providers
+        return get_verified_providers(tenant_id)
+    except Exception:
+        return set()
+
+
+def get_models_for_api(tenant_id: str | None = None) -> list[dict]:
     """Get model list formatted for /models API endpoint.
 
-    Each model includes an `available` boolean based on whether the
-    provider's API key is configured.
+    `available` = provider has either (a) env var set, or (b) a verified key
+    stored for this tenant in ait_provider_keys.
     """
     providers = get_available_providers()
+    if tenant_id:
+        providers = providers | _get_db_verified_providers(tenant_id)
     return [
         {
             "id": m["id"],

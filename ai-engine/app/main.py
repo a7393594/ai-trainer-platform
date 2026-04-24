@@ -13,6 +13,7 @@ from app.api.v1.lab import router as lab_router
 from app.api.v1.public import router as public_router
 from app.api.v1.referee import router as referee_router
 from app.api.v1.poker_coach import router as poker_coach_router
+from app.api.v1.provider_keys import router as provider_keys_router
 from app.db.supabase import init_supabase
 from app.db.qdrant import init_qdrant
 from app.core.llm_router.router import init_llm_router
@@ -74,5 +75,6 @@ app.include_router(pipeline_router, prefix="/api/v1")
 app.include_router(lab_router, prefix="/api/v1")
 app.include_router(referee_router, prefix="/api/v1")
 app.include_router(poker_coach_router, prefix="/api/v1")
+app.include_router(provider_keys_router, prefix="/api/v1", tags=["provider-keys"])
 app.include_router(embed_router, prefix="/embed", tags=["embed"])
 app.include_router(public_router, prefix="/public/v1", tags=["public-api"])

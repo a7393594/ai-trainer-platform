@@ -19,6 +19,8 @@ interface Props {
   disabled?: boolean
   /** 只列這些 providers（undefined = 全部） */
   providers?: string[]
+  /** 帶入 tenant_id 讓 /api/v1/models 合併該 tenant 在 DB 已驗證的 provider keys */
+  tenantId?: string
 }
 
 const PROVIDER_LABELS: Record<string, string> = {
@@ -30,24 +32,39 @@ const PROVIDER_LABELS: Record<string, string> = {
   openrouter: 'OpenRouter',
 }
 
-// Module-level cache — models list doesn't change often during a session
-let cached: ModelInfo[] | null = null
-let inflight: Promise<ModelInfo[]> | null = null
+// Module-level cache keyed by tenantId — models list doesn't change often during a session,
+// but swaps when tenant changes (different DB-verified keys).
+const _cacheByTenant: Map<string, ModelInfo[]> = new Map()
+const _inflightByTenant: Map<string, Promise<ModelInfo[]>> = new Map()
 
-async function fetchModels(): Promise<ModelInfo[]> {
-  if (cached) return cached
-  if (inflight) return inflight
-  inflight = (async () => {
-    const res = await listModels()
-    cached = res.models || []
-    inflight = null
-    return cached
+async function fetchModels(tenantId?: string): Promise<ModelInfo[]> {
+  const key = tenantId || ''
+  const hit = _cacheByTenant.get(key)
+  if (hit) return hit
+  const pending = _inflightByTenant.get(key)
+  if (pending) return pending
+  const promise = (async () => {
+    const res = await listModels(tenantId)
+    const models = res.models || []
+    _cacheByTenant.set(key, models)
+    _inflightByTenant.delete(key)
+    return models
   })()
-  return inflight
+  _inflightByTenant.set(key, promise)
+  return promise
+}
+
+/** Invalidate the cached model list — call after a provider key is saved or removed. */
+export function invalidateModelsCache(tenantId?: string): void {
+  if (tenantId === undefined) {
+    _cacheByTenant.clear()
+  } else {
+    _cacheByTenant.delete(tenantId || '')
+  }
 }
 
 export function ModelSelector({
-  value, onChange, projectDefault, showWarning, className, disabled, providers,
+  value, onChange, projectDefault, showWarning, className, disabled, providers, tenantId,
 }: Props) {
   const [models, setModels] = useState<ModelInfo[]>([])
   const [open, setOpen] = useState(false)
@@ -56,11 +73,12 @@ export function ModelSelector({
   const containerRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
-    fetchModels()
+    setLoading(true)
+    fetchModels(tenantId)
       .then((m) => setModels(m))
       .catch(() => setModels([]))
       .finally(() => setLoading(false))
-  }, [])
+  }, [tenantId])
 
   // Close on outside click
   useEffect(() => {
@@ -142,18 +160,16 @@ export function ModelSelector({
             )}
           </div>
 
-          {/* Grouped list */}
-          {Object.entries(grouped).map(([provider, list]) => {
-            const anyAvailable = list.some((m) => m.available)
+          {/* Grouped list — hide provider groups with no available models */}
+          {Object.entries(grouped)
+            .filter(([, list]) => list.some((m) => m.available))
+            .map(([provider, list]) => {
             return (
               <div key={provider}>
                 <div className="sticky top-[52px] bg-zinc-900/95 backdrop-blur border-b border-zinc-800 px-3 py-1 flex items-center justify-between">
                   <span className="text-[10px] uppercase font-semibold text-zinc-400">
                     {PROVIDER_LABELS[provider] || provider}
                   </span>
-                  {!anyAvailable && (
-                    <span className="text-[9px] text-yellow-400">未配置 API key</span>
-                  )}
                 </div>
                 {list.map((m) => {
                   const selected = m.id === value
