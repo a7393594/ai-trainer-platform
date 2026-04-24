@@ -63,10 +63,11 @@ class Settings(BaseSettings):
     cors_allowed_origins: str = "http://localhost:3000,http://localhost:3003,https://frontend-gray-three-14.vercel.app"
 
     # ── DAG Executor 替代 orchestrator 於生產 /chat ──────────────
-    # False(預設):/chat 走 AgentOrchestrator.process()
-    # True:/chat 走 chat_adapter.process_via_dag() — 由 DAG Executor 驅動
-    # /chat/stream 與 /chat/widget-response 不受此 flag 影響,永遠走 orchestrator。
-    use_dag_executor_for_chat: bool = False
+    # True(預設，2026-04):/chat + /chat/stream 都走 chat_adapter.process_via_dag()
+    #   由 DAG Executor 驅動，支援 analyze_intent + 人格混合 + progress SSE 事件
+    # False:退回 AgentOrchestrator.process() 舊路徑（無 analyze_intent、無進度事件）
+    # 這個預設在 V3 DAG + Prompt Library 成熟後翻成 True；要退回 legacy 請設 env var=false
+    use_dag_executor_for_chat: bool = True
 
     class Config:
         env_file = ".env"
