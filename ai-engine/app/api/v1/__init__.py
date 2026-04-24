@@ -103,12 +103,42 @@ async def chat(request: ChatRequest):
 
 @router.post("/chat/stream")
 async def chat_stream(request: ChatRequest):
-    """Streaming 對話端點 (SSE)。走 orchestrator.process_stream() 讓 Pipeline Studio 能追蹤。"""
+    """Streaming 對話端點 (SSE)。
+
+    依 `settings.use_dag_executor_for_chat` 決定走哪一條路徑:
+      - True  → DAG Executor（active DAG）+ pseudo-streaming（分塊送出 final_text）
+      - False → orchestrator.process_stream()（真正的逐字元流）
+    """
 
     async def generate():
         try:
-            async for event in orchestrator.process_stream(request):
-                yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+            if settings.use_dag_executor_for_chat:
+                # DAG 路徑：執行完 DAG 後把 final_text 當成 stream 分塊送
+                from app.core.pipeline.chat_adapter import process_via_dag
+                import asyncio as _asyncio
+                # 先回 session 占位（若 request 沒提供）
+                if not request.session_id:
+                    pass  # chat_adapter 會自己建 session；client 會從 done 事件拿到 message_id
+                response = await process_via_dag(request)
+                if response.session_id:
+                    yield f"data: {json.dumps({'session_id': response.session_id}, ensure_ascii=False)}\n\n"
+                # pseudo-stream：把 message 切成 ~40 字一塊，每塊間隔 20ms 模擬打字感
+                text = response.message or ""
+                chunk_size = 40
+                for i in range(0, len(text), chunk_size):
+                    chunk = text[i:i + chunk_size]
+                    yield f"data: {json.dumps({'content': chunk}, ensure_ascii=False)}\n\n"
+                    await _asyncio.sleep(0.02)
+                # 帶上 widgets / metadata
+                done_event = {"done": True}
+                if response.message_id:
+                    done_event["message_id"] = response.message_id
+                if getattr(response, 'widgets', None):
+                    done_event["widgets"] = response.widgets
+                yield f"data: {json.dumps(done_event, ensure_ascii=False)}\n\n"
+            else:
+                async for event in orchestrator.process_stream(request):
+                    yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
         except Exception as e:
             yield f"data: {json.dumps({'error': str(e)})}\n\n"
 
@@ -117,7 +147,11 @@ async def chat_stream(request: ChatRequest):
 
 @router.post("/chat/widget-response", response_model=ChatResponse)
 async def handle_widget_response(response: WidgetResponse):
-    """接收使用者對互動元件的操作結果"""
+    """接收使用者對互動元件的操作結果。
+
+    Widget follow-up 目前只走 orchestrator（DAG 尚未支援 widget_response 的 context 注入）；
+    若未來要擴，在 chat_adapter 加 process_widget_via_dag()。
+    """
     try:
         result = await orchestrator.handle_widget_result(response)
         return result
