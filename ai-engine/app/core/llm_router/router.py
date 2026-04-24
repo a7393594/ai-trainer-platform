@@ -66,6 +66,33 @@ def _estimate_tokens(messages: list[dict]) -> int:
     return max(1, chars // 4)
 
 
+def _apply_anthropic_cache(messages: list[dict], model: str) -> list[dict]:
+    """為 Anthropic 模型的長 system message 加 cache_control，重複呼叫時 input cost 降 10 倍。
+
+    Anthropic 最小 cacheable 長度約 1024 tokens（~4096 chars）。只處理 claude-* 模型。
+    """
+    if not model or not ("claude" in model.lower() or "anthropic" in model.lower()):
+        return messages
+    if not messages:
+        return messages
+    # 檢查第一個 system message
+    first = messages[0]
+    if first.get("role") != "system":
+        return messages
+    content = first.get("content", "")
+    if not isinstance(content, str) or len(content) < 4096:
+        return messages
+    # 轉成帶 cache_control 的 content blocks
+    new_messages = list(messages)
+    new_messages[0] = {
+        "role": "system",
+        "content": [
+            {"type": "text", "text": content, "cache_control": {"type": "ephemeral"}}
+        ],
+    }
+    return new_messages
+
+
 def calculate_cost(model: str, input_tokens: int, output_tokens: int) -> float:
     pricing = MODEL_PRICING.get(model, {"input": 0, "output": 0})
     return (input_tokens * pricing["input"] + output_tokens * pricing["output"]) / 1_000_000
@@ -131,9 +158,13 @@ async def chat_completion(
     """
     統一的 LLM 呼叫介面（含成本追蹤 + Pipeline Studio 追蹤）
     """
+    # Anthropic Prompt Caching：只對 claude-* 模型套用，把長 system message 標為 cacheable
+    # 重複呼叫同 system prompt 時 input cost 降到 10%（cached read）
+    effective_messages = _apply_anthropic_cache(messages, model)
+
     kwargs = {
         "model": model,
-        "messages": messages,
+        "messages": effective_messages,
         "temperature": temperature,
         "max_tokens": max_tokens,
         "metadata": {"tenant_id": tenant_id} if tenant_id else {},

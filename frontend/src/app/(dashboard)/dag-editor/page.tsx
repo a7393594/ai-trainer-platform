@@ -799,6 +799,35 @@ function NodeConfigPanel({ node, nodeType, config, projectDefaultModel, tools, o
         </div>
       )}
 
+      {fields.includes('planning_mode') && (
+        <div>
+          <label className="flex items-center gap-2 text-[11px] text-zinc-300">
+            <input
+              type="checkbox"
+              checked={!!config.planning_mode}
+              onChange={(e) => onChange({ planning_mode: e.target.checked })}
+              className="rounded border-zinc-700 bg-zinc-800"
+            />
+            Plan-and-Execute 模式（省 ~80% 成本）
+          </label>
+          <p className="text-[10px] text-zinc-600 mt-1 ml-5">啟用後：Planner 一次規劃所有工具 → 平行執行 → Synthesis 合成。取代傳統 tool_loop。</p>
+        </div>
+      )}
+
+      {fields.includes('planner_model') && (
+        <div>
+          <label className="text-[10px] uppercase text-zinc-500 block mb-1">規劃階段模型（可選）</label>
+          <ModelSelector
+            value={(config.planner_model as string) || ''}
+            onChange={(v) => onChange({ planner_model: v })}
+            projectDefault={projectDefaultModel}
+            showWarning
+            className="w-full"
+          />
+          <p className="text-[10px] text-zinc-600 mt-1">規劃工具呼叫清單用的模型（通常用便宜模型，例如 Haiku）；未設定則用合成模型</p>
+        </div>
+      )}
+
       {fields.includes('synthesis_system_prompt') && (
         <div>
           <label className="text-[10px] uppercase text-zinc-500 block mb-1">合成階段 System Prompt（可選）</label>

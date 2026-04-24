@@ -321,6 +321,240 @@ async def handle_compose_prompt(node: dict, ctx: DAGContext) -> dict:
     }
 
 
+async def _plan_and_execute(
+    node: dict,
+    ctx: DAGContext,
+    cfg: dict,
+    tools_payload: list,
+    iteration_details: list,
+) -> dict:
+    """Plan-and-Execute 架構：
+    1) Planner model 一次輸出 JSON array of tool_calls
+    2) 平行執行所有 tool
+    3) Synthesis model 根據結果合成最終回覆
+    """
+    import asyncio as _asyncio
+    import re as _re
+
+    planner_model = cfg.get("planner_model") or cfg.get("synthesis_model") or ctx.model
+    syn_model = cfg.get("synthesis_model") or ctx.model
+    syn_sys = cfg.get("synthesis_system_prompt") or (
+        "你是一個助手。根據以下工具執行結果，用繁體中文提供完整、具體的回覆。"
+        "把所有工具結果的數據都整合進回答，列表/表格呈現更佳。"
+        "不要憑空添加未在資料中出現的內容。"
+    )
+
+    total_in = 0
+    total_out = 0
+    total_latency_ms = 0
+
+    # ─── Step 1: Plan ────────────────────────────────────────────────
+    # 用 tools_payload（已轉成 LLM 標準格式，含正確 schema）做完整描述
+    tools_desc_full = json.dumps(
+        [{
+            "name": t.get("function", {}).get("name") or t.get("name"),
+            "description": t.get("function", {}).get("description") or t.get("description", ""),
+            "parameters": t.get("function", {}).get("parameters") or t.get("parameters") or {},
+        } for t in (tools_payload or [])],
+        ensure_ascii=False,
+        indent=2,
+    )[:4000]
+    # 生成具體範例（取第一個 tool 的 schema 做 dummy 範例，強化參數格式 anchor）
+    example_block = ""
+    if tools_payload:
+        first = tools_payload[0]
+        fname = first.get("function", {}).get("name") or first.get("name", "")
+        fschema = first.get("function", {}).get("parameters") or first.get("parameters") or {}
+        props = fschema.get("properties", {}) if isinstance(fschema, dict) else {}
+        # 產生 dummy 參數 example
+        dummy = {}
+        for pname, pspec in props.items():
+            ptype = pspec.get("type") if isinstance(pspec, dict) else None
+            if ptype == "array":
+                dummy[pname] = ["AA", "KK"] if "player" in pname.lower() or "hand" in pname.lower() else []
+            elif ptype == "integer":
+                dummy[pname] = 0
+            elif ptype == "number":
+                dummy[pname] = 0.0
+            elif ptype == "boolean":
+                dummy[pname] = False
+            else:
+                dummy[pname] = ""
+        example_block = f"""
+
+### 具體範例（參考正確 params 欄位名稱）
+
+若要計算「AA vs KK」的勝率，正確格式是：
+```json
+{{"name": "{fname}", "params": {json.dumps(dummy, ensure_ascii=False)}}}
+```
+
+**絕對不要**自己發明欄位名稱（例如 hero_hand、villain_hand、opponent 等都是錯的）。
+只能使用上方 schema properties 裡列出的欄位名稱。"""
+
+    plan_prompt = f"""你是工具呼叫規劃器。根據使用者問題，規劃所有需要的工具呼叫（可多個）。
+
+使用者問題：{ctx.user_message}
+
+可用工具（完整 JSON schema）：
+{tools_desc_full}
+{example_block}
+
+規則：
+1. 涵蓋問題的**所有**情境，不要偷懶只列一兩個。
+2. 若問題涉及多種比較（例如「AA 對各種牌」），列出所有該比較的對手牌型。
+3. **params 欄位名稱必須完全照上方 schema 的 properties 來**，不要自己發明欄位名。
+4. 每個呼叫參數必須合法（不要重複牌、格式正確）。
+5. 最多列 12 個呼叫。
+
+輸出**純 JSON**（不要加任何說明、不要 markdown code block），格式：
+[{{"name": "tool_name", "params": {{...}}}}, ...]"""
+
+    _start = time.time()
+    plan_resp = await chat_completion(
+        messages=[{"role": "user", "content": plan_prompt}],
+        model=planner_model,
+        temperature=0.0,
+        max_tokens=2000,
+        project_id=ctx.project_id,
+        session_id=ctx.session_id,
+        span_label="plan_tools",
+    )
+    plan_text = (plan_resp.choices[0].message.content or "").strip()
+    _usage = getattr(plan_resp, "usage", None)
+    _plan_in = getattr(_usage, "prompt_tokens", 0) if _usage else 0
+    _plan_out = getattr(_usage, "completion_tokens", 0) if _usage else 0
+    _plan_lat = int((time.time() - _start) * 1000)
+    total_in += _plan_in
+    total_out += _plan_out
+    total_latency_ms += _plan_lat
+
+    # 解析 JSON array（寬鬆：找第一個 [...] 區塊）
+    m = _re.search(r"\[[\s\S]*\]", plan_text)
+    if not m:
+        raise ValueError(f"planner did not return JSON array: {plan_text[:200]}")
+    plan = json.loads(m.group())
+    if not isinstance(plan, list) or not plan:
+        raise ValueError(f"planner returned empty plan")
+
+    iteration_details.append({
+        "iter": 1,
+        "phase": "planning",
+        "tokens_in": _plan_in,
+        "tokens_out": _plan_out,
+        "latency_ms": _plan_lat,
+        "text_preview": f"{len(plan)} tool_calls planned: " + ", ".join(p.get("name", "?") for p in plan[:8]),
+        "finish_reason": "planned",
+    })
+    print(f"[INFO] planning ok: {len(plan)} calls planned with {planner_model}", flush=True)
+
+    # ─── Step 2: Parallel execute ────────────────────────────────────
+    _start = time.time()
+
+    async def _run_one(tc):
+        name = tc.get("name")
+        params = tc.get("params") or {}
+        try:
+            r = await tool_registry.execute_tool_by_name(
+                name=name, params=params, tools=ctx.db_tools,
+            )
+            status = "ok" if not (isinstance(r, dict) and r.get("status") == "error") else "error"
+        except Exception as e:
+            r = {"error": str(e)}
+            status = "error"
+        return {"name": name, "params": params, "result": r, "status": status}
+
+    tool_results = await _asyncio.gather(*[_run_one(tc) for tc in plan])
+    for tr in tool_results:
+        ctx.tool_results.append({
+            "iteration": 1,
+            "name": tr["name"],
+            "params": tr["params"],
+            "result": tr["result"],
+            "status": tr["status"],
+        })
+    ctx.tool_iterations = 1
+    _exec_lat = int((time.time() - _start) * 1000)
+    total_latency_ms += _exec_lat
+    ok_count = sum(1 for tr in tool_results if tr["status"] == "ok")
+    iteration_details.append({
+        "iter": 2,
+        "phase": "parallel_execute",
+        "tokens_in": 0,
+        "tokens_out": 0,
+        "latency_ms": _exec_lat,
+        "text_preview": f"{ok_count}/{len(tool_results)} tools succeeded",
+        "finish_reason": "executed",
+    })
+
+    # ─── Step 3: Synthesis ───────────────────────────────────────────
+    tool_text = "\n\n".join(
+        f"[{tr['name']}] params={json.dumps(tr['params'], ensure_ascii=False)}\n"
+        f"{'結果' if tr['status']=='ok' else '錯誤'}: {json.dumps(tr['result'], ensure_ascii=False)[:1000]}"
+        for tr in tool_results
+    )
+    syn_msgs = [
+        {"role": "system", "content": syn_sys},
+        {"role": "user", "content": (
+            f"問題：{ctx.user_message}\n\n"
+            f"工具結果（共 {len(tool_results)} 個）：\n{tool_text}\n\n"
+            "請根據以上工具結果提供完整且具體的最終回覆。"
+        )},
+    ]
+    _start = time.time()
+    syn_resp = await chat_completion(
+        messages=syn_msgs,
+        model=syn_model,
+        temperature=ctx.temperature,
+        max_tokens=ctx.max_tokens,
+        project_id=ctx.project_id,
+        session_id=ctx.session_id,
+        span_label="synthesis",
+    )
+    syn_text = (syn_resp.choices[0].message.content or "").strip()
+    _usage = getattr(syn_resp, "usage", None)
+    _syn_in = getattr(_usage, "prompt_tokens", 0) if _usage else 0
+    _syn_out = getattr(_usage, "completion_tokens", 0) if _usage else 0
+    _syn_lat = int((time.time() - _start) * 1000)
+    total_in += _syn_in
+    total_out += _syn_out
+    total_latency_ms += _syn_lat
+    iteration_details.append({
+        "iter": 3,
+        "phase": "synthesis",
+        "tokens_in": _syn_in,
+        "tokens_out": _syn_out,
+        "latency_ms": _syn_lat,
+        "text_preview": syn_text[:200],
+        "finish_reason": "text" if syn_text else "empty",
+    })
+    ctx.llm_response_text = syn_text
+    print(f"[INFO] synthesis ok: len={len(syn_text)} with {syn_model}", flush=True)
+
+    # 更新全域累積 tokens
+    ctx.total_tokens_in += total_in
+    ctx.total_tokens_out += total_out
+    ctx.tool_call_count = len(tool_results)
+
+    return {
+        "status": "ok",
+        "output": {
+            "text": ctx.llm_response_text[:500] + ("..." if len(ctx.llm_response_text) > 500 else ""),
+            "model": ctx.model,
+            "planner_model": planner_model,
+            "synthesis_model": syn_model,
+            "planning_mode": True,
+            "tokens_in": total_in,
+            "tokens_out": total_out,
+            "latency_ms": total_latency_ms,
+            "tool_calls_total": len(tool_results),
+            "tool_calls_ok": ok_count,
+            "iteration_details": iteration_details,
+        },
+        "summary": f"planning_mode · 規劃 {len(plan)} 個 tool · 平行執行 {ok_count}/{len(tool_results)} 成功 · 合成 {syn_model} · 收 {total_in} 出 {total_out}",
+    }
+
+
 async def handle_call_model(node: dict, ctx: DAGContext) -> dict:
     """主模型呼叫 + 完整工具迴圈。
 
@@ -377,6 +611,20 @@ async def handle_call_model(node: dict, ctx: DAGContext) -> dict:
     final_tool_call_count = 0
     iteration_details: list[dict] = []   # 每輪詳細（for trace output）
     synthesis_layer: str = ""             # L1 / L2 / L3 / "" (not needed)
+
+    # Plan-and-Execute mode：Haiku 一次規劃所有 tool_calls → 平行執行 → Haiku 合成
+    # 比傳統 tool_loop 省 ~80% 成本（避開每輪重送完整歷史）
+    if cfg.get("planning_mode") and tools_payload:
+        try:
+            return await _plan_and_execute(
+                node, ctx, cfg, tools_payload,
+                iteration_details=iteration_details,
+            )
+        except Exception as _pe:
+            # fallback 到傳統 tool_loop
+            print(f"[WARN] plan_and_execute failed, falling back to tool_loop: {_pe}", flush=True)
+            import traceback as _tb
+            _tb.print_exc()
 
     try:
         for iteration in range(max_iterations + 1):  # initial + up to N iterations
