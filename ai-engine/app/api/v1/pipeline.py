@@ -873,12 +873,23 @@ async def compare_dags(req: ABCompareRequest):
                 return (n.get("config") or {}).get("model") or "claude-sonnet-4-20250514"
         return "claude-sonnet-4-20250514"
 
+    # Resolve tenant_id once per DAG so model_call can find per-tenant provider keys
+    # (without this, a DAG using GPT/Gemini etc. would fail with "OPENAI_API_KEY missing").
+    def _tenant_for(dag: dict) -> Optional[str]:
+        try:
+            proj = crud.get_project(dag.get("project_id"))
+            return (proj or {}).get("tenant_id")
+        except Exception:
+            return None
+
     async def _run_one(dag: dict, user_msg: str) -> dict:
         import asyncio as _asyncio
+        tenant_id = _tenant_for(dag)
         for attempt in range(3):
             try:
                 result = await execute_dag(
                     dag=dag, project_id=dag["project_id"], user_message=user_msg,
+                    tenant_id=tenant_id,
                 )
                 return {
                     "output": result.get("final_text", ""),
@@ -936,12 +947,21 @@ async def test_dag(dag_id: str, req: DAGTestRequest):
     if not dag:
         raise HTTPException(status_code=404, detail="DAG not found")
 
+    # Resolve tenant_id from project so model_call can find per-tenant provider keys.
+    tenant_id: Optional[str] = None
+    try:
+        proj = crud.get_project(dag.get("project_id"))
+        tenant_id = (proj or {}).get("tenant_id")
+    except Exception:
+        tenant_id = None
+
     try:
         result = await execute_dag(
             dag=dag,
             project_id=dag["project_id"],
             user_message=req.user_message,
             user_id=req.user_id,
+            tenant_id=tenant_id,
         )
         return {
             "dag_id": dag_id,
