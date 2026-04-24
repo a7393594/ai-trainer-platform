@@ -105,13 +105,17 @@ async def _preprocess_images(request: ChatRequest) -> None:
     except Exception as e:
         _log.warning("[vision] describe_images raised: %s", str(e)[:300])
         descriptions = []
-    non_empty = [d for d in descriptions if d]
-    _log.warning("[vision] descriptions: total=%d non_empty=%d, preview=%r", len(descriptions), len(non_empty), (non_empty[0][:120] if non_empty else None))
-    if non_empty:
-        request.message = build_message_with_image_descriptions(request.message, descriptions)
+    # describe_image returns "" for empty input, "ERR:<msg>" on exception, or real text on success.
+    successes = [d for d in descriptions if d and not d.startswith("ERR:")]
+    errors = [d[4:] for d in descriptions if d.startswith("ERR:")]
+    _log.warning("[vision] descriptions: total=%d successes=%d errors=%d", len(descriptions), len(successes), len(errors))
+    if successes:
+        request.message = build_message_with_image_descriptions(request.message, [d if not d.startswith("ERR:") else "" for d in descriptions])
+    elif errors:
+        # Surface first error to DB so operator can diagnose without Render log access.
+        request.message = f"[圖片視覺分析失敗: {errors[0][:200]}]\n{request.message}"
     else:
-        # Emit a visible marker so the DB message shows the vision attempt happened even if descriptions failed.
-        request.message = f"[圖片上傳但視覺分析失敗,請改用文字描述]\n{request.message}"
+        request.message = f"[圖片上傳但無有效內容]\n{request.message}"
     request.images = []
 
 

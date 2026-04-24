@@ -44,12 +44,14 @@ def _parse_data_url(url: str) -> tuple[str, str] | None:
 async def describe_image(image_data_url: str, tenant_id: str | None = None, prompt: str | None = None) -> str:
     """Return a text description of one image, or "" on failure.
 
-    Accepts either a `data:image/...;base64,...` URL or a public https URL. Base64
-    is sent as Anthropic-style image block; https URL is sent as OpenAI-style
-    image_url block (both supported by LiteLLM).
+    Accepts either a `data:image/...;base64,...` URL or a public https URL. Uses
+    LiteLLM's unified `image_url` block format which translates to each provider's
+    native multimodal schema.
     """
     if not image_data_url:
         return ""
+    # Surface ERR:<msg> on failure (caller decides whether to display).
+    # Empty "" is reserved for "empty input"; real LLM failures come back as ERR:.
 
     # LiteLLM unified multimodal format: image_url works for both base64 data URLs
     # and https URLs across Anthropic / OpenAI / Gemini providers.
@@ -77,8 +79,9 @@ async def describe_image(image_data_url: str, tenant_id: str | None = None, prom
         response = await litellm.acompletion(**kwargs)
         return (response.choices[0].message.content or "").strip()
     except Exception as e:
-        logger.warning("describe_image failed: %s", str(e)[:200])
-        return ""
+        msg = str(e)[:300]
+        logger.warning("describe_image failed: %s", msg)
+        return f"ERR:{msg}"
 
 
 async def describe_images(images: list[str], tenant_id: str | None = None) -> list[str]:
