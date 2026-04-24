@@ -189,9 +189,10 @@ export async function getSessionMessages(projectId: string, sessionId: string) {
 // Prompts
 // ============================================
 
-/** 列出 Prompt 版本 */
-export async function listPromptVersions(projectId: string) {
-  return request<{ versions: any[] }>(`/api/v1/prompts/${projectId}`)
+/** 列出 Prompt 版本（可選 slot 篩選） */
+export async function listPromptVersions(projectId: string, slot?: string) {
+  const qs = slot ? `?slot=${encodeURIComponent(slot)}` : ''
+  return request<{ versions: any[] }>(`/api/v1/prompts/${projectId}${qs}`)
 }
 
 /** 切換 active Prompt */
@@ -202,12 +203,48 @@ export async function activatePromptVersion(projectId: string, versionId: string
 /** 建立新 Prompt 版本（編輯 = 建立新版本） */
 export async function createPromptVersion(
   projectId: string,
-  data: { content: string; change_notes?: string; activate?: boolean }
+  data: {
+    content: string
+    change_notes?: string
+    activate?: boolean
+    slot?: string
+    title?: string
+    description?: string
+    icon?: string
+    category?: string
+  }
 ) {
   return request<any>(`/api/v1/prompts/${projectId}`, {
     method: 'POST',
     body: JSON.stringify(data),
   })
+}
+
+// Prompt Library (slot-aware)
+export interface PromptSlotInfo {
+  id: string
+  project_id: string
+  slot: string
+  content: string
+  version: number
+  is_active: boolean
+  title?: string
+  description?: string
+  icon?: string
+  category?: string
+  change_notes?: string
+  created_at: string
+  total_versions: number
+}
+
+export async function getPromptLibrary(projectId: string) {
+  return request<{ slots: PromptSlotInfo[] }>(`/api/v1/prompt-library/${projectId}`)
+}
+
+export async function listSlotVersions(projectId: string, slot: string) {
+  return request<{ slot: string; versions: PromptSlotInfo[] }>(
+    `/api/v1/prompt-library/${projectId}/${slot}/versions`
+  )
 }
 
 // ============================================

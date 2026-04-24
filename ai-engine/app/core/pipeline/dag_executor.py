@@ -462,7 +462,14 @@ async def handle_compose_prompt(node: dict, ctx: DAGContext) -> dict:
     否則 DAG 路徑永遠不會產生 widget 標記。
     """
     cfg = node.get("config") or {}
-    prefix = cfg.get("system_prompt_prefix", "") or ""
+    # 優先序：system_prompt_prefix_ref_version > system_prompt_prefix_ref > system_prompt_prefix raw
+    prefix = crud.resolve_prompt(
+        project_id=ctx.project_id,
+        ref_version_id=cfg.get("system_prompt_prefix_ref_version"),
+        ref=cfg.get("system_prompt_prefix_ref"),
+        raw_text=cfg.get("system_prompt_prefix") or "",
+        fallback="",
+    ) or ""
 
     base_prompt = ""
     try:
@@ -549,10 +556,16 @@ async def _plan_and_execute(
 
     planner_model = cfg.get("planner_model") or cfg.get("synthesis_model") or ctx.model
     syn_model = cfg.get("synthesis_model") or ctx.model
-    syn_sys = cfg.get("synthesis_system_prompt") or (
-        "你是一個助手。根據以下工具執行結果，用繁體中文提供完整、具體的回覆。"
-        "把所有工具結果的數據都整合進回答，列表/表格呈現更佳。"
-        "不要憑空添加未在資料中出現的內容。"
+    syn_sys = crud.resolve_prompt(
+        project_id=ctx.project_id,
+        ref_version_id=cfg.get("synthesis_system_prompt_ref_version"),
+        ref=cfg.get("synthesis_system_prompt_ref"),
+        raw_text=cfg.get("synthesis_system_prompt"),
+        fallback=(
+            "你是一個助手。根據以下工具執行結果，用繁體中文提供完整、具體的回覆。"
+            "把所有工具結果的數據都整合進回答，列表/表格呈現更佳。"
+            "不要憑空添加未在資料中出現的內容。"
+        ),
     )
 
     total_in = 0

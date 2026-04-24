@@ -27,6 +27,7 @@ import {
 } from '@/lib/studio/api'
 import { listTools } from '@/lib/ai-engine'
 import { ModelSelector } from '@/components/shared/ModelSelector'
+import { PromptPicker } from '@/components/shared/PromptPicker'
 
 interface XYNodeData extends Record<string, unknown> {
   label: string
@@ -637,6 +638,84 @@ interface NodeConfigPanelProps {
   onLabelChange: (newLabel: string) => void
 }
 
+// 共用元件：文字欄位 + 提示詞工作室綁定按鈕。
+// 優先序（執行時）：*_ref_version > *_ref > raw text > 程式預設
+function PromptRefField({
+  label, rawKey, refKey, refVersionKey,
+  config, onChange,
+  placeholder, rows = 3,
+}: {
+  label: string
+  rawKey: string
+  refKey: string
+  refVersionKey: string
+  config: Record<string, unknown>
+  onChange: (patch: Record<string, unknown>) => void
+  placeholder?: string
+  rows?: number
+}) {
+  const [pickerOpen, setPickerOpen] = useState(false)
+  const currentRef = config[refKey] as string | undefined
+  const currentVersion = config[refVersionKey] as string | undefined
+  const bound = !!currentRef
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-1">
+        <label className="text-[10px] uppercase text-zinc-500">{label}</label>
+        <button
+          type="button"
+          onClick={() => setPickerOpen(true)}
+          className="text-[10px] text-blue-400 hover:text-blue-300"
+        >
+          📚 從工作室挑
+        </button>
+      </div>
+      {bound ? (
+        <div className="rounded border border-indigo-500/40 bg-indigo-500/10 px-2 py-1.5 text-xs space-y-1">
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-indigo-200 font-mono text-[11px]">
+              📚 綁定：<span className="text-indigo-100">{currentRef}</span>
+              {currentVersion && <span className="text-indigo-300 ml-1">· 釘 version</span>}
+              {!currentVersion && <span className="text-indigo-300 ml-1">· 追 active</span>}
+            </span>
+            <button
+              type="button"
+              onClick={() => onChange({ [refKey]: undefined, [refVersionKey]: undefined })}
+              className="text-[10px] text-zinc-400 hover:text-zinc-200"
+            >
+              解除
+            </button>
+          </div>
+          <p className="text-[9px] text-zinc-500">
+            綁定期間 raw 欄位將被忽略。解除綁定後會再讀下方文字。
+          </p>
+        </div>
+      ) : (
+        <textarea
+          value={(config[rawKey] as string) || ''}
+          onChange={(e) => onChange({ [rawKey]: e.target.value })}
+          rows={rows}
+          placeholder={placeholder}
+          className="w-full rounded border border-zinc-700 bg-zinc-900 px-2 py-1 text-xs text-zinc-200 outline-none focus:border-blue-500 resize-y"
+        />
+      )}
+      <PromptPicker
+        open={pickerOpen}
+        onClose={() => setPickerOpen(false)}
+        currentRef={currentRef}
+        currentVersionId={currentVersion}
+        onPick={(slot, versionId) => {
+          onChange({
+            [refKey]: slot,
+            [refVersionKey]: versionId,  // undefined for follow mode
+          })
+        }}
+      />
+    </div>
+  )
+}
+
 function NodeConfigPanel({ node, nodeType, config, projectDefaultModel, tools, onChange, onLabelChange }: NodeConfigPanelProps) {
   const fields = nodeType.schema?.fields || []
   const hasCustom = Object.keys(config).length > 0
@@ -773,16 +852,16 @@ function NodeConfigPanel({ node, nodeType, config, projectDefaultModel, tools, o
       )}
 
       {fields.includes('system_prompt_prefix') && (
-        <div>
-          <label className="text-[10px] uppercase text-zinc-500 block mb-1">System Prompt 前綴</label>
-          <textarea
-            value={(config.system_prompt_prefix as string) || ''}
-            onChange={(e) => onChange({ system_prompt_prefix: e.target.value })}
-            rows={4}
-            placeholder="會插入到 active prompt 之前..."
-            className="w-full rounded border border-zinc-700 bg-zinc-900 px-2 py-1 text-xs text-zinc-200 outline-none focus:border-blue-500 resize-y"
-          />
-        </div>
+        <PromptRefField
+          label="System Prompt 前綴"
+          rawKey="system_prompt_prefix"
+          refKey="system_prompt_prefix_ref"
+          refVersionKey="system_prompt_prefix_ref_version"
+          config={config}
+          onChange={onChange}
+          placeholder="會插入到 active prompt 之前..."
+          rows={4}
+        />
       )}
 
       {fields.includes('synthesis_model') && (
@@ -829,29 +908,29 @@ function NodeConfigPanel({ node, nodeType, config, projectDefaultModel, tools, o
       )}
 
       {fields.includes('synthesis_system_prompt') && (
-        <div>
-          <label className="text-[10px] uppercase text-zinc-500 block mb-1">合成階段 System Prompt（可選）</label>
-          <textarea
-            value={(config.synthesis_system_prompt as string) || ''}
-            onChange={(e) => onChange({ synthesis_system_prompt: e.target.value })}
-            rows={3}
-            placeholder="未設定則用：「你是一個助手。根據以下工具執行結果，用繁體中文提供清楚完整的回答。」"
-            className="w-full rounded border border-zinc-700 bg-zinc-900 px-2 py-1 text-xs text-zinc-200 outline-none focus:border-blue-500 resize-y"
-          />
-        </div>
+        <PromptRefField
+          label="合成階段 System Prompt（可選）"
+          rawKey="synthesis_system_prompt"
+          refKey="synthesis_system_prompt_ref"
+          refVersionKey="synthesis_system_prompt_ref_version"
+          config={config}
+          onChange={onChange}
+          placeholder="未設定則用預設：「你是一個助手。根據以下工具執行結果…」"
+          rows={3}
+        />
       )}
 
       {fields.includes('system_prompt') && (
-        <div>
-          <label className="text-[10px] uppercase text-zinc-500 block mb-1">System Prompt</label>
-          <textarea
-            value={(config.system_prompt as string) || ''}
-            onChange={(e) => onChange({ system_prompt: e.target.value })}
-            rows={4}
-            placeholder="分類器的 system prompt；可用 {rules_desc} 當佔位符插入規則清單"
-            className="w-full rounded border border-zinc-700 bg-zinc-900 px-2 py-1 text-xs text-zinc-200 outline-none focus:border-blue-500 resize-y"
-          />
-        </div>
+        <PromptRefField
+          label="System Prompt"
+          rawKey="system_prompt"
+          refKey="system_prompt_ref"
+          refVersionKey="system_prompt_ref_version"
+          config={config}
+          onChange={onChange}
+          placeholder="分類器的 system prompt；可用 {rules_desc} 當佔位符插入規則清單"
+          rows={4}
+        />
       )}
 
       {fields.includes('rag_limit') && (
