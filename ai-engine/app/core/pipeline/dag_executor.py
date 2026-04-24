@@ -22,6 +22,7 @@ from app.core.llm_router.router import chat_completion
 from app.core.tools.registry import tool_registry
 from app.core.orchestrator.constants import WIDGET_INSTRUCTION
 from app.core.orchestrator.prompt_loader import load_active_prompt, search_knowledge
+from app.core.pipeline.mode_prompts import MODE_PROMPTS, build_blended_prompt
 from app.db import crud
 
 
@@ -83,6 +84,14 @@ class DAGContext:
         # 可選的進度事件 sink（asyncio.Queue），若設定則 handler 會 push 即時事件
         # 用於 SSE 串流顯示「正在規劃工具」「正在呼叫 X」等狀態
         self.progress_sink: Optional[object] = None
+
+        # 前端 chat mode 對應的 system prompt 前綴（教練/研究/課程/對戰）
+        # compose_prompt 會在組 system prompt 時 prepend
+        self.mode_prompt: Optional[str] = None
+
+        # analyze_intent 節點的結構化輸出：{actions, warnings, knowledge_points, response_styles}
+        # load_knowledge 用 knowledge_points 做定向 RAG；compose_prompt 注入 warnings 和混合人格
+        self.analysis: Optional[dict] = None
 
     def emit(self, event: dict) -> None:
         """Best-effort 推事件到 progress_sink。若 sink 不存在或推失敗，靜默忽略。"""
@@ -255,15 +264,149 @@ async def handle_triage_llm(node: dict, ctx: DAGContext) -> dict:
         }
 
 
+async def handle_analyze_intent(node: dict, ctx: DAGContext) -> dict:
+    """中間層分析：用便宜模型把使用者問題拆成結構化 JSON，供下游節點取用。
+
+    輸出欄位（寫入 ctx.analysis）：
+      - actions:          需要執行哪些動作（例：calculate_equity / 教學 / 出題 / 批改）
+      - warnings:         本題需提防的注意事項（常見誤區、missing context 等）
+      - knowledge_points: 相關知識概念（RAG 用來做定向檢索）
+      - response_styles:  該用哪些人格組合（coach/research/course/battle，可多選混用）
+    """
+    import json as _json
+    import re as _re
+
+    cfg = node.get("config") or {}
+    model = cfg.get("model") or "claude-haiku-4-5-20251001"
+    custom_sys = cfg.get("system_prompt")
+
+    available_modes = ", ".join(f"{k}（{v['label']}：{v['description']}）" for k, v in MODE_PROMPTS.items())
+
+    default_sys = f"""你是一個問題分析器。任務：把使用者問題拆成結構化 JSON，讓下游系統知道該做什麼。
+
+可用的回覆人格（response_styles 的選項，可多選混用）：
+{available_modes}
+
+分析四個維度：
+1. actions           — 需要執行哪些動作（例：["計算 AA vs KK 勝率", "教 pot odds 概念", "出一題 BTN vs BB 翻前題"]）
+2. warnings          — 本題使用者可能忽略或誤解的地方（例：["未說明籌碼深度", "可能混淆 equity 和 pot odds"]）
+3. knowledge_points  — 相關知識關鍵字，給 RAG 定向檢索（例：["pot odds", "range balance", "c-bet sizing"]）
+4. response_styles   — 該用哪些人格，用 key 名稱（coach/research/course/battle）。允許多選，例：["coach", "research"] 代表分析＋研究並重
+
+輸出**純 JSON**（不要 markdown code block、不要加說明），格式：
+{{
+  "actions":          ["...", "..."],
+  "warnings":         ["...", "..."],
+  "knowledge_points": ["...", "..."],
+  "response_styles":  ["coach"]
+}}"""
+    sys_content = custom_sys or default_sys
+
+    try:
+        ctx.emit({"status": "analyzing", "message": "分析問題需要哪些工具和知識…"})
+        print(f"[INFO] analyze_intent starting with {model}", flush=True)
+        start = time.time()
+        resp = await chat_completion(
+            messages=[
+                {"role": "system", "content": sys_content},
+                {"role": "user", "content": ctx.user_message},
+            ],
+            model=model,
+            temperature=0.0,
+            max_tokens=800,
+            project_id=ctx.project_id,
+            session_id=ctx.session_id,
+            span_label="analyze_intent",
+        )
+        text = (resp.choices[0].message.content or "").strip()
+        latency = int((time.time() - start) * 1000)
+
+        # 解析 JSON（寬鬆：找第一個 { ... } 區塊）
+        m = _re.search(r"\{[\s\S]*\}", text)
+        if not m:
+            raise ValueError(f"analyze_intent 沒回 JSON: {text[:200]}")
+        parsed = _json.loads(m.group())
+        if not isinstance(parsed, dict):
+            raise ValueError("analyze_intent 回傳非 dict")
+
+        analysis = {
+            "actions": [str(a) for a in (parsed.get("actions") or []) if a][:8],
+            "warnings": [str(w) for w in (parsed.get("warnings") or []) if w][:5],
+            "knowledge_points": [str(k) for k in (parsed.get("knowledge_points") or []) if k][:8],
+            "response_styles": [s for s in (parsed.get("response_styles") or []) if s in MODE_PROMPTS] or ["coach"],
+        }
+        ctx.analysis = analysis
+
+        # 用 analysis 組 ctx.mode_prompt（let compose_prompt 用現有機制消化）
+        ctx.mode_prompt = build_blended_prompt(analysis["response_styles"])
+
+        ctx.emit({
+            "status": "analyzed",
+            "styles": analysis["response_styles"],
+            "actions": analysis["actions"][:3],
+        })
+        print(
+            f"[INFO] analyze_intent ok: styles={analysis['response_styles']}, "
+            f"actions={len(analysis['actions'])}, kps={len(analysis['knowledge_points'])}, "
+            f"warnings={len(analysis['warnings'])}",
+            flush=True,
+        )
+
+        usage = getattr(resp, "usage", None)
+        _in = getattr(usage, "prompt_tokens", 0) if usage else 0
+        _out = getattr(usage, "completion_tokens", 0) if usage else 0
+
+        style_labels = " + ".join(MODE_PROMPTS[s]["label"] for s in analysis["response_styles"])
+        return {
+            "status": "ok",
+            "output": {
+                "actions": analysis["actions"],
+                "warnings": analysis["warnings"],
+                "knowledge_points": analysis["knowledge_points"],
+                "response_styles": analysis["response_styles"],
+                "model_used": model,
+                "tokens_in": _in,
+                "tokens_out": _out,
+                "latency_ms": latency,
+            },
+            "summary": (
+                f"{model} · 人格: {style_labels} · "
+                f"{len(analysis['actions'])} actions · {len(analysis['knowledge_points'])} knowledge_points · "
+                f"{len(analysis['warnings'])} warnings"
+            ),
+        }
+    except Exception as e:
+        # 分析失敗不中斷 pipeline — 用 coach 預設人格走下去
+        ctx.analysis = {"actions": [], "warnings": [], "knowledge_points": [], "response_styles": ["coach"]}
+        ctx.mode_prompt = MODE_PROMPTS["coach"]["prompt"]
+        return {
+            "status": "ok",
+            "output": {"fallback": True, "error": str(e)[:200], "response_styles": ["coach"]},
+            "summary": f"分析失敗，fallback 用 coach 人格：{str(e)[:80]}",
+        }
+
+
 async def handle_load_knowledge(node: dict, ctx: DAGContext) -> dict:
-    """RAG 檢索 — 走 orchestrator.prompt_loader.search_knowledge(pipeline:Qdrant → pgvector → keyword)。"""
+    """RAG 檢索 — 走 orchestrator.prompt_loader.search_knowledge(pipeline:Qdrant → pgvector → keyword)。
+
+    若 ctx.analysis.knowledge_points 存在，用它們做**定向檢索**（比用原 user_message 精準）。
+    """
     cfg = node.get("config") or {}
     rag_limit = int(cfg.get("rag_limit", 5))
     if rag_limit == 0:
         return {"status": "ok", "output": {"skipped": True}, "summary": "RAG 關閉"}
 
+    # 優先用 analyze_intent 產出的 knowledge_points 做檢索查詢
+    kps = (ctx.analysis or {}).get("knowledge_points") or []
+    if kps:
+        query = " ".join(kps) + "\n\n" + ctx.user_message  # 關鍵字 + 原問題補足 context
+        query_source = "analysis"
+    else:
+        query = ctx.user_message
+        query_source = "user_message"
+
     try:
-        rag_text = await search_knowledge(ctx.user_message, ctx.project_id)
+        rag_text = await search_knowledge(query, ctx.project_id)
         if rag_text:
             ctx.rag_context = rag_text
             # 估個片段數(以 "---" 分隔)供 trace 顯示
@@ -275,14 +418,16 @@ async def handle_load_knowledge(node: dict, ctx: DAGContext) -> dict:
                     "total_chars": len(rag_text),
                     "rag_limit": rag_limit,
                     "rag_preview": rag_text[:1000] + ("..." if len(rag_text) > 1000 else ""),
-                    "query": ctx.user_message[:300],
+                    "query": query[:500],
+                    "query_source": query_source,
+                    "knowledge_points_used": kps if query_source == "analysis" else [],
                 },
-                "summary": f"取 {chunk_count} 個 RAG 片段",
+                "summary": f"取 {chunk_count} 個 RAG 片段（查詢來源：{query_source}）",
             }
     except Exception as e:  # noqa: BLE001
-        return {"status": "ok", "output": {"error": str(e)[:200], "query": ctx.user_message[:300]}, "summary": "RAG 檢索失敗(略過)"}
+        return {"status": "ok", "output": {"error": str(e)[:200], "query": query[:500], "query_source": query_source}, "summary": "RAG 檢索失敗(略過)"}
 
-    return {"status": "ok", "output": {"chunk_count": 0, "rag_limit": rag_limit, "query": ctx.user_message[:300]}, "summary": "沒有相關知識"}
+    return {"status": "ok", "output": {"chunk_count": 0, "rag_limit": rag_limit, "query": query[:500], "query_source": query_source}, "summary": f"沒有相關知識（查詢來源：{query_source}）"}
 
 
 async def handle_compose_prompt(node: dict, ctx: DAGContext) -> dict:
@@ -300,12 +445,31 @@ async def handle_compose_prompt(node: dict, ctx: DAGContext) -> dict:
     except Exception as e:  # noqa: BLE001
         print(f"[WARN] load_active_prompt failed in DAG: {e}")
 
-    # 組 system prompt:prefix + base + WIDGET_INSTRUCTION(與 orchestrator 對齊)
+    # 組 system prompt: mode_prompt（人格） + prefix(DAG 節點) + base(active prompt)
+    #                 + analysis 注入（warnings + knowledge_points）+ WIDGET_INSTRUCTION
     parts = []
+    if ctx.mode_prompt:
+        parts.append(ctx.mode_prompt)
     if prefix:
         parts.append(prefix)
     if base_prompt:
         parts.append(base_prompt)
+
+    # 注入中間層分析結果
+    analysis = ctx.analysis or {}
+    warnings = analysis.get("warnings") or []
+    knowledge_points = analysis.get("knowledge_points") or []
+    actions = analysis.get("actions") or []
+    if warnings or knowledge_points or actions:
+        sections = []
+        if actions:
+            sections.append("## 本題該涵蓋的動作\n" + "\n".join(f"- {a}" for a in actions))
+        if knowledge_points:
+            sections.append("## 需要帶到的知識點\n" + "、".join(knowledge_points))
+        if warnings:
+            sections.append("## ⚠️ 本題需提防\n" + "\n".join(f"- {w}" for w in warnings))
+        parts.append("\n\n".join(sections))
+
     parts.append(WIDGET_INSTRUCTION)
     ctx.system_prompt = "\n\n".join(p for p in parts if p)
 
@@ -330,8 +494,16 @@ async def handle_compose_prompt(node: dict, ctx: DAGContext) -> dict:
             "has_widget_instruction": True,
             "history_count": len(ctx.history),
             "user_message": ctx.user_message[:500],
+            "analysis_injected": bool(warnings or knowledge_points or actions),
+            "response_styles": analysis.get("response_styles") or [],
+            "warnings_count": len(warnings),
+            "knowledge_points_count": len(knowledge_points),
+            "actions_count": len(actions),
         },
-        "summary": f"組出 {len(ctx.messages)} 則訊息(system {len(ctx.system_prompt)} 字)",
+        "summary": (
+            f"組出 {len(ctx.messages)} 則訊息(system {len(ctx.system_prompt)} 字)"
+            + (f" · 人格: {'+'.join(analysis.get('response_styles') or [])}" if analysis else "")
+        ),
     }
 
 
@@ -1391,9 +1563,11 @@ NodeHandler = Callable[[dict, DAGContext], Awaitable[dict]]
 
 HANDLERS: dict[str, NodeHandler] = {
     "input": handle_input,
+    "user_input": handle_input,  # alias — V3 DAG 用這個 key
     "load_history": handle_load_history,
     "triage": handle_triage,
     "triage_llm": handle_triage_llm,
+    "analyze_intent": handle_analyze_intent,
     "load_knowledge": handle_load_knowledge,
     "compose_prompt": handle_compose_prompt,
     "call_model": handle_call_model,
@@ -1509,6 +1683,7 @@ async def execute_dag(
     persist: bool = False,
     pre_loaded_history: Optional[list[dict]] = None,
     progress_sink: Optional[object] = None,
+    mode_prompt: Optional[str] = None,
 ) -> dict:
     """執行一個 DAG 定義。
 
@@ -1541,6 +1716,7 @@ async def execute_dag(
         pre_loaded_history=pre_loaded_history,
     )
     ctx.progress_sink = progress_sink
+    ctx.mode_prompt = mode_prompt
 
     order = _topological_order(nodes, edges)
     trace: list[dict] = []

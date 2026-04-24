@@ -25,6 +25,17 @@ interface MessageItem {
   widgets?: WidgetDefinition[]
   widgetAnswered?: boolean
   metadata?: Record<string, any>
+  // 中間層分析結果（僅 assistant 訊息，用來顯示「本題用了什麼模式」badge）
+  analysisStyles?: string[]
+  analysisActions?: string[]
+}
+
+// 4 個人格的中文標籤與 icon（和 backend mode_prompts.py 對齊）
+const STYLE_META: Record<string, { label: string; icon: string }> = {
+  coach: { label: '教練', icon: '🎯' },
+  research: { label: '研究', icon: '🔬' },
+  course: { label: '課程', icon: '📚' },
+  battle: { label: '對戰', icon: '⚔️' },
 }
 
 export type ChatMode = 'freeform' | 'onboarding' | 'capability'
@@ -55,6 +66,11 @@ export function ChatInterface({
   const [progressPhase, setProgressPhase] = useState<string | null>(null)
   const [progressMessage, setProgressMessage] = useState<string>('')
   const [toolStats, setToolStats] = useState<ToolStat[]>([])
+  // 中間層分析出的人格（用 ref 避免 closure stale state；UI 讀 state 變體同步顯示）
+  const [currentStyles, setCurrentStyles] = useState<string[]>([])
+  const [currentActions, setCurrentActions] = useState<string[]>([])
+  const currentStylesRef = useRef<string[]>([])
+  const currentActionsRef = useRef<string[]>([])
 
   // Widget bottom-sheet 狀態：自動綁定最新未回答的 widgets
   const [widgetSheetOpen, setWidgetSheetOpen] = useState(true)
@@ -152,6 +168,10 @@ export function ChatInterface({
     setProgressPhase(null)
     setProgressMessage('')
     setToolStats([])
+    setCurrentStyles([])
+    setCurrentActions([])
+    currentStylesRef.current = []
+    currentActionsRef.current = []
 
     // 先加一個空的 assistant message 用於 streaming 填充
     setMessages((prev) => [...prev, { id: streamingId, role: 'assistant', content: '' }])
@@ -176,6 +196,9 @@ export function ChatInterface({
         // onDone: 更新 message_id + session_id，帶上 widgets（從 stream 尾端來的）
         (sid, messageId, widgets) => {
           if (sid) updateSessionId(sid)
+          // 用 ref 讀最新值（避免 closure 抓到初始的空 []）
+          const stylesSnapshot = currentStylesRef.current
+          const actionsSnapshot = currentActionsRef.current
           setMessages((prev) =>
             prev.map((m) =>
               m.id === streamingId
@@ -185,6 +208,9 @@ export function ChatInterface({
                     widgets: widgets && (widgets as WidgetDefinition[]).length > 0
                       ? (widgets as WidgetDefinition[])
                       : m.widgets,
+                    // 把這輪分析出的人格 / 動作釘在訊息上（badge 用）
+                    analysisStyles: stylesSnapshot.length > 0 ? stylesSnapshot : m.analysisStyles,
+                    analysisActions: actionsSnapshot.length > 0 ? actionsSnapshot : m.analysisActions,
                   }
                 : m
             )
@@ -193,6 +219,8 @@ export function ChatInterface({
           setProgressPhase(null)
           setProgressMessage('')
           setToolStats([])
+          setCurrentStyles([])
+          setCurrentActions([])
         },
         // onError
         (error) => {
@@ -206,7 +234,13 @@ export function ChatInterface({
         (ev: StreamProgressEvent) => {
           setProgressPhase(ev.status)
           if (ev.message) setProgressMessage(ev.message)
-          if (ev.status === 'tool_plan' && ev.tools) {
+          if (ev.status === 'analyzed') {
+            // 中間層分析完成 — 記下人格與動作（ref + state 雙寫避免 closure stale）
+            if (ev.styles) { currentStylesRef.current = ev.styles; setCurrentStyles(ev.styles) }
+            if (ev.actions) { currentActionsRef.current = ev.actions; setCurrentActions(ev.actions) }
+            const stylesLabels = (ev.styles || []).map((s) => STYLE_META[s]?.label || s).join(' + ')
+            setProgressMessage(`分析完成 · 採用人格：${stylesLabels || '預設'}`)
+          } else if (ev.status === 'tool_plan' && ev.tools) {
             setToolStats(ev.tools.map((t) => ({ name: t.name, status: 'running' })))
           } else if (ev.status === 'tool_start' && ev.tool_name) {
             setToolStats((prev) => {
@@ -238,6 +272,8 @@ export function ChatInterface({
       setProgressPhase(null)
       setProgressMessage('')
       setToolStats([])
+      setCurrentStyles([])
+      setCurrentActions([])
     }
   }
 
@@ -340,6 +376,18 @@ export function ChatInterface({
               {msg.widgets && msg.widgets.length > 0 && (
                 <div className="mt-2 text-[10px] text-zinc-500 italic">
                   ↓ 回覆下方有 {msg.widgets.length} 個選項可回答
+                </div>
+              )}
+
+              {/* 中間層分析 badge — 顯示本題用了哪些人格 */}
+              {msg.role === 'assistant' && msg.analysisStyles && msg.analysisStyles.length > 0 && (
+                <div className="mt-2 flex flex-wrap items-center gap-1 pt-1.5 border-t border-zinc-700/40">
+                  <span className="text-[9px] text-zinc-500">本題採用：</span>
+                  {msg.analysisStyles.map((s) => (
+                    <span key={s} className="text-[10px] px-1.5 py-0.5 rounded bg-indigo-900/40 border border-indigo-700/30 text-indigo-300">
+                      {STYLE_META[s]?.icon} {STYLE_META[s]?.label || s}
+                    </span>
+                  ))}
                 </div>
               )}
 

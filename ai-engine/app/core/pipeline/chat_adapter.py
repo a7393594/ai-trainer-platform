@@ -74,6 +74,7 @@ async def process_via_dag(request: ChatRequest, progress_sink: Optional[object] 
             persist=True,
             pre_loaded_history=history,
             progress_sink=progress_sink,
+            mode_prompt=request.mode_prompt,
         )
         # 對齊 agent.py:150-152：把 assistant_message_id 連結回 pipeline run
         run = current_run()

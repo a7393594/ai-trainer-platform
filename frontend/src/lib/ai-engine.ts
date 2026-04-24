@@ -43,12 +43,15 @@ export async function sendMessage(req: ChatRequest): Promise<ChatResponse> {
 }
 
 export interface StreamProgressEvent {
-  status: 'thinking' | 'tool_plan' | 'tool_start' | 'tool_done' | 'synthesizing' | string
+  status: 'analyzing' | 'analyzed' | 'thinking' | 'tool_plan' | 'tool_start' | 'tool_done' | 'synthesizing' | string
   message?: string
   tool_name?: string
   tools?: Array<{ name: string; params?: unknown }>
   ok?: boolean
   params?: unknown
+  // analyzed 事件帶的欄位
+  styles?: string[]           // e.g. ['coach', 'research']
+  actions?: string[]          // preview 前 3 個動作
 }
 
 /** Streaming 對話 — 逐字回傳，含工具呼叫進度事件 */

@@ -39,6 +39,7 @@ class ChatRequest(BaseModel):
     user_id: Optional[str] = None     # None = 用 demo user
     message: str
     model: Optional[str] = None       # None = 用專案預設模型
+    mode_prompt: Optional[str] = None  # 前端 mode（教練/研究/課程/對戰）對應的 system prompt 前綴
 
 
 class ChatResponse(BaseModel):
