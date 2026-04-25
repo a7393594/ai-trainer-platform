@@ -192,12 +192,15 @@ async def chat_stream(request: ChatRequest):
                     chunk = text[i:i + chunk_size]
                     yield f"data: {json.dumps({'content': chunk}, ensure_ascii=False)}\n\n"
                     await _asyncio.sleep(0.02)
-                # 帶上 widgets / metadata
+                # 帶上 widgets / tool_results / metadata
+                # tool_results 一定要在 done event 帶,前端才不用 reload 才能看見 EQUITY CALCULATOR 等卡片
                 done_event = {"done": True}
                 if response.message_id:
                     done_event["message_id"] = response.message_id
                 if getattr(response, 'widgets', None):
                     done_event["widgets"] = response.widgets
+                if getattr(response, 'tool_results', None):
+                    done_event["tool_results"] = response.tool_results
                 yield f"data: {json.dumps(done_event, ensure_ascii=False)}\n\n"
             else:
                 async for event in orchestrator.process_stream(request):
