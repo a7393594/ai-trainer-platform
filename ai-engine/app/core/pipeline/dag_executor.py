@@ -1090,6 +1090,10 @@ async def handle_call_model(node: dict, ctx: DAGContext) -> dict:
 
     try:
         for iteration in range(max_iterations + 1):  # initial + up to N iterations
+            ctx.emit({
+                "status": "thinking" if iteration == 0 else "tool_followup",
+                "message": "AI 正在思考…" if iteration == 0 else f"處理工具結果中（第 {iteration + 1} 輪）…",
+            })
             start = time.time()
             resp = await chat_completion(
                 messages=ctx.messages,
@@ -1137,6 +1141,12 @@ async def handle_call_model(node: dict, ctx: DAGContext) -> dict:
             final_tool_call_count = len(tool_calls)
             ctx.tool_iterations += 1
 
+            ctx.emit({
+                "status": "tool_plan",
+                "message": f"規劃了 {len(tool_calls)} 個工具呼叫，即將平行執行",
+                "tools": [{"name": tc.function.name} for tc in tool_calls],
+            })
+
             # Append assistant message with tool_calls to history
             ctx.messages.append({
                 "role": "assistant",
@@ -1158,6 +1168,7 @@ async def handle_call_model(node: dict, ctx: DAGContext) -> dict:
                     params = json.loads(tc.function.arguments) if tc.function.arguments else {}
                 except Exception:
                     params = {}
+                ctx.emit({"status": "tool_start", "tool_name": tool_name, "params": params})
                 try:
                     result = await tool_registry.execute_tool_by_name(
                         name=tool_name,
@@ -1168,6 +1179,7 @@ async def handle_call_model(node: dict, ctx: DAGContext) -> dict:
                 except Exception as e:
                     result = {"error": str(e)}
                     status = "error"
+                ctx.emit({"status": "tool_done", "tool_name": tool_name, "ok": status == "ok"})
 
                 ctx.tool_results.append({
                     "iteration": ctx.tool_iterations,
