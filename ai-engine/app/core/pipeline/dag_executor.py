@@ -1896,6 +1896,19 @@ async def execute_dag(
     # MVP-1: branch handler needs edges to compute downstream skip set
     ctx._dag_edges = edges  # type: ignore[attr-defined]
 
+    # Set tenant contextvar so downstream LLM calls (in legacy handlers that don't
+    # thread tenant_id explicitly) can resolve per-tenant provider keys. The
+    # HTTP middleware sets this when project_id is in the request body, but
+    # endpoints like /dag/{id}/test only have project_id in URL/path so the
+    # middleware misses it; setting here covers all execute_dag entry points.
+    _tenant_token = None
+    if tenant_id:
+        try:
+            from app.core.tenant_context import set_current_tenant
+            _tenant_token = set_current_tenant(tenant_id)
+        except Exception:
+            pass
+
     order = _topological_order(nodes, edges)
     trace: list[dict] = []
 
@@ -1966,6 +1979,14 @@ async def execute_dag(
                 break
             if type_key == "call_model":
                 break
+
+    # Reset tenant contextvar (always — even if no token captured this is no-op)
+    if _tenant_token is not None:
+        try:
+            from app.core.tenant_context import reset_current_tenant
+            reset_current_tenant(_tenant_token)
+        except Exception:
+            pass
 
     return {
         "final_text": ctx.clean_text or ctx.llm_response_text,
