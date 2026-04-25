@@ -976,9 +976,19 @@ F. 問題含「聽牌 / outs / 補牌 / 差幾張 / 聽什麼 / draws / 順子�
     ctx.llm_response_text = syn_text
     print(f"[INFO] synthesis ok: len={len(syn_text)} with {syn_model}", flush=True)
 
-    # 更新全域累積 tokens
+    # 更新全域累積 tokens + cost
     ctx.total_tokens_in += total_in
     ctx.total_tokens_out += total_out
+    # plan-and-execute 跑兩個 model，用各自 model + token 算 cost 加總
+    try:
+        from app.core.llm_router.router import calculate_cost as _cc
+        # planner: planner_model 跑了 plan_in/plan_out
+        # synthesis: syn_model 跑了 syn_in/syn_out
+        # 但這個 scope 沒有獨立 in/out 拆分，總 in/out 用 syn_model 估會偏低
+        # 以總 in/out 用 syn_model 估算（synthesis 是最重的那段）
+        ctx.total_cost_usd += _cc(syn_model, total_in, total_out)
+    except Exception:
+        pass
     ctx.tool_call_count = len(tool_results)
 
     return {
@@ -1312,6 +1322,11 @@ async def handle_call_model(node: dict, ctx: DAGContext) -> dict:
 
         ctx.total_tokens_in += total_in
         ctx.total_tokens_out += total_out
+        try:
+            from app.core.llm_router.router import calculate_cost as _cc
+            ctx.total_cost_usd += _cc(ctx.model, total_in, total_out)
+        except Exception:
+            pass
         ctx.tool_call_count = final_tool_call_count
 
         tool_summary = f"，呼叫 {len(ctx.tool_results)} 個工具" if ctx.tool_results else ""
