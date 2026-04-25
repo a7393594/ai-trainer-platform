@@ -1452,6 +1452,7 @@ async def handle_capability_widget(node: dict, ctx: DAGContext) -> dict:
     if not text_response:
         # 產生 contextual 文字
         try:
+            cfg = node.get("config") or {}
             system_prompt = await load_active_prompt(ctx.project_id, ctx.session_id) or ""
             messages: list[dict] = []
             if system_prompt:
@@ -1464,7 +1465,7 @@ async def handle_capability_widget(node: dict, ctx: DAGContext) -> dict:
             )})
             resp = await chat_completion(
                 messages=messages,
-                model="claude-sonnet-4-20250514",
+                model=cfg.get("model") or "claude-sonnet-4-20250514",
                 project_id=ctx.project_id,
                 session_id=ctx.session_id,
                 span_label="capability_widget_text",
@@ -1510,6 +1511,7 @@ async def handle_capability_tool_call(node: dict, ctx: DAGContext) -> dict:
         return {"status": "ok", "output": {"skipped": True, "reason": "tool not found"}, "summary": "tool 不存在,退回 general"}
 
     try:
+        cfg = node.get("config") or {}
         system_prompt = await load_active_prompt(ctx.project_id, ctx.session_id) or ""
         messages: list[dict] = []
         if system_prompt:
@@ -1519,7 +1521,7 @@ async def handle_capability_tool_call(node: dict, ctx: DAGContext) -> dict:
         messages.append({"role": "system", "content": f"可用工具:{tool['name']} — {tool.get('description', '')}。請使用此工具回答使用者。"})
         resp = await chat_completion(
             messages=messages,
-            model="claude-sonnet-4-20250514",
+            model=cfg.get("model") or "claude-sonnet-4-20250514",
             project_id=ctx.project_id,
             session_id=ctx.session_id,
             span_label="capability_tool_call",
