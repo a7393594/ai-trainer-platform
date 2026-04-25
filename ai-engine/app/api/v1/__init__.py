@@ -157,7 +157,11 @@ async def chat_stream(request: ChatRequest):
 
     async def generate():
         try:
-            # 若有圖片,先做 vision describe（text 化）再進入原本流程
+            # 開頭立刻 yield 一個 SSE comment line(`: ping`)當 keepalive,
+            # 強迫 reverse proxy(nginx/cloudflare/render)立刻送出 headers + 第一個 chunk,
+            # 不要 buffer 整個 response。瀏覽器 SSE parser 會忽略 ': ' 開頭的 comment。
+            yield ": stream-open\n\n"
+            # 若有圖片,先做 vision describe(text 化)再進入原本流程
             await _preprocess_images(request)
             if settings.use_dag_executor_for_chat:
                 # DAG 路徑：背景跑 DAG，同時從 progress queue 即時串流事件給前端
@@ -167,11 +171,19 @@ async def chat_stream(request: ChatRequest):
                 progress_queue: _asyncio.Queue = _asyncio.Queue()
                 dag_task = _asyncio.create_task(process_via_dag(request, progress_sink=progress_queue))
                 # 邊跑邊串 progress event
+                # 加 heartbeat 計數器,每 ~2 秒(timeout 0.2 * 10)送 1 個 SSE comment 讓 proxy
+                # 不關閉 idle 連線(Render/Cloudflare 對 SSE 沉默太久會 abort)
+                _hb = 0
                 while not dag_task.done():
                     try:
                         event = await _asyncio.wait_for(progress_queue.get(), timeout=0.2)
                         yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+                        _hb = 0
                     except _asyncio.TimeoutError:
+                        _hb += 1
+                        if _hb >= 10:  # 每 ~2 秒送一次心跳
+                            yield ": heartbeat\n\n"
+                            _hb = 0
                         continue
                 # 排完剩下的 progress events
                 while not progress_queue.empty():
@@ -208,7 +220,17 @@ async def chat_stream(request: ChatRequest):
         except Exception as e:
             yield f"data: {json.dumps({'error': str(e)})}\n\n"
 
-    return StreamingResponse(generate(), media_type="text/event-stream")
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={
+            # 告訴 nginx/render reverse proxy 不要 buffer SSE response,
+            # 否則會把整個 stream 累在 server 端,client 只看得到第 1 個 chunk
+            "X-Accel-Buffering": "no",
+            "Cache-Control": "no-cache, no-transform",
+            "Connection": "keep-alive",
+        },
+    )
 
 
 @router.post("/chat/widget-response", response_model=ChatResponse)
