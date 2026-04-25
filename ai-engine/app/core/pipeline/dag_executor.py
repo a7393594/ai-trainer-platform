@@ -1468,7 +1468,21 @@ async def handle_retry(node: dict, ctx: DAGContext) -> dict:
 
 
 async def handle_parse_widget(node: dict, ctx: DAGContext) -> dict:
-    text = ctx.llm_response_text
+    # 優先讀 llm_response_text(main_model 剛吐出的原文,可能含 <!--WIDGET:...-->),
+    # 若 main_model 被跳過(capability_handled 早 return)則 llm_response_text 為空,
+    # 此時保留上游 capability_* 節點已經寫好的 clean_text,不要清空。
+    text = ctx.llm_response_text or ""
+    if not text:
+        return {
+            "status": "ok",
+            "output": {
+                "widget_count": len(ctx.widgets),
+                "skipped": True,
+                "reason": "no llm_response_text(capability 節點已產出 clean_text,不需解析)",
+                "preserved_clean_length": len(ctx.clean_text or ""),
+            },
+            "summary": "跳過 widget 解析(上游 capability 已處理)",
+        }
     widgets: list[dict] = []
     pattern = r'<!--WIDGET:([\s\S]*?)-->'
     matches = re.findall(pattern, text)
