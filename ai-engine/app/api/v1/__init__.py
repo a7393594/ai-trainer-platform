@@ -175,17 +175,14 @@ async def chat_stream(request: ChatRequest):
                 # 邊跑邊串 progress event
                 # 加 heartbeat 計數器,每 ~2 秒(timeout 0.2 * 10)送 1 個 SSE comment 讓 proxy
                 # 不關閉 idle 連線(Render/Cloudflare 對 SSE 沉默太久會 abort)
-                _hb = 0
+                # 每 200ms 一定 yield 點東西(progress event 或 heartbeat),
+                # 讓 Render reverse proxy 認為這是 active stream 不要 buffer。
                 while not dag_task.done():
                     try:
                         event = await _asyncio.wait_for(progress_queue.get(), timeout=0.2)
                         yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
-                        _hb = 0
                     except _asyncio.TimeoutError:
-                        _hb += 1
-                        if _hb >= 10:  # 每 ~2 秒送一次心跳
-                            yield ": heartbeat\n\n"
-                            _hb = 0
+                        yield ": hb\n\n"  # 每次 timeout 都送 heartbeat 維持 active stream
                         continue
                 # 排完剩下的 progress events
                 while not progress_queue.empty():
