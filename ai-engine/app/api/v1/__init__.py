@@ -157,10 +157,12 @@ async def chat_stream(request: ChatRequest):
 
     async def generate():
         try:
-            # 開頭立刻 yield 一個 SSE comment line(`: ping`)當 keepalive,
-            # 強迫 reverse proxy(nginx/cloudflare/render)立刻送出 headers + 第一個 chunk,
-            # 不要 buffer 整個 response。瀏覽器 SSE parser 會忽略 ': ' 開頭的 comment。
-            yield ": stream-open\n\n"
+            # Render 的 reverse proxy 會 buffer text/event-stream 直到 chunk
+            # 累積到 ~4-8KB 才 flush。X-Accel-Buffering:no 對它無效(被 strip)。
+            # 強招:第一個 yield 直接送 ~4KB padding 把 proxy buffer 撐滿,
+            # 強迫立刻 flush headers + 第一個 chunk,後續 events 才會即時送達。
+            # 瀏覽器 SSE parser 會自動忽略 ':' 開頭的 comment 行。
+            yield ": " + ("padding-to-defeat-proxy-buffer " * 130) + "\n\n"
             # 若有圖片,先做 vision describe(text 化)再進入原本流程
             await _preprocess_images(request)
             if settings.use_dag_executor_for_chat:
