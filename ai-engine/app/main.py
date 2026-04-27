@@ -83,8 +83,16 @@ async def tenant_resolver(request: Request, call_next):
         if not tenant_id:
             tenant_id = request.query_params.get("tenant_id")
 
+        # Streaming SSE endpoints CANNOT use body sniffing + receive replay —
+        # BaseHTTPMiddleware crashes Starlette's disconnect detection during
+        # the long-running response with `Unexpected message received: http.request`.
+        # Those endpoints (chat_adapter etc.) lookup tenant_id from project_id
+        # themselves, so it's safe to skip middleware-level resolution here.
+        _path = request.url.path
+        _is_streaming = _path.endswith("/chat/stream") or _path.startswith("/embed/")
+
         # 3+4. Sniff POST body for tenant_id / project_id (only for JSON bodies)
-        if not tenant_id and request.method in ("POST", "PUT", "PATCH"):
+        if not tenant_id and not _is_streaming and request.method in ("POST", "PUT", "PATCH"):
             ctype = request.headers.get("content-type", "")
             if "application/json" in ctype:
                 body_bytes = await request.body()
@@ -101,8 +109,18 @@ async def tenant_resolver(request: Request, call_next):
                     except (ValueError, TypeError):
                         pass
                 # IMPORTANT: restore the body so the endpoint can read it again.
+                # Must only replay body ONCE; subsequent receive() calls (used by
+                # Starlette to detect client disconnect during streaming response)
+                # must fall through to the real receive — otherwise SSE endpoints
+                # crash with `Unexpected message received: http.request`.
+                _original_receive = request._receive  # type: ignore[attr-defined]
+                _replayed = False
                 async def receive():
-                    return {"type": "http.request", "body": body_bytes, "more_body": False}
+                    nonlocal _replayed
+                    if not _replayed:
+                        _replayed = True
+                        return {"type": "http.request", "body": body_bytes, "more_body": False}
+                    return await _original_receive()
                 request._receive = receive  # type: ignore[attr-defined]
     except Exception as e:
         _log.warning("tenant_resolver failed: %s", e)
