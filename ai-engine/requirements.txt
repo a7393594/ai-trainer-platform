@@ -27,6 +27,10 @@ pydantic-settings>=2.5.0
 # 加密（API Key 加密用）
 cryptography>=43.0.0
 
+# YAML（V4 KB 整合 — adapter_md.py parse markdown 內嵌 YAML frontmatter）
+# 透過 transitive dep 已可用，但顯式宣告以防上游移除
+pyyaml>=6.0
+
 # 工具
 httpx>=0.27.0
 python-dotenv>=1.0.0

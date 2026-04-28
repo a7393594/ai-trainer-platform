@@ -73,6 +73,12 @@ class Settings(BaseSettings):
     # 這個預設在 V3 DAG + Prompt Library 成熟後翻成 True；要退回 legacy 請設 env var=false
     use_dag_executor_for_chat: bool = True
 
+    # ── V4 Chat Engine ────────────────────────────────────────────
+    # V4 Chat Engine — 樹狀 pre-flight + native tool-use loop + atomic transaction。
+    # True 時 /chat 走 app.core.chat.engine.chat()，取代 V3 (chat_adapter.process_via_dag)。
+    # 預設 False；V4 first delivery 完成 + 灰度後才翻 True。
+    use_v4_chat: bool = False
+
     class Config:
         env_file = ".env"
         case_sensitive = False

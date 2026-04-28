@@ -5,6 +5,7 @@ import json
 from typing import Optional
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
 from app.models.schemas import (
     ChatRequest, ChatResponse,
     FeedbackRequest,
@@ -21,6 +22,21 @@ from app.core.orchestrator.onboarding import OnboardingManager
 from app.core.prompt.optimizer import PromptOptimizer
 from app.config import settings
 from app.db import crud
+
+
+# ============================================
+# V4 Chat — TreeChoiceRequest schema
+# ============================================
+
+class TreeChoiceRequest(BaseModel):
+    """使用者點 widget 選項後的延續呼叫。Phase 3 完整實作。"""
+    tree_id: str
+    node_id: str
+    choice_id: str
+    session_id: str
+    project_id: str
+    user_id: Optional[str] = None
+
 
 router = APIRouter()
 orchestrator = AgentOrchestrator()
@@ -126,9 +142,10 @@ async def _preprocess_images(request: ChatRequest) -> None:
 async def chat(request: ChatRequest):
     """核心對話端點。
 
-    依 `settings.use_dag_executor_for_chat` 決定走哪一條路徑:
-      - True  → chat_adapter.process_via_dag(request)(DAG Executor)
-      - False → orchestrator.process(request)(AgentOrchestrator,預設)
+    三層分流（依 settings flag 由高到低優先序）:
+      - settings.use_v4_chat=True  → app.core.chat.engine.chat()(V4 樹狀 + tool-use loop + atomic)
+      - settings.use_dag_executor_for_chat=True → chat_adapter.process_via_dag()(V3 DAG Executor)
+      - 其餘 → orchestrator.process()(legacy AgentOrchestrator)
 
     若帶 `images`,會先做一次 vision describe,把圖片內容以文字形式 prepend 進 `message`,
     之後流程不變。/chat/stream 與 /chat/widget-response 不受 dag flag 影響,但也做同樣的
@@ -136,23 +153,92 @@ async def chat(request: ChatRequest):
     """
     try:
         await _preprocess_images(request)
+        if settings.use_v4_chat:
+            from app.core.chat.engine import chat as v4_chat
+            return await v4_chat(request)
         if settings.use_dag_executor_for_chat:
             from app.core.pipeline.chat_adapter import process_via_dag
             return await process_via_dag(request)
         return await orchestrator.process(request)
     except HTTPException:
         raise
+    except NotImplementedError as e:
+        # V4 Phase 1 階段尚未支援的場景 — 回 501 給 c-end，c-end 可 fallback 到 V3
+        raise HTTPException(status_code=501, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/chat/tree-choice", response_model=ChatResponse)
+async def chat_tree_choice(request: TreeChoiceRequest):
+    """V4 樹節點選定後的延續呼叫。
+
+    使用者點 widget 選項後，c-end BFF 轉發 {tree_id, node_id, choice_id, ...} 到此端點。
+    後端 advance(node_id, choice_id) → 若下個節點是 leaf，呼叫 `engine.chat()`
+    with `forced_leaf_config`；若是內部節點，呼叫 `engine.chat()` with
+    `tree_id + tree_node_id` 讓 engine 從該節點繼續發 widget。
+
+    需 settings.use_v4_chat=True 才能用。
+    """
+    if not settings.use_v4_chat:
+        raise HTTPException(
+            status_code=501,
+            detail="V4 chat engine not enabled. Set USE_V4_CHAT=true.",
+        )
+
+    try:
+        from app.core.chat.trees import get_tree
+        from app.core.chat.engine import chat as v4_chat, ChatRequest as V4ChatRequest
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"V4 import error: {e}")
+
+    try:
+        tree = get_tree(request.tree_id)
+    except KeyError:
+        raise HTTPException(status_code=400, detail=f"Unknown tree_id: {request.tree_id}")
+
+    try:
+        next_node = tree.advance(request.node_id, request.choice_id)
+    except (ValueError, KeyError) as e:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid choice {request.choice_id} on node {request.node_id}: {e}",
+        )
+
+    # 組 V4 ChatRequest：依 next_node 是 leaf or non-leaf 走不同欄位
+    chat_kwargs: dict[str, Any] = {
+        "project_id": request.project_id,
+        "session_id": request.session_id,
+        "user_id": request.user_id,
+        "message": f"(tree:{request.tree_id} | choice:{request.choice_id})",
+    }
+    if next_node.is_leaf and next_node.leaf_config is not None:
+        leaf = next_node.leaf_config
+        chat_kwargs["forced_leaf_config"] = {
+            "persona": leaf.persona,
+            "tools": list(leaf.tools or []),
+            "kb_query_template": leaf.kb_query_template,
+            "system_prompt_segment": leaf.system_prompt_segment,
+            "metadata": dict(leaf.metadata or {}),
+        }
+        chat_kwargs["tree_id"] = request.tree_id
+    else:
+        chat_kwargs["tree_id"] = request.tree_id
+        chat_kwargs["tree_node_id"] = next_node.id
+
+    v4_request = V4ChatRequest(**chat_kwargs)
+    return await v4_chat(v4_request)
 
 
 @router.post("/chat/stream")
 async def chat_stream(request: ChatRequest):
     """Streaming 對話端點 (SSE)。
 
-    依 `settings.use_dag_executor_for_chat` 決定走哪一條路徑:
-      - True  → DAG Executor（active DAG）+ pseudo-streaming（分塊送出 final_text）
-      - False → orchestrator.process_stream()（真正的逐字元流）
+    三層分流：
+      - settings.use_v4_chat=True → V4 engine.chat()，跑完後 pseudo-stream final
+        text（Phase 1 簡化，後續 phase 加真 streaming via tool_use_loop emit_progress）
+      - settings.use_dag_executor_for_chat=True → DAG Executor + pseudo-streaming
+      - 其餘 → orchestrator.process_stream()（真正的逐字元流）
     """
 
     async def generate():
@@ -165,7 +251,33 @@ async def chat_stream(request: ChatRequest):
             yield ": " + ("padding-to-defeat-proxy-buffer " * 130) + "\n\n"
             # 若有圖片,先做 vision describe(text 化)再進入原本流程
             await _preprocess_images(request)
-            if settings.use_dag_executor_for_chat:
+            if settings.use_v4_chat:
+                # V4 路徑：Phase 1 先跑完整 chat()，再 pseudo-stream final_text。
+                # 後續 phase tool_use_loop 的 emit_progress 已經寫好，可改成真 streaming。
+                import asyncio as _asyncio
+                from app.core.chat.engine import chat as _v4_chat
+                try:
+                    response = await _v4_chat(request)
+                except NotImplementedError as _nie:
+                    yield f"data: {json.dumps({'error': f'V4 not ready: {_nie}'}, ensure_ascii=False)}\n\n"
+                    return
+                if response.session_id:
+                    yield f"data: {json.dumps({'session_id': response.session_id}, ensure_ascii=False)}\n\n"
+                text = response.message.content if response.message else ""
+                chunk_size = 40
+                for i in range(0, len(text), chunk_size):
+                    chunk = text[i:i + chunk_size]
+                    yield f"data: {json.dumps({'content': chunk}, ensure_ascii=False)}\n\n"
+                    await _asyncio.sleep(0.02)
+                done_payload: dict = {"done": True}
+                if response.message_id:
+                    done_payload["message_id"] = response.message_id
+                if getattr(response, 'widgets', None):
+                    done_payload["widgets"] = response.widgets
+                if getattr(response, 'tool_results', None):
+                    done_payload["tool_results"] = response.tool_results
+                yield f"data: {json.dumps(done_payload, ensure_ascii=False)}\n\n"
+            elif settings.use_dag_executor_for_chat:
                 # DAG 路徑：背景跑 DAG，同時從 progress queue 即時串流事件給前端
                 # 事件類型：status: analyzing|analyzed|thinking|tool_plan|tool_start|tool_done|synthesizing
                 from app.core.pipeline.chat_adapter import process_via_dag
