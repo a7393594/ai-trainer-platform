@@ -1531,9 +1531,16 @@ async def handle_capability_widget(node: dict, ctx: DAGContext) -> dict:
                 messages.append({"role": "system", "content": system_prompt})
             messages.extend(ctx.history)
             messages.append({"role": "user", "content": ctx.user_message})
+            # 重要:這條 system 指令必須要求 LLM 延續上下文,否則它會把
+            # 「規則描述」當成全新任務,忽視歷史中使用者已分享的牌局/手牌/情境,
+            # 回覆變成「沒有足夠資訊」的通用建議。
             messages.append({"role": "system", "content": (
-                f"使用者的問題匹配到了一個互動元件規則。請用自然語言回覆使用者,"
-                f"然後系統會自動顯示互動元件。規則描述:{rule.get('trigger_description', '')}"
+                "使用者剛才的訊息對應到一個互動元件選項或主題"
+                f"(規則描述:{rule.get('trigger_description', '')})。"
+                "請務必延續上方對話歷史的具體脈絡——包含使用者先前分享的牌局、"
+                "手牌、決策情境、AI 已給過的建議等——針對這次選擇給出貼合脈絡、"
+                "具體可操作的回覆。系統會在你的文字後自動顯示後續互動元件。"
+                "若歷史已含足夠資訊,絕對不要說「沒有足夠資訊」或「請提供手牌」之類的話。"
             )})
             resp = await chat_completion(
                 messages=messages,
@@ -1590,7 +1597,15 @@ async def handle_capability_tool_call(node: dict, ctx: DAGContext) -> dict:
             messages.append({"role": "system", "content": system_prompt})
         messages.extend(ctx.history)
         messages.append({"role": "user", "content": ctx.user_message})
-        messages.append({"role": "system", "content": f"可用工具:{tool['name']} — {tool.get('description', '')}。請使用此工具回答使用者。"})
+        # 注意:此 handler 沒有實際呼叫工具,只是在 prompt 提及工具存在。
+        # 若指令寫成「請使用此工具回答」,LLM 會幻覺自己呼叫了工具卻沒結果,
+        # 回覆「沒有收到工具結果」這類錯誤訊息。改為提示「參考」並要求延續歷史。
+        messages.append({"role": "system", "content": (
+            f"參考工具:{tool['name']} — {tool.get('description', '')}。"
+            "請延續上方對話歷史的具體脈絡作答。若歷史已含足夠資訊"
+            "(例如使用者已分享的牌局、手牌、情境),直接基於歷史給出具體回覆即可,"
+            "不要聲稱「沒有收到工具結果」或「請提供更多資訊」之類的話。"
+        )})
         resp = await chat_completion(
             messages=messages,
             model=cfg.get("model") or "claude-sonnet-4-20250514",
