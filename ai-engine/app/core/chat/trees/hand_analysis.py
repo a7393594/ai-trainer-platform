@@ -54,8 +54,36 @@ _LEAF_SOLVER_GTO = LeafConfig(
     tools=["calc_gto_solution", "calc_equity"],
     kb_query_template=None,
     system_prompt_segment=(
-        "葉子配置：純 GTO solver 結果。表格化呈現 mixed strategy / "
-        "frequencies / EVs，不展開原理。"
+        "葉子配置：單一 spot 純 GTO solver 結果。\n"
+        "**必須**呼叫一次 calc_gto_solution(spot) 取得精確 mixed strategy / "
+        "frequencies / EVs，不要從歷史推測或腦補數字。\n"
+        "表格化呈現工具結果，不展開原理。\n"
+        "若工具回傳結果不全（例如只有單一 action），明確標註資料來源是 LLM 近似而非真實 solver。"
+    ),
+)
+
+
+_LEAF_SOLVER_GTO_FULL_TREE = LeafConfig(
+    persona="solver_lookup",
+    tools=["calc_gto_solution", "calc_equity"],
+    kb_query_template=None,
+    system_prompt_segment=(
+        "葉子配置：完整 4 街 GTO 解算（使用者選了「整條樹」）。\n"
+        "**必須**對 Preflop / Flop / Turn / River **各呼叫一次** calc_gto_solution，"
+        "用各街對應的 board / pot / hero+villain ranges。\n"
+        "並行呼叫（plan-and-execute）以節省時間。\n"
+        "輸出格式：\n"
+        "  ## Preflop spot\n"
+        "  | Action | Frequency | EV (bb) |\n"
+        "  ...\n"
+        "  ## Flop spot ...\n"
+        "  ## Turn spot ...\n"
+        "  ## River spot ...\n"
+        "  ## 總結\n"
+        "  - 每街 hero 動作 vs solver 推薦比對（✓/✗）\n"
+        "  - 總 EV 偏差（bb）— 此值由四個 spot EV 差總和計算，不要憑感覺寫\n"
+        "**禁止**從對話歷史腦補某街的 GTO，只能用 calc_gto_solution 工具的回傳。\n"
+        "**禁止**回傳少於 4 街的內容。如果某街工具呼叫失敗，明確標「工具失敗」而非編造。"
     ),
 )
 
@@ -200,11 +228,11 @@ _NODES: dict[str, TreeNode] = {
             Option(id="turn", label="Turn spot", leaf_config=_LEAF_SOLVER_GTO),
             Option(id="river", label="River spot", leaf_config=_LEAF_SOLVER_GTO),
             Option(id="full_tree", label="整條樹（每街都看）",
-                   leaf_config=_LEAF_SOLVER_GTO),
+                   leaf_config=_LEAF_SOLVER_GTO_FULL_TREE),
             Option(
                 id="default",
                 label="我不知道 → 預設「最關鍵 spot」",
-                leaf_config=_LEAF_SOLVER_GTO,
+                leaf_config=_LEAF_SOLVER_GTO_FULL_TREE,
                 is_default=True,
             ),
         ],
