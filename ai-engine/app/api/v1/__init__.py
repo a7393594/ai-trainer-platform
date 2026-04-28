@@ -2,7 +2,7 @@
 API v1 路由 — 所有對外端點
 """
 import json
-from typing import Optional
+from typing import Any, Optional
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -29,13 +29,29 @@ from app.db import crud
 # ============================================
 
 class TreeChoiceRequest(BaseModel):
-    """使用者點 widget 選項後的延續呼叫。Phase 3 完整實作。"""
+    """使用者點 widget 選項後的延續呼叫。
+
+    支援兩種 payload 格式：
+      A) Flat（原始設計）：{tree_id, node_id, choice_id, session_id, project_id, user_id?}
+      B) Nested submission（c-end 5-widget-type 統一介面）：
+         {tree_id, node_id, widget_type, submission: {choice_id|choices|field_values|value, ...}, ...}
+
+    Handler 會 normalize submission 物件展平到 choice_id 等欄位。
+    """
     tree_id: str
     node_id: str
-    choice_id: str
-    session_id: str
+    choice_id: Optional[str] = None
+    session_id: Optional[str] = None
     project_id: str
     user_id: Optional[str] = None
+    # 5-widget-type 統一介面（c-end widget submission）
+    widget_type: Optional[str] = None
+    submission: Optional[dict[str, Any]] = None
+    # multi_select / form / structured_review / number_input 的展平結果
+    choices: Optional[list[str]] = None
+    field_values: Optional[dict[str, Any]] = None
+    value: Optional[float] = None
+    client_session_id: Optional[str] = None
 
 
 router = APIRouter()
@@ -192,17 +208,33 @@ async def chat_tree_choice(request: TreeChoiceRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"V4 import error: {e}")
 
+    # Normalize：如果走巢狀 submission（c-end 統一介面），把欄位展平
+    submission = request.submission or {}
+    choice_id = request.choice_id or submission.get("choice_id")
+    choices = request.choices or submission.get("choices")
+    field_values = request.field_values or submission.get("field_values") or {}
+    value = request.value if request.value is not None else submission.get("value")
+
+    if not choice_id:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Missing choice_id (tree_id={request.tree_id}, node_id={request.node_id}). "
+                f"Either send choice_id at top-level or nested under submission."
+            ),
+        )
+
     try:
         tree = get_tree(request.tree_id)
     except KeyError:
         raise HTTPException(status_code=400, detail=f"Unknown tree_id: {request.tree_id}")
 
     try:
-        next_node = tree.advance(request.node_id, request.choice_id)
+        next_node = tree.advance(request.node_id, choice_id)
     except (ValueError, KeyError) as e:
         raise HTTPException(
             status_code=400,
-            detail=f"Invalid choice {request.choice_id} on node {request.node_id}: {e}",
+            detail=f"Invalid choice {choice_id} on node {request.node_id}: {e}",
         )
 
     # 組 V4 ChatRequest：依 next_node 是 leaf or non-leaf 走不同欄位
@@ -210,7 +242,8 @@ async def chat_tree_choice(request: TreeChoiceRequest):
         "project_id": request.project_id,
         "session_id": request.session_id,
         "user_id": request.user_id,
-        "message": f"(tree:{request.tree_id} | choice:{request.choice_id})",
+        "client_session_id": request.client_session_id,
+        "message": f"(tree:{request.tree_id} | choice:{choice_id})",
     }
     if next_node.is_leaf and next_node.leaf_config is not None:
         leaf = next_node.leaf_config
