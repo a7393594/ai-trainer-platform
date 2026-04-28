@@ -38,9 +38,12 @@ from app.models.schemas import (
 
 from .classifier import Scenario, classify
 from .personas import Persona, get_persona_prompt
+from .preflight import detect_entry_point
 from .tool_use_loop import run_tool_use_loop
 from .tools.registry import v4_tool_registry
 from .transaction import pipeline_run_transaction
+from .trees import TREES, get_tree
+from .trees.base import LeafConfig, TreeNode
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +60,11 @@ class ChatRequest:
     user_id: Optional[str] = None
     client_session_id: Optional[str] = None
     attachments: list[dict[str, Any]] | None = None
+    # 給 /chat/tree-choice 用：跳過 classifier + tree walk 直接用這個 leaf 跑
+    forced_leaf_config: Optional[dict[str, Any]] = None
+    # 給 /chat/tree-choice 用：tree walk 走到非葉子節點時，繼續從這個節點走
+    tree_id: Optional[str] = None
+    tree_node_id: Optional[str] = None
 
 
 @dataclass
@@ -94,6 +102,9 @@ def _normalize_request(request: Any) -> ChatRequest:
         user_id=getattr(request, "user_id", None),
         client_session_id=getattr(request, "client_session_id", None),
         attachments=getattr(request, "attachments", None) or getattr(request, "images", None),
+        forced_leaf_config=getattr(request, "forced_leaf_config", None),
+        tree_id=getattr(request, "tree_id", None),
+        tree_node_id=getattr(request, "tree_node_id", None),
     )
 
 
@@ -208,91 +219,306 @@ async def chat(request: Any) -> V3ChatResponse:
     )
 
     async with pipeline_run_transaction(session_id, user_id, req.project_id) as run:
-        if classification.scenario != Scenario.FREE_FORM:
-            # 複雜場景 → 樹路徑（Phase 3+）
-            raise NotImplementedError(
-                f"V4 scenario {classification.scenario} not implemented yet (Phase 3+)"
+        # ============================================================
+        # Tree-choice 延續路徑：forced_leaf_config / tree_id+tree_node_id
+        # 由 /chat/tree-choice endpoint 設定，跳過 classifier
+        # ============================================================
+        if req.forced_leaf_config is not None:
+            leaf = LeafConfig(**req.forced_leaf_config) if isinstance(req.forced_leaf_config, dict) else req.forced_leaf_config
+            return await _execute_leaf(
+                req=req, run=run, session_id=session_id, user_id=user_id,
+                base_prompt=base_prompt, history=history, leaf=leaf,
+                scenario_name=req.tree_id or "tree_choice",
+            )
+
+        if req.tree_id and req.tree_node_id:
+            # 從指定 tree node 繼續 walk（preflight 已預判 → 此節點是 widget 待答）
+            tree = get_tree(req.tree_id)
+            current = tree.get_node(req.tree_node_id)
+            return await _walk_or_widget(
+                req=req, run=run, session_id=session_id, user_id=user_id,
+                base_prompt=base_prompt, history=history,
+                tree=tree, current=current, scenario_name=req.tree_id,
             )
 
         # ============================================================
         # Free-form 路徑
         # ============================================================
+        if classification.scenario == Scenario.FREE_FORM:
+            return await _run_free_form(
+                req=req, run=run, session_id=session_id, user_id=user_id,
+                base_prompt=base_prompt, history=history, classification=classification,
+            )
+
+        # ============================================================
+        # 複雜場景 → 樹路徑（preflight 智慧起始點 → tree walk → leaf or widget）
+        # ============================================================
+        scenario_key = classification.scenario.value
+        if scenario_key not in TREES:
+            logger.warning("[v4_chat] scenario %s not in TREES, falling back to free_form", scenario_key)
+            return await _run_free_form(
+                req=req, run=run, session_id=session_id, user_id=user_id,
+                base_prompt=base_prompt, history=history, classification=classification,
+            )
+
+        tree = get_tree(scenario_key)
+
+        # 智慧起始點偵測（hint from classifier 優先；否則 preflight LLM 跑）
+        entry_node_id: str = classification.tree_entry_node or tree.root_id
+        implied_choices: dict[str, str] = {}
+        try:
+            entry_node_id, implied_choices = await detect_entry_point(
+                tree=tree, message=req.message, history=history,
+                project_id=req.project_id, session_id=session_id,
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning("[v4_chat] preflight failed, using root: %s", e)
+            entry_node_id = tree.root_id
+            implied_choices = {}
+
+        try:
+            current = tree.get_node(entry_node_id)
+        except KeyError:
+            logger.warning("[v4_chat] preflight returned invalid node %s, using root", entry_node_id)
+            current = tree.get_node(tree.root_id)
+
+        # 套用 implied_choices 一直走到無法再走（葉子或下一個未答節點）
+        for node_id, choice_id in (implied_choices or {}).items():
+            if current.id != node_id or current.is_leaf:
+                break
+            try:
+                current = tree.advance(current.id, choice_id)
+            except (ValueError, KeyError):
+                break
+            if current.is_leaf:
+                break
+
+        return await _walk_or_widget(
+            req=req, run=run, session_id=session_id, user_id=user_id,
+            base_prompt=base_prompt, history=history,
+            tree=tree, current=current, scenario_name=scenario_key,
+        )
+
+    # （unreachable — 上面 async-with 已 return）
+    return _to_v3_response(sid=session_id, text="", message_id=None, widgets=None, tool_results=None)
+
+
+# ----------------------------------------------------------------------
+# Tree path helpers
+# ----------------------------------------------------------------------
+
+async def _walk_or_widget(*, req, run, session_id, user_id, base_prompt, history, tree, current: TreeNode, scenario_name: str):
+    """如果 current 是葉子 → 走 leaf；否則發 widget 等使用者答。"""
+    if current.is_leaf and current.leaf_config is not None:
+        return await _execute_leaf(
+            req=req, run=run, session_id=session_id, user_id=user_id,
+            base_prompt=base_prompt, history=history, leaf=current.leaf_config,
+            scenario_name=scenario_name,
+        )
+
+    # 非葉子 — 發 widget 等使用者答
+    widget = current.to_widget()
+    widget["tree_id"] = tree.id
+    widget["node_id"] = current.id
+    widget["blocking"] = bool(current.blocking)
+
+    preamble = current.preamble_text or current.question or ""
+
+    run.stage_user_message(
+        session_id=session_id,
+        content=req.message,
+        attachments=req.attachments,
+        metadata={
+            "client_session_id": req.client_session_id,
+        } if req.client_session_id else None,
+    )
+    run.stage_assistant_message(
+        session_id=session_id,
+        text=preamble,
+        widgets=[widget],
+        metadata={
+            "tree_pending": tree.id,
+            "node_id": current.id,
+            "scenario": scenario_name,
+            "engine_version": "v4",
+        },
+    )
+    await run.commit()
+
+    return _to_v3_response(
+        sid=session_id,
+        text=preamble,
+        message_id=run.staged_assistant_message_id,
+        widgets=[widget],
+        tool_results=None,
+        metadata={
+            "tree_pending": tree.id,
+            "node_id": current.id,
+            "scenario": scenario_name,
+            "engine_version": "v4",
+        },
+    )
+
+
+async def _execute_leaf(*, req, run, session_id, user_id, base_prompt, history, leaf: LeafConfig, scenario_name: str):
+    """走葉子配置：subset tools + persona + system_prompt_segment + main LLM。"""
+    persona_name = (leaf.persona or "coach").lower()
+    try:
+        persona = Persona(persona_name)
+    except ValueError:
         persona = Persona.COACH
-        system_prompt = _build_system_prompt(base_prompt, persona)
 
-        # 組 messages: [system, *history, {user}]
-        messages: list[dict[str, Any]] = [{"role": "system", "content": system_prompt}]
-        # 過濾掉 history 內可能的 system summary 之外的 system role，保留乾淨結構
-        # （load_history 的 system summary 我們直接接受其作為 context）
-        for m in history:
-            role = m.get("role")
-            if role in ("user", "assistant", "system"):
-                messages.append({"role": role, "content": m.get("content") or ""})
-        messages.append({"role": "user", "content": req.message})
+    parts: list[str] = []
+    if base_prompt:
+        parts.append(base_prompt.strip())
+    parts.append(get_persona_prompt(persona).strip())
+    if leaf.system_prompt_segment:
+        parts.append(leaf.system_prompt_segment.strip())
+    system_prompt = "\n\n".join(parts)
 
-        # tools（Phase 1 free-form 不暴露工具；列空陣列以利 Phase 3+ 沿用同 loop）
-        tools = v4_tool_registry.list_for_chat(
-            project_id=req.project_id,
-            subset=[],  # Phase 1 一律不暴露工具
-            tenant_id=None,
-            include_db_tools=False,
-        )
+    messages: list[dict[str, Any]] = [{"role": "system", "content": system_prompt}]
+    for m in history:
+        role = m.get("role")
+        if role in ("user", "assistant", "system"):
+            messages.append({"role": role, "content": m.get("content") or ""})
+    messages.append({"role": "user", "content": req.message})
 
-        # 跑 tool-use loop（Phase 1 純粹當 LLM completion 用）
-        result = await run_tool_use_loop(
-            messages=messages,
-            tools=tools,
-            project_id=req.project_id,
-            session_id=session_id,
-            user_id=user_id,
-            tenant_id=None,
-            emit_progress=run.emit_sse,
-            span_label="v4_chat/free_form",
-        )
+    tools = v4_tool_registry.list_for_chat(
+        project_id=req.project_id,
+        subset=leaf.tools or [],
+        tenant_id=None,
+        include_db_tools=False,
+    )
 
-        clean_text = result.clean_text or ""
-        widgets = result.widgets or []
-        tool_results = result.tool_results or []
+    result = await run_tool_use_loop(
+        messages=messages,
+        tools=tools,
+        project_id=req.project_id,
+        session_id=session_id,
+        user_id=user_id,
+        tenant_id=None,
+        emit_progress=run.emit_sse,
+        span_label=f"v4_chat/{scenario_name}/{persona.value}",
+    )
 
-        # Stage + commit
-        run.stage_user_message(
-            session_id=session_id,
-            content=req.message,
-            attachments=req.attachments,
-            metadata={
-                "client_session_id": req.client_session_id,
-            } if req.client_session_id else None,
-        )
-        run.stage_assistant_message(
-            session_id=session_id,
-            text=clean_text,
-            tool_results=tool_results,
-            widgets=widgets,
-            metadata={
-                "persona": persona.value,
-                "scenario": classification.scenario.value,
-                "iterations": result.iterations,
-                "stop_reason": result.stop_reason,
-                "usage": result.usage,
-                "engine_version": "v4",
-            },
-        )
-        await run.commit()
+    clean_text = result.clean_text or ""
+    widgets = result.widgets or []
+    tool_results = result.tool_results or []
 
-        return _to_v3_response(
-            sid=session_id,
-            text=clean_text,
-            message_id=run.staged_assistant_message_id,
-            widgets=widgets,
-            tool_results=tool_results,
-            metadata={
-                "persona": persona.value,
-                "scenario": classification.scenario.value,
-                "engine_version": "v4",
-                "iterations": result.iterations,
-                "stop_reason": result.stop_reason,
-            },
-        )
+    run.stage_user_message(
+        session_id=session_id,
+        content=req.message,
+        attachments=req.attachments,
+        metadata={
+            "client_session_id": req.client_session_id,
+        } if req.client_session_id else None,
+    )
+    run.stage_assistant_message(
+        session_id=session_id,
+        text=clean_text,
+        tool_results=tool_results,
+        widgets=widgets,
+        metadata={
+            "persona": persona.value,
+            "scenario": scenario_name,
+            "iterations": result.iterations,
+            "stop_reason": result.stop_reason,
+            "usage": result.usage,
+            "tools_used": leaf.tools or [],
+            "engine_version": "v4",
+        },
+    )
+    await run.commit()
+
+    return _to_v3_response(
+        sid=session_id,
+        text=clean_text,
+        message_id=run.staged_assistant_message_id,
+        widgets=widgets,
+        tool_results=tool_results,
+        metadata={
+            "persona": persona.value,
+            "scenario": scenario_name,
+            "engine_version": "v4",
+            "iterations": result.iterations,
+            "stop_reason": result.stop_reason,
+        },
+    )
+
+
+async def _run_free_form(*, req, run, session_id, user_id, base_prompt, history, classification):
+    """Free-form 路徑：coach persona + 全部 builtin tools 暴露給 LLM 自決。"""
+    persona = Persona.COACH
+    system_prompt = _build_system_prompt(base_prompt, persona)
+
+    messages: list[dict[str, Any]] = [{"role": "system", "content": system_prompt}]
+    for m in history:
+        role = m.get("role")
+        if role in ("user", "assistant", "system"):
+            messages.append({"role": role, "content": m.get("content") or ""})
+    messages.append({"role": "user", "content": req.message})
+
+    # Free-form 暴露所有 builtin tools 讓 LLM 自決
+    tools = v4_tool_registry.list_for_chat(
+        project_id=req.project_id,
+        subset=None,
+        tenant_id=None,
+        include_db_tools=False,
+    )
+
+    result = await run_tool_use_loop(
+        messages=messages,
+        tools=tools,
+        project_id=req.project_id,
+        session_id=session_id,
+        user_id=user_id,
+        tenant_id=None,
+        emit_progress=run.emit_sse,
+        span_label="v4_chat/free_form",
+    )
+
+    clean_text = result.clean_text or ""
+    widgets = result.widgets or []
+    tool_results = result.tool_results or []
+
+    run.stage_user_message(
+        session_id=session_id,
+        content=req.message,
+        attachments=req.attachments,
+        metadata={
+            "client_session_id": req.client_session_id,
+        } if req.client_session_id else None,
+    )
+    run.stage_assistant_message(
+        session_id=session_id,
+        text=clean_text,
+        tool_results=tool_results,
+        widgets=widgets,
+        metadata={
+            "persona": persona.value,
+            "scenario": classification.scenario.value,
+            "iterations": result.iterations,
+            "stop_reason": result.stop_reason,
+            "usage": result.usage,
+            "engine_version": "v4",
+        },
+    )
+    await run.commit()
+
+    return _to_v3_response(
+        sid=session_id,
+        text=clean_text,
+        message_id=run.staged_assistant_message_id,
+        widgets=widgets,
+        tool_results=tool_results,
+        metadata={
+            "persona": persona.value,
+            "scenario": classification.scenario.value,
+            "engine_version": "v4",
+            "iterations": result.iterations,
+            "stop_reason": result.stop_reason,
+        },
+    )
 
 
 __all__ = ["chat", "ChatRequest", "ChatResponse"]

@@ -173,20 +173,61 @@ async def chat(request: ChatRequest):
 async def chat_tree_choice(request: TreeChoiceRequest):
     """V4 樹節點選定後的延續呼叫。
 
-    使用者點 widget 選項後，c-end BFF 轉發 {tree_id, node_id, choice_id} 到此端點。
-    後端 advance(node_id, choice_id) → 若下個節點是 leaf，組 leaf_config 跳回
-    `engine.chat()` 主流程；若是內部節點，回新 widget 等使用者繼續答。
+    使用者點 widget 選項後，c-end BFF 轉發 {tree_id, node_id, choice_id, ...} 到此端點。
+    後端 advance(node_id, choice_id) → 若下個節點是 leaf，呼叫 `engine.chat()`
+    with `forced_leaf_config`；若是內部節點，呼叫 `engine.chat()` with
+    `tree_id + tree_node_id` 讓 engine 從該節點繼續發 widget。
 
-    Phase 1: 完全 NotImplementedError（樹尚未實作）。
-    Phase 3: 實作完整流程。
+    需 settings.use_v4_chat=True 才能用。
     """
-    raise HTTPException(
-        status_code=501,
-        detail=(
-            f"/chat/tree-choice not implemented yet (Phase 3). "
-            f"Got tree_id={request.tree_id}, node_id={request.node_id}, choice_id={request.choice_id}"
-        ),
-    )
+    if not settings.use_v4_chat:
+        raise HTTPException(
+            status_code=501,
+            detail="V4 chat engine not enabled. Set USE_V4_CHAT=true.",
+        )
+
+    try:
+        from app.core.chat.trees import get_tree
+        from app.core.chat.engine import chat as v4_chat, ChatRequest as V4ChatRequest
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"V4 import error: {e}")
+
+    try:
+        tree = get_tree(request.tree_id)
+    except KeyError:
+        raise HTTPException(status_code=400, detail=f"Unknown tree_id: {request.tree_id}")
+
+    try:
+        next_node = tree.advance(request.node_id, request.choice_id)
+    except (ValueError, KeyError) as e:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid choice {request.choice_id} on node {request.node_id}: {e}",
+        )
+
+    # 組 V4 ChatRequest：依 next_node 是 leaf or non-leaf 走不同欄位
+    chat_kwargs: dict[str, Any] = {
+        "project_id": request.project_id,
+        "session_id": request.session_id,
+        "user_id": request.user_id,
+        "message": f"(tree:{request.tree_id} | choice:{request.choice_id})",
+    }
+    if next_node.is_leaf and next_node.leaf_config is not None:
+        leaf = next_node.leaf_config
+        chat_kwargs["forced_leaf_config"] = {
+            "persona": leaf.persona,
+            "tools": list(leaf.tools or []),
+            "kb_query_template": leaf.kb_query_template,
+            "system_prompt_segment": leaf.system_prompt_segment,
+            "metadata": dict(leaf.metadata or {}),
+        }
+        chat_kwargs["tree_id"] = request.tree_id
+    else:
+        chat_kwargs["tree_id"] = request.tree_id
+        chat_kwargs["tree_node_id"] = next_node.id
+
+    v4_request = V4ChatRequest(**chat_kwargs)
+    return await v4_chat(v4_request)
 
 
 @router.post("/chat/stream")
