@@ -1,15 +1,23 @@
 """
-DAG Executor — 依 DAG 定義執行 pipeline。
+DAG Executor
 
-用途（MVP）：
-- 測試 DAG 行為：test endpoint 呼叫，不影響生產對話
-- A/B 比較：並排跑兩個 DAG
-- 未來可擴充為生產 orchestrator 的替代品
+⚠️ 自 V4 起（2026-04-29 chat 引擎重構），此 executor 不再服務 chat 路徑。
+   chat 走 app/core/chat/engine.py（樹狀 pre-flight + native tool-use loop + atomic transaction）。
 
-設計原則：
+當前用途：
+- LAB DAG (dag_kind='lab')：Pipeline Studio playground 手動編輯 DAG
+- WORKFLOW DAG (dag_kind='workflow')：由 chat engine 的 start_workflow tool 觸發
+- RETIRED_CHAT DAG (dag_kind='retired_chat')：舊 chat DAG 物件,唯讀觀察用
+
+新增 DAG 時必須指定 dag_kind 欄位。新流量不允許再用 chat 類型。
+
+────────────────────────────────────────────────────────────────────────
+原始 DAG Executor 註記(V3 以前):依 DAG 定義執行 pipeline。
+
+設計原則:
 - 每個 node_type 對應一個 handler function
 - Context 物件在節點間傳遞 state
-- 失敗就停、回傳 partial trace（不中斷整個 request）
+- 失敗就停、回傳 partial trace(不中斷整個 request)
 """
 import asyncio
 import json
@@ -128,7 +136,11 @@ async def handle_input(node: dict, ctx: DAGContext) -> dict:
 
 
 async def handle_load_history(node: dict, ctx: DAGContext) -> dict:
-    """載入歷史。生產模式由 adapter 預載(pre_loaded_history);測試模式空歷史。"""
+    """載入歷史。生產模式由 adapter 預載(pre_loaded_history);測試模式空歷史。
+
+    @deprecated since V4. V4 chat engine 在 chat() 內直接 load_history,DAG 不再用。
+    保留供 RETIRED_CHAT DAG 觀察用。
+    """
     if ctx.pre_loaded_history is not None:
         ctx.history = ctx.pre_loaded_history
         return {
@@ -1515,6 +1527,9 @@ async def handle_capability_widget(node: dict, ctx: DAGContext) -> dict:
     """Capability rule · widget action — 回傳預定義 widget + 可選的 LLM 文字回覆。
 
     Condition 應綁 intent_type == capability_rule AND intent_rule.action_type == widget。
+
+    @deprecated since V4 (2026-04-29). 由 chat engine 的 present_widget tool 取代。
+    此 handler 僅供 RETIRED_CHAT DAG 觀察用,不應被新流量呼叫。
     """
     rule = ctx.intent_rule or {}
     action_config = rule.get("action_config") or {}
@@ -1574,7 +1589,11 @@ async def handle_capability_widget(node: dict, ctx: DAGContext) -> dict:
 
 
 async def handle_capability_tool_call(node: dict, ctx: DAGContext) -> dict:
-    """Capability rule · tool_call action — LLM 被動參考工具回覆。"""
+    """Capability rule · tool_call action — LLM 被動參考工具回覆。
+
+    @deprecated since V4 (2026-04-29). 由 chat engine 的 native tool-use loop 取代。
+    此 handler 僅供 RETIRED_CHAT DAG 觀察用,不應被新流量呼叫。
+    """
     rule = ctx.intent_rule or {}
     action_config = rule.get("action_config") or {}
     tool_id = action_config.get("tool_id")
@@ -1633,7 +1652,11 @@ async def handle_capability_tool_call(node: dict, ctx: DAGContext) -> dict:
 
 
 async def handle_capability_workflow(node: dict, ctx: DAGContext) -> dict:
-    """Capability rule · workflow action — 啟動 workflow(auto 或 step 模式)。"""
+    """Capability rule · workflow action — 啟動 workflow(auto 或 step 模式)。
+
+    @deprecated since V4 (2026-04-29). 由 chat engine 的 start_workflow tool 取代。
+    此 handler 僅供 RETIRED_CHAT DAG 觀察用,不應被新流量呼叫。
+    """
     from app.core.workflows.engine import workflow_engine
 
     rule = ctx.intent_rule or {}
@@ -1707,7 +1730,11 @@ async def handle_capability_workflow(node: dict, ctx: DAGContext) -> dict:
 
 
 async def handle_capability_handoff(node: dict, ctx: DAGContext) -> dict:
-    """Capability rule · handoff action — 升級至真人客服。"""
+    """Capability rule · handoff action — 升級至真人客服。
+
+    @deprecated since V4 (2026-04-29). 由 chat engine 的 handoff tool 取代。
+    此 handler 僅供 RETIRED_CHAT DAG 觀察用,不應被新流量呼叫。
+    """
     from app.core.handoff.service import handoff_service
 
     rule = ctx.intent_rule or {}
@@ -1966,6 +1993,13 @@ async def execute_dag(
           "guardrail_triggered": bool,
         }
     """
+    # V4 retirement guard — RETIRED_CHAT DAGs are observe-only.
+    # chat 流量必須走 app/core/chat/engine.py，不再經過 DAG executor。
+    if dag.get("dag_kind") == "retired_chat":
+        raise RuntimeError(
+            "RETIRED_CHAT DAG 不能執行,僅供觀察。chat 流量請走 app/core/chat。"
+        )
+
     nodes = dag.get("nodes") or []
     edges = dag.get("edges") or []
     node_by_id = {n["id"]: n for n in nodes}

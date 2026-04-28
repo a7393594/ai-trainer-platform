@@ -1,5 +1,18 @@
 """DAG-backed /chat endpoint adapter.
 
+@deprecated since V4 (2026-04-29).
+
+此 adapter 把 chat 路徑塞進 DAG executor,從 V4 起不再使用。
+chat 流量改走 app/core/chat/engine.py。
+
+保留檔案以便:
+- 緊急回滾(USE_V4_CHAT=false 同時 USE_DAG_EXECUTOR_FOR_CHAT=true)
+- 對照舊行為 debug
+- 對照 trace 觀察 V3 vs V4 差異
+
+────────────────────────────────────────────────────────────────────────
+原始說明(V3):
+
 當 `settings.use_dag_executor_for_chat=True` 時,api/v1/__init__.py 的 /chat 端點
 會呼叫這裡的 `process_via_dag()`,讓生產流量走 DAG Executor 而非 orchestrator。
 
