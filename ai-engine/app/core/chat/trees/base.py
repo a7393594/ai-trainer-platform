@@ -78,10 +78,18 @@ class TreeNode:
     blocking: bool = True
 
     def to_widget(self) -> dict:
-        """Convert to widget dict suitable for present_widget tool result."""
+        """Convert to widget dict suitable for present_widget tool result.
+
+        Key naming aligns with c-end Widget TypeScript interface:
+            type / question / options / fields / blocking / tree_id / node_id
+        We emit BOTH `type` and `widget_type` for backward compat with anything
+        reading the older snake_case key, but front-end Widget renderer reads `type`.
+        """
+        type_str = self.widget_type.value
         widget: dict[str, Any] = {
+            "type": type_str,             # ← c-end Widget.type 期望這個 key
+            "widget_type": type_str,      # ← legacy / submission echo
             "node_id": self.id,
-            "widget_type": self.widget_type.value,
             "blocking": self.blocking,
         }
         if self.question:
