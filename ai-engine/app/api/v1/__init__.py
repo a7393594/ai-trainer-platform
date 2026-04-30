@@ -234,19 +234,23 @@ async def chat_tree_choice(request: TreeChoiceRequest):
         other_text = ""
         if isinstance(field_values, dict):
             other_text = (field_values.get("other_text") or "").strip()
+        # 也接受 submission.other_text 直接放在頂層
+        if not other_text:
+            other_text = (submission.get("other_text") or "").strip()
         if not other_text:
             raise HTTPException(
                 status_code=400,
                 detail="「其他」選項需提供文字內容（field_values.other_text）",
             )
-        # 直接走 free-form chat()。樹的 history（剛剛點過的 widget 訊息）仍在
-        # session 內，main LLM 看得到上下文。
+        # 直接走 free-form chat()，bypass_classifier=True 避免 history 中的
+        # widget 又把 classifier 帶回原 tree（造成「我講話了又被推回 widget」循環）。
         v4_request = V4ChatRequest(
             project_id=request.project_id,
             session_id=request.session_id,
             user_id=request.user_id,
             client_session_id=request.client_session_id,
             message=other_text,
+            bypass_classifier=True,
         )
         return await v4_chat(v4_request)
 
@@ -264,12 +268,18 @@ async def chat_tree_choice(request: TreeChoiceRequest):
         )
 
     # 組 V4 ChatRequest：依 next_node 是 leaf or non-leaf 走不同欄位
+    # message 用 c-end widget submission 的 display_text（使用者看到的選項 label），
+    # 退而求其次用 choice_id 本身。**禁止**用 (tree:... | choice:...) 這種開發者
+    # placeholder——那會被 stage 進 user_msg DB + 顯示給使用者看，超醜。
+    display_text = (submission.get("display_text") or "").strip() if isinstance(submission, dict) else ""
+    fallback_msg = display_text or f"(已選擇：{choice_id})"
+
     chat_kwargs: dict[str, Any] = {
         "project_id": request.project_id,
         "session_id": request.session_id,
         "user_id": request.user_id,
         "client_session_id": request.client_session_id,
-        "message": f"(tree:{request.tree_id} | choice:{choice_id})",
+        "message": fallback_msg,
     }
     if next_node.is_leaf and next_node.leaf_config is not None:
         leaf = next_node.leaf_config

@@ -65,6 +65,9 @@ class ChatRequest:
     # 給 /chat/tree-choice 用：tree walk 走到非葉子節點時，繼續從這個節點走
     tree_id: Optional[str] = None
     tree_node_id: Optional[str] = None
+    # 給 __other__ escape 用：強制跳過 classifier 走 free-form。
+    # 否則 chat() 會看 history 含 widget 又重判場景跳回 tree，造成循環。
+    bypass_classifier: bool = False
 
 
 @dataclass
@@ -105,6 +108,7 @@ def _normalize_request(request: Any) -> ChatRequest:
         forced_leaf_config=getattr(request, "forced_leaf_config", None),
         tree_id=getattr(request, "tree_id", None),
         tree_node_id=getattr(request, "tree_node_id", None),
+        bypass_classifier=bool(getattr(request, "bypass_classifier", False)),
     )
 
 
@@ -210,13 +214,18 @@ async def chat(request: Any) -> V3ChatResponse:
         logger.warning("[v4_chat] load_active_prompt failed: %s", e)
         base_prompt = None
 
-    # Light classifier — Phase 1 永遠回 FREE_FORM
-    classification = await classify(
-        message=req.message,
-        history=history,
-        attachments=req.attachments,
-        game_state=None,  # Phase 5 才接 in-game state
-    )
+    # Light classifier — bypass_classifier=True 時強制走 free-form
+    # （供 __other__ escape 使用，避免 history 含 widget 又被重判回 tree）
+    if req.bypass_classifier:
+        from .classifier import ClassificationResult as _CR
+        classification = _CR(scenario=Scenario.FREE_FORM, reason="bypass_classifier=True")
+    else:
+        classification = await classify(
+            message=req.message,
+            history=history,
+            attachments=req.attachments,
+            game_state=None,  # Phase 5 才接 in-game state
+        )
 
     async with pipeline_run_transaction(session_id, user_id, req.project_id) as run:
         # ============================================================
