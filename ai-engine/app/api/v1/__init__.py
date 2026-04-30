@@ -224,6 +224,32 @@ async def chat_tree_choice(request: TreeChoiceRequest):
             ),
         )
 
+    # ----------------------------------------------------------------------
+    # Universal escape hatch：c-end SingleSelectWidget 自動 append `__other__`
+    # 選項給使用者打自由文字。後端 tree 定義沒這個 option，advance 會 raise。
+    # 偵測到 __other__ → 跳出樹邏輯，把 field_values.other_text 當自由訊息走
+    # main LLM（free-form path）。
+    # ----------------------------------------------------------------------
+    if choice_id == "__other__":
+        other_text = ""
+        if isinstance(field_values, dict):
+            other_text = (field_values.get("other_text") or "").strip()
+        if not other_text:
+            raise HTTPException(
+                status_code=400,
+                detail="「其他」選項需提供文字內容（field_values.other_text）",
+            )
+        # 直接走 free-form chat()。樹的 history（剛剛點過的 widget 訊息）仍在
+        # session 內，main LLM 看得到上下文。
+        v4_request = V4ChatRequest(
+            project_id=request.project_id,
+            session_id=request.session_id,
+            user_id=request.user_id,
+            client_session_id=request.client_session_id,
+            message=other_text,
+        )
+        return await v4_chat(v4_request)
+
     try:
         tree = get_tree(request.tree_id)
     except KeyError:
