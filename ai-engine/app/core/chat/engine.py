@@ -456,7 +456,17 @@ async def _execute_leaf(*, req, run, session_id, user_id, base_prompt, history, 
 
 
 async def _run_free_form(*, req, run, session_id, user_id, base_prompt, history, classification):
-    """Free-form 路徑：coach persona + 全部 builtin tools 暴露給 LLM 自決。"""
+    """Free-form 路徑：coach persona，暴露最少工具給 LLM 自決。
+
+    工具策略（Phase 1 → Phase 2 過渡）：
+      - subset=["kb_search"] 給概念問答能引用 KB
+      - 其他重工具（calc_*, get_*）不暴露 — 它們屬於樹的葉子場景
+        如果在 free-form 暴露，LLM 容易亂呼叫導致 30-60 秒 latency，
+        而且也讓 c-end 從 SSE 等不到回應
+
+    Phase 2+ 再考慮：context-aware tool subset（例如有手牌 attachment 才開
+    calc_equity）。
+    """
     persona = Persona.COACH
     system_prompt = _build_system_prompt(base_prompt, persona)
 
@@ -467,10 +477,11 @@ async def _run_free_form(*, req, run, session_id, user_id, base_prompt, history,
             messages.append({"role": role, "content": m.get("content") or ""})
     messages.append({"role": "user", "content": req.message})
 
-    # Free-form 暴露所有 builtin tools 讓 LLM 自決
+    # Free-form 只給 kb_search（概念問答用）；不給 calc_* / get_* 等重工具
+    # 避免 LLM 亂呼叫拖長 latency。
     tools = v4_tool_registry.list_for_chat(
         project_id=req.project_id,
-        subset=None,
+        subset=["kb_search"],
         tenant_id=None,
         include_db_tools=False,
     )
