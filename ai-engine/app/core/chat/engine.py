@@ -36,6 +36,8 @@ from app.models.schemas import (
     Role,
 )
 
+from app.core.pipeline.tracer import pipeline_run_context, current_run
+
 from .classifier import Scenario, classify
 from .personas import Persona, get_persona_prompt
 from .preflight import detect_entry_point
@@ -227,89 +229,118 @@ async def chat(request: Any) -> V3ChatResponse:
             game_state=None,  # Phase 5 才接 in-game state
         )
 
-    async with pipeline_run_transaction(session_id, user_id, req.project_id) as run:
-        # ============================================================
-        # Tree-choice 延續路徑：forced_leaf_config / tree_id+tree_node_id
-        # 由 /chat/tree-choice endpoint 設定，跳過 classifier
-        # ============================================================
-        if req.forced_leaf_config is not None:
-            leaf = LeafConfig(**req.forced_leaf_config) if isinstance(req.forced_leaf_config, dict) else req.forced_leaf_config
-            return await _execute_leaf(
-                req=req, run=run, session_id=session_id, user_id=user_id,
-                base_prompt=base_prompt, history=history, leaf=leaf,
-                scenario_name=req.tree_id or "tree_choice",
-            )
+    # 包 pipeline_run_context（V3 chat_adapter 同樣模式）
+    # 讓 Pipeline Studio 看得到此 chat turn 的 trace + 累計成本。
+    # 內層 pipeline_run_transaction 是 DB message commit；兩個 context 並存
+    # （命名相近但職責不同：trace 是 observability，transaction 是 DB atomicity）
+    async with pipeline_run_context(
+        project_id=req.project_id,
+        session_id=session_id,
+        input_text=req.message,
+        mode="live",
+        triggered_by=user_id,
+    ):
+        async with pipeline_run_transaction(session_id, user_id, req.project_id) as run:
+            # ============================================================
+            # Tree-choice 延續路徑：forced_leaf_config / tree_id+tree_node_id
+            # 由 /chat/tree-choice endpoint 設定，跳過 classifier
+            # ============================================================
+            if req.forced_leaf_config is not None:
+                leaf = LeafConfig(**req.forced_leaf_config) if isinstance(req.forced_leaf_config, dict) else req.forced_leaf_config
+                response = await _execute_leaf(
+                    req=req, run=run, session_id=session_id, user_id=user_id,
+                    base_prompt=base_prompt, history=history, leaf=leaf,
+                    scenario_name=req.tree_id or "tree_choice",
+                )
+                _link_run_message_id(run)
+                return response
 
-        if req.tree_id and req.tree_node_id:
-            # 從指定 tree node 繼續 walk（preflight 已預判 → 此節點是 widget 待答）
-            tree = get_tree(req.tree_id)
-            current = tree.get_node(req.tree_node_id)
-            return await _walk_or_widget(
+            if req.tree_id and req.tree_node_id:
+                # 從指定 tree node 繼續 walk（preflight 已預判 → 此節點是 widget 待答）
+                tree = get_tree(req.tree_id)
+                current = tree.get_node(req.tree_node_id)
+                response = await _walk_or_widget(
+                    req=req, run=run, session_id=session_id, user_id=user_id,
+                    base_prompt=base_prompt, history=history,
+                    tree=tree, current=current, scenario_name=req.tree_id,
+                )
+                _link_run_message_id(run)
+                return response
+
+            # ============================================================
+            # Free-form 路徑
+            # ============================================================
+            if classification.scenario == Scenario.FREE_FORM:
+                response = await _run_free_form(
+                    req=req, run=run, session_id=session_id, user_id=user_id,
+                    base_prompt=base_prompt, history=history, classification=classification,
+                )
+                _link_run_message_id(run)
+                return response
+
+            # ============================================================
+            # 複雜場景 → 樹路徑（preflight 智慧起始點 → tree walk → leaf or widget）
+            # ============================================================
+            scenario_key = classification.scenario.value
+            if scenario_key not in TREES:
+                logger.warning("[v4_chat] scenario %s not in TREES, falling back to free_form", scenario_key)
+                response = await _run_free_form(
+                    req=req, run=run, session_id=session_id, user_id=user_id,
+                    base_prompt=base_prompt, history=history, classification=classification,
+                )
+                _link_run_message_id(run)
+                return response
+
+            tree = get_tree(scenario_key)
+
+            # 智慧起始點偵測（hint from classifier 優先；否則 preflight LLM 跑）
+            entry_node_id: str = classification.tree_entry_node or tree.root_id
+            implied_choices: dict[str, str] = {}
+            try:
+                entry_node_id, implied_choices = await detect_entry_point(
+                    tree=tree, message=req.message, history=history,
+                    project_id=req.project_id, session_id=session_id,
+                )
+            except Exception as e:  # noqa: BLE001
+                logger.warning("[v4_chat] preflight failed, using root: %s", e)
+                entry_node_id = tree.root_id
+                implied_choices = {}
+
+            try:
+                current = tree.get_node(entry_node_id)
+            except KeyError:
+                logger.warning("[v4_chat] preflight returned invalid node %s, using root", entry_node_id)
+                current = tree.get_node(tree.root_id)
+
+            # 套用 implied_choices 一直走到無法再走（葉子或下一個未答節點）
+            for node_id, choice_id in (implied_choices or {}).items():
+                if current.id != node_id or current.is_leaf:
+                    break
+                try:
+                    current = tree.advance(current.id, choice_id)
+                except (ValueError, KeyError):
+                    break
+                if current.is_leaf:
+                    break
+
+            response = await _walk_or_widget(
                 req=req, run=run, session_id=session_id, user_id=user_id,
                 base_prompt=base_prompt, history=history,
-                tree=tree, current=current, scenario_name=req.tree_id,
+                tree=tree, current=current, scenario_name=scenario_key,
             )
-
-        # ============================================================
-        # Free-form 路徑
-        # ============================================================
-        if classification.scenario == Scenario.FREE_FORM:
-            return await _run_free_form(
-                req=req, run=run, session_id=session_id, user_id=user_id,
-                base_prompt=base_prompt, history=history, classification=classification,
-            )
-
-        # ============================================================
-        # 複雜場景 → 樹路徑（preflight 智慧起始點 → tree walk → leaf or widget）
-        # ============================================================
-        scenario_key = classification.scenario.value
-        if scenario_key not in TREES:
-            logger.warning("[v4_chat] scenario %s not in TREES, falling back to free_form", scenario_key)
-            return await _run_free_form(
-                req=req, run=run, session_id=session_id, user_id=user_id,
-                base_prompt=base_prompt, history=history, classification=classification,
-            )
-
-        tree = get_tree(scenario_key)
-
-        # 智慧起始點偵測（hint from classifier 優先；否則 preflight LLM 跑）
-        entry_node_id: str = classification.tree_entry_node or tree.root_id
-        implied_choices: dict[str, str] = {}
-        try:
-            entry_node_id, implied_choices = await detect_entry_point(
-                tree=tree, message=req.message, history=history,
-                project_id=req.project_id, session_id=session_id,
-            )
-        except Exception as e:  # noqa: BLE001
-            logger.warning("[v4_chat] preflight failed, using root: %s", e)
-            entry_node_id = tree.root_id
-            implied_choices = {}
-
-        try:
-            current = tree.get_node(entry_node_id)
-        except KeyError:
-            logger.warning("[v4_chat] preflight returned invalid node %s, using root", entry_node_id)
-            current = tree.get_node(tree.root_id)
-
-        # 套用 implied_choices 一直走到無法再走（葉子或下一個未答節點）
-        for node_id, choice_id in (implied_choices or {}).items():
-            if current.id != node_id or current.is_leaf:
-                break
-            try:
-                current = tree.advance(current.id, choice_id)
-            except (ValueError, KeyError):
-                break
-            if current.is_leaf:
-                break
-
-        return await _walk_or_widget(
-            req=req, run=run, session_id=session_id, user_id=user_id,
-            base_prompt=base_prompt, history=history,
-            tree=tree, current=current, scenario_name=scenario_key,
-        )
+            _link_run_message_id(run)
+            return response
 
     # （unreachable — 上面 async-with 已 return）
     return _to_v3_response(sid=session_id, text="", message_id=None, widgets=None, tool_results=None)
+
+
+def _link_run_message_id(run) -> None:
+    """把 staged_assistant_message_id 連結到當前 pipeline_run_context（V3 對齊）。
+    Pipeline Studio 需要這個連結才能把 trace 跟 ait_messages 配對顯示。"""
+    pr = current_run()
+    if pr is not None and getattr(run, "staged_assistant_message_id", None):
+        pr.message_id = run.staged_assistant_message_id
 
 
 # ----------------------------------------------------------------------
